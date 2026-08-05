@@ -28,6 +28,7 @@ test("extension price parser handles US currency without mistaking unrelated tex
 test("first-party checks reject marketplace and fulfilled-only offers", () => {
   assert.equal(isFirstPartyText("target", "Sold and shipped by Target"), true);
   assert.equal(isFirstPartyText("target", "Sold and shipped by Marketplace Deals"), false);
+  assert.equal(isFirstPartyText("target", "Fulfilled by Target"), false);
   assert.equal(isFirstPartyText("walmart", "Sold and shipped by Walmart.com"), true);
   assert.equal(isFirstPartyText("walmart", "Sold by Example Seller, fulfilled by Walmart"), false);
   assert.equal(isFirstPartyText("amazon", "Ships from Amazon.com Sold by Amazon.com"), true);

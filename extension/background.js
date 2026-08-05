@@ -1,16 +1,24 @@
 "use strict";
 
+importScripts("traffic.js");
+
+const Traffic = globalThis.CartConfirmTraffic;
+
 const PORTS = [32191, 32192, 32193, 32194, 32195];
 const CONFIG_TTL_MS = 5_000;
 const REQUEST_TIMEOUT_MS = 1_500;
 const CHECKOUT_LOCK_MS = 10 * 60_000;
 const FAST_MODE_RULE_ID = 91001;
 const AUTOMATION_STATE_KEY = "cartConfirmAutomationStateV2";
+const TRAFFIC_STATE_KEY = "cartConfirmTrafficStateV1";
 const FAST_MODE_PAUSE_KEY = "cartConfirmFastModePausedUntil";
+const OVERLOAD_DEDUPE_MS = 5_000;
 let cached = null;
 let appliedFastMode = null;
 let fastModePausedUntil = 0;
 let automationStateQueue = Promise.resolve();
+let trafficStateQueue = Promise.resolve();
+let trafficSyncInFlight = false;
 
 async function fetchWithTimeout(url, options = {}, timeoutMs = REQUEST_TIMEOUT_MS) {
   const controller = new AbortController();
@@ -64,10 +72,192 @@ function publicConfig(config) {
     automationRunId: String(config.automationRunId || ""),
     fastMode: Boolean(config.fastMode),
     retryIntervalSeconds: Number(config.retryIntervalSeconds || 15),
+    storeNavigationIntervalSeconds: Number(config.storeNavigationIntervalSeconds || 20),
+    overloadCooldownSeconds: Number(config.overloadCooldownSeconds || 300),
     firstPartyOnly: true,
     configVersion: config.configVersion,
     appVersion: config.appVersion
   };
+}
+
+function retailerFromUrl(value) {
+  try {
+    const host = new URL(String(value || "")).hostname.toLowerCase().replace(/^www\./, "");
+    if (["target.com", "walmart.com", "amazon.com"].includes(host)) return host.split(".")[0];
+  } catch {
+    // Invalid URLs cannot contribute traffic state.
+  }
+  return "";
+}
+
+function emptyTrafficState(runId = "") {
+  return { runId, retailers: {} };
+}
+
+async function readTrafficState(config = null) {
+  const stored = await chrome.storage.local.get(TRAFFIC_STATE_KEY);
+  const value = stored[TRAFFIC_STATE_KEY];
+  const state = value && typeof value === "object" ? value : emptyTrafficState();
+  state.retailers = state.retailers && typeof state.retailers === "object" ? state.retailers : {};
+
+  const runId = String(config?.automationRunId || state.runId || "");
+  if (config && state.runId !== runId) {
+    for (const traffic of Object.values(state.retailers)) {
+      if (traffic && typeof traffic === "object") traffic.reservations = {};
+    }
+    state.runId = runId;
+  }
+  return state;
+}
+
+async function writeTrafficState(state) {
+  await chrome.storage.local.set({ [TRAFFIC_STATE_KEY]: state });
+}
+
+function withTrafficStateLock(action) {
+  const task = trafficStateQueue.then(action, action);
+  trafficStateQueue = task.catch(() => {});
+  return task;
+}
+
+async function reserveNavigation(message, sender) {
+  const config = await discoverConfig(true);
+  if (!config?.automationEnabled) return { ok: false, reason: "disarmed" };
+  const product = configuredProduct(config, String(message.productId || ""));
+  const retailer = String(message.retailer || "");
+  if (!product || product.retailer !== retailer) return { ok: false, reason: "product-disabled" };
+  const reservationId = String(message.reservationId || "").slice(0, 180);
+  if (!reservationId) return { ok: false, reason: "invalid-reservation" };
+  const ownerId = `tab:${sender?.tab?.id ?? "unknown"}`;
+
+  return withTrafficStateLock(async () => {
+    const state = await readTrafficState(config);
+    const result = Traffic.reserveNavigationSlot(state.retailers[retailer], {
+      now: Date.now(),
+      notBefore: Number(message.notBefore || Date.now()),
+      intervalMs: Number(config.storeNavigationIntervalSeconds || 20) * 1000,
+      reservationId,
+      ownerId,
+      productId: product.id
+    });
+    state.retailers[retailer] = result.state;
+    await writeTrafficState(state);
+    return {
+      ok: true,
+      reservationId,
+      allowedAt: result.allowedAt,
+      waitMs: result.waitMs,
+      cooldownUntil: result.state.cooldownUntil
+    };
+  });
+}
+
+async function revalidateNavigation(message, sender) {
+  const config = await discoverConfig(true);
+  if (!config?.automationEnabled) return { ok: false, reason: "disarmed" };
+  const product = configuredProduct(config, String(message.productId || ""));
+  const retailer = String(message.retailer || "");
+  if (!product || product.retailer !== retailer) return { ok: false, reason: "product-disabled" };
+  const ownerId = `tab:${sender?.tab?.id ?? "unknown"}`;
+
+  return withTrafficStateLock(async () => {
+    const state = await readTrafficState(config);
+    const result = Traffic.revalidateNavigationSlot(state.retailers[retailer], {
+      now: Date.now(),
+      reservationId: String(message.reservationId || ""),
+      ownerId,
+      productId: product.id
+    });
+    state.retailers[retailer] = result.state;
+    await writeTrafficState(state);
+    return {
+      ok: result.allowed,
+      reason: result.reason,
+      waitMs: result.waitMs,
+      cooldownUntil: result.state.cooldownUntil,
+      lastStatus: result.state.lastStatus
+    };
+  });
+}
+
+async function recordOverload(retailer, status = 0, retryAfter = "") {
+  if (!["target", "walmart", "amazon"].includes(retailer)) {
+    return { ok: false, reason: "unsupported-retailer" };
+  }
+  const config = await discoverConfig(false);
+  const outcome = await withTrafficStateLock(async () => {
+    const state = await readTrafficState(config);
+    const current = state.retailers[retailer] || {};
+    const now = Date.now();
+    if (
+      current.lastSignalAt
+      && now - current.lastSignalAt < OVERLOAD_DEDUPE_MS
+      && (!status || current.lastStatus === status)
+    ) {
+      return { ok: true, deduped: true, cooldownUntil: current.cooldownUntil };
+    }
+    const result = Traffic.applyOverloadSignal(current, {
+      now,
+      defaultCooldownMs: Number(config?.overloadCooldownSeconds || 300) * 1000,
+      retryAfterMs: Traffic.parseRetryAfter(retryAfter, now),
+      status: Number(status || 0)
+    });
+    state.retailers[retailer] = result.state;
+    await writeTrafficState(state);
+    return {
+      ok: true,
+      cooldownUntil: result.cooldownUntil,
+      cooldownMs: result.cooldownMs
+    };
+  });
+  if (outcome.ok && !outcome.deduped) {
+    await postEvent({
+      eventType: "traffic-overload",
+      retailer,
+      reason: "traffic-overload",
+      cooldownUntil: outcome.cooldownUntil,
+      message: `${retailer} traffic cooldown activated.`,
+      timestamp: new Date().toISOString()
+    });
+  }
+  return outcome;
+}
+
+async function recordObservedNavigation(retailer, timestamp = Date.now()) {
+  if (!["target", "walmart", "amazon"].includes(retailer)) return;
+  const config = await discoverConfig(false);
+  await withTrafficStateLock(async () => {
+    const state = await readTrafficState(config);
+    const current = state.retailers[retailer] && typeof state.retailers[retailer] === "object"
+      ? state.retailers[retailer]
+      : {};
+    current.lastNavigationAt = Math.max(Number(current.lastNavigationAt || 0), Number(timestamp || 0));
+    current.reservations ||= {};
+    state.retailers[retailer] = current;
+    await writeTrafficState(state);
+  });
+}
+
+async function syncActiveTrafficCooldowns(config) {
+  if (trafficSyncInFlight) return;
+  trafficSyncInFlight = true;
+  try {
+    const state = await withTrafficStateLock(() => readTrafficState(config));
+    const now = Date.now();
+    for (const [retailer, traffic] of Object.entries(state.retailers)) {
+      if (Number(traffic?.cooldownUntil || 0) <= now) continue;
+      await postEvent({
+        eventType: "traffic-overload",
+        retailer,
+        reason: "traffic-overload",
+        cooldownUntil: traffic.cooldownUntil,
+        message: `${retailer} traffic cooldown remains active.`,
+        timestamp: new Date().toISOString()
+      });
+    }
+  } finally {
+    trafficSyncInFlight = false;
+  }
 }
 
 async function discoverConfig(force = false) {
@@ -83,6 +273,7 @@ async function discoverConfig(force = false) {
       cached = { ...config, baseUrl, fetchedAt: Date.now() };
       await setBadge(cached);
       await applyFastMode(cached.fastMode).catch(() => {});
+      void syncActiveTrafficCooldowns(cached).catch(() => {});
       return cached;
     } catch {
       // Try the next local port.
@@ -133,6 +324,7 @@ function productSignature(config, product) {
     config.automationRunId || "run",
     product.id,
     product.maxPrice,
+    product.maxOrderTotal,
     product.quantity,
     product.action
   ].join("|");
@@ -257,6 +449,12 @@ async function handleMessage(message, sender) {
       return completeProduct(String(message.productId || ""));
     case "CART_CONFIRM_SECURITY_CHALLENGE":
       return pauseFastModeForChallenge();
+    case "CART_CONFIRM_RESERVE_NAVIGATION":
+      return reserveNavigation(message, sender);
+    case "CART_CONFIRM_REVALIDATE_NAVIGATION":
+      return revalidateNavigation(message, sender);
+    case "CART_CONFIRM_TRAFFIC_OVERLOAD":
+      return recordOverload(String(message.retailer || ""), Number(message.status || 0), message.retryAfter);
     default:
       return { ok: false, reason: "unsupported-message" };
   }
@@ -267,6 +465,34 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     .then(sendResponse)
     .catch((error) => sendResponse({ ok: false, reason: error.message || "background-error" }));
   return true;
+});
+
+chrome.webRequest.onHeadersReceived.addListener((details) => {
+  if (!Traffic.isOverloadStatus(details.statusCode)) return;
+  const retailer = retailerFromUrl(details.url);
+  if (!retailer) return;
+  const retryAfter = (details.responseHeaders || [])
+    .find((header) => String(header.name || "").toLowerCase() === "retry-after")?.value || "";
+  void recordOverload(retailer, details.statusCode, retryAfter).catch(() => {});
+}, {
+  urls: [
+    "https://*.target.com/*",
+    "https://*.walmart.com/*",
+    "https://*.amazon.com/*"
+  ],
+  types: ["main_frame", "xmlhttprequest"]
+}, ["responseHeaders", "extraHeaders"]);
+
+chrome.webRequest.onBeforeRequest.addListener((details) => {
+  const retailer = retailerFromUrl(details.url);
+  if (retailer) void recordObservedNavigation(retailer, details.timeStamp || Date.now()).catch(() => {});
+}, {
+  urls: [
+    "https://*.target.com/*",
+    "https://*.walmart.com/*",
+    "https://*.amazon.com/*"
+  ],
+  types: ["main_frame"]
 });
 
 chrome.runtime.onInstalled.addListener(() => {

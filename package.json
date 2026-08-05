@@ -1,7 +1,7 @@
 {
   "name": "cart-confirm-desktop",
-  "version": "2.0.0",
-  "description": "A local multi-store first-party buy-list companion for Target, Walmart, and Amazon.",
+  "version": "2.1.0",
+  "description": "A traffic-governed, fail-closed first-party buy-list companion for Target, Walmart, and Amazon.",
   "main": "main.js",
   "author": "Kevin",
   "license": "MIT",
@@ -15,7 +15,8 @@
   },
   "devDependencies": {
     "electron": "43.2.0",
-    "electron-builder": "26.15.7"
+    "electron-builder": "26.15.7",
+    "jsdom": "^26.1.0"
   },
   "build": {
     "appId": "com.kevinyang.cartconfirm",

@@ -1,0 +1,139 @@
+"use strict";
+
+(() => {
+  const OVERLOAD_STATUS_CODES = new Set([429, 502, 503, 504]);
+  const RESERVATION_GRACE_MS = 120_000;
+
+  function finiteTime(value, fallback = 0) {
+    const number = Number(value);
+    return Number.isFinite(number) && number >= 0 ? number : fallback;
+  }
+
+  function cloneState(input = {}) {
+    return {
+      cooldownUntil: finiteTime(input.cooldownUntil),
+      lastNavigationAt: finiteTime(input.lastNavigationAt),
+      overloadCount: Number.isInteger(input.overloadCount) && input.overloadCount >= 0
+        ? input.overloadCount
+        : 0,
+      lastStatus: Number.isInteger(input.lastStatus) ? input.lastStatus : 0,
+      lastSignalAt: finiteTime(input.lastSignalAt),
+      reservations: Object.fromEntries(
+        Object.entries(input.reservations || {}).map(([id, reservation]) => [id, { ...reservation }])
+      )
+    };
+  }
+
+  function pruneReservations(state, now) {
+    for (const [id, reservation] of Object.entries(state.reservations)) {
+      if (!reservation || finiteTime(reservation.allowedAt) + RESERVATION_GRACE_MS < now) {
+        delete state.reservations[id];
+      }
+    }
+    return state;
+  }
+
+  function latestReservedSlot(state, intervalMs) {
+    const reservationTimes = Object.values(state.reservations).map((entry) => finiteTime(entry.allowedAt));
+    return Math.max(
+      state.lastNavigationAt ? state.lastNavigationAt + intervalMs : 0,
+      ...reservationTimes.map((time) => time + intervalMs),
+      0
+    );
+  }
+
+  function reserveNavigationSlot(input, options) {
+    const now = finiteTime(options.now, Date.now());
+    const intervalMs = Math.max(1_000, finiteTime(options.intervalMs, 20_000));
+    const reservationId = String(options.reservationId || "");
+    if (!reservationId) throw new Error("A navigation reservation ID is required.");
+    const state = pruneReservations(cloneState(input), now);
+    const notBefore = finiteTime(options.notBefore, now);
+    const allowedAt = Math.max(
+      now,
+      notBefore,
+      state.cooldownUntil,
+      latestReservedSlot(state, intervalMs)
+    );
+    state.reservations[reservationId] = {
+      allowedAt,
+      ownerId: String(options.ownerId || ""),
+      productId: String(options.productId || ""),
+      intervalMs
+    };
+    return { state, allowedAt, waitMs: Math.max(0, allowedAt - now) };
+  }
+
+  function revalidateNavigationSlot(input, options) {
+    const now = finiteTime(options.now, Date.now());
+    let state = pruneReservations(cloneState(input), now);
+    const reservationId = String(options.reservationId || "");
+    let reservation = state.reservations[reservationId];
+    if (!reservation) return { state, allowed: false, reason: "reservation-missing", waitMs: 0 };
+    if (
+      reservation.ownerId !== String(options.ownerId || "")
+      || reservation.productId !== String(options.productId || "")
+    ) {
+      return { state, allowed: false, reason: "reservation-mismatch", waitMs: 0 };
+    }
+
+    if (state.cooldownUntil > reservation.allowedAt) {
+      delete state.reservations[reservationId];
+      const shifted = reserveNavigationSlot(state, {
+        now,
+        notBefore: state.cooldownUntil,
+        intervalMs: reservation.intervalMs,
+        reservationId,
+        ownerId: reservation.ownerId,
+        productId: reservation.productId
+      });
+      state = shifted.state;
+      reservation = state.reservations[reservationId];
+    }
+
+    if (now < reservation.allowedAt) {
+      return { state, allowed: false, reason: "not-ready", waitMs: reservation.allowedAt - now };
+    }
+
+    delete state.reservations[reservationId];
+    state.lastNavigationAt = now;
+    return { state, allowed: true, reason: "allowed", waitMs: 0 };
+  }
+
+  function applyOverloadSignal(input, options) {
+    const now = finiteTime(options.now, Date.now());
+    const state = pruneReservations(cloneState(input), now);
+    const defaultCooldownMs = Math.max(60_000, finiteTime(options.defaultCooldownMs, 300_000));
+    const retryAfterMs = finiteTime(options.retryAfterMs);
+    const cooldownMs = Math.max(defaultCooldownMs, retryAfterMs);
+    state.cooldownUntil = Math.max(state.cooldownUntil, now + cooldownMs);
+    state.overloadCount += 1;
+    state.lastStatus = Number.isInteger(options.status) ? options.status : 0;
+    state.lastSignalAt = now;
+    return { state, cooldownUntil: state.cooldownUntil, cooldownMs: state.cooldownUntil - now };
+  }
+
+  function parseRetryAfter(value, now = Date.now()) {
+    const text = String(value || "").trim();
+    if (!text) return 0;
+    if (/^\d+$/.test(text)) return Math.min(86_400_000, Number(text) * 1000);
+    const parsed = Date.parse(text);
+    return Number.isFinite(parsed) ? Math.min(86_400_000, Math.max(0, parsed - now)) : 0;
+  }
+
+  function isOverloadStatus(status) {
+    return OVERLOAD_STATUS_CODES.has(Number(status));
+  }
+
+  const api = Object.freeze({
+    OVERLOAD_STATUS_CODES,
+    applyOverloadSignal,
+    isOverloadStatus,
+    parseRetryAfter,
+    reserveNavigationSlot,
+    revalidateNavigationSlot
+  });
+
+  globalThis.CartConfirmTraffic = api;
+  if (typeof module !== "undefined" && module.exports) module.exports = api;
+})();

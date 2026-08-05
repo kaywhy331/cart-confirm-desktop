@@ -24,6 +24,9 @@ const {
   reduceStatus,
   validateEvent
 } = require("./lib/core");
+const { migrateStoredSettings } = require("./lib/migrations");
+const { isAllowedExtensionOrigin } = require("./lib/extension-identity");
+const { createStoreOpenQueue } = require("./lib/store-open-queue");
 const {
   RETAILERS,
   parseRetailUrl,
@@ -47,6 +50,11 @@ let scheduledOpenKey = "";
 let schedulerTimer = null;
 let configVersion = 1;
 const lastNotificationAt = new Map();
+const storeOverloadUntil = new Map();
+const storeOpenQueue = createStoreOpenQueue({
+  intervalMs: () => Number(settings?.storeNavigationIntervalSeconds || 20) * 1000,
+  notBefore: (retailer) => storeOverloadUntil.get(retailer) || 0
+});
 
 function settingsPath() {
   return path.join(app.getPath("userData"), "settings.json");
@@ -67,7 +75,7 @@ function loadSettings() {
   }
 
   try {
-    settings = normalizeSettings(stored, DEFAULT_SETTINGS);
+    settings = normalizeSettings(migrateStoredSettings(stored), DEFAULT_SETTINGS);
   } catch {
     settings = normalizeSettings(DEFAULT_SETTINGS, DEFAULT_SETTINGS);
   }
@@ -98,6 +106,8 @@ function publicSettings() {
     automationRunId: settings.automationRunId,
     fastMode: settings.fastMode,
     retryIntervalSeconds: settings.retryIntervalSeconds,
+    storeNavigationIntervalSeconds: settings.storeNavigationIntervalSeconds,
+    overloadCooldownSeconds: settings.overloadCooldownSeconds,
     scheduledOpenEnabled: settings.scheduledOpenEnabled,
     scheduledOpenAt: settings.scheduledOpenAt,
     scheduledRetailer: settings.scheduledRetailer,
@@ -155,8 +165,8 @@ function notifyOnce(key, title, body, force = false) {
 }
 
 async function openExternalRetailer(url) {
-  const { parsed } = parseRetailUrl(url);
-  await shell.openExternal(parsed.href, { activate: true });
+  const { parsed, retailer } = parseRetailUrl(url);
+  await storeOpenQueue.enqueue(retailer, () => shell.openExternal(parsed.href, { activate: true }));
 }
 
 function findProduct(productId) {
@@ -184,12 +194,7 @@ async function openBuyList(retailer = "") {
       : "Enable at least one product first.");
   }
 
-  for (const [index, product] of enabledProducts.entries()) {
-    await openExternalRetailer(product.productUrl);
-    if (index < enabledProducts.length - 1) {
-      await new Promise((resolve) => setTimeout(resolve, 350));
-    }
-  }
+  await Promise.all(enabledProducts.map((product) => openExternalRetailer(product.productUrl)));
   return enabledProducts.length;
 }
 
@@ -202,6 +207,11 @@ async function openStorePage(retailer, type) {
 
 function validateProductEvent(event) {
   if (event.eventType === "heartbeat") return { event, product: null };
+  if (event.eventType === "traffic-overload") {
+    return event.retailer && event.cooldownUntil
+      ? { event, product: null }
+      : { event, product: null, error: "invalid-traffic-signal" };
+  }
 
   const product = matchingProduct(settings.products, event);
   if (!product) return { event, product: null, error: "product-mismatch" };
@@ -236,6 +246,15 @@ function validateProductEvent(event) {
 }
 
 function sendEventNotification(event, product) {
+  if (event.eventType === "traffic-overload") {
+    notifyOnce(
+      `${event.retailer}:traffic-overload`,
+      `${retailerLabel(event.retailer)} traffic cooldown`,
+      "Queued and automatic page openings for this store are paused.",
+      true
+    );
+    return;
+  }
   if (!product) return;
   const store = retailerLabel(product.retailer);
   const key = `${product.id}:${event.eventType}:${event.reason || ""}`;
@@ -263,6 +282,14 @@ function handleCompanionEvent(rawEvent) {
   if (result.error) return { accepted: false, reason: result.error };
 
   const { event, product } = result;
+  if (event.eventType === "traffic-overload") {
+    const previousCooldown = storeOverloadUntil.get(event.retailer) || 0;
+    if (event.cooldownUntil <= previousCooldown) return { accepted: true, deduped: true };
+    storeOverloadUntil.set(
+      event.retailer,
+      event.cooldownUntil
+    );
+  }
   status = reduceStatus(status, event);
   if (product) {
     const current = productStatuses[product.id] || createProductStatus(product);
@@ -279,12 +306,11 @@ function handleCompanionEvent(rawEvent) {
 
 function corsOrigin(req) {
   const origin = String(req.headers.origin || "");
-  return origin.startsWith("chrome-extension://") ? origin : "";
+  return isAllowedExtensionOrigin(origin) ? origin : "";
 }
 
 function hasAllowedLocalOrigin(req) {
-  const origin = String(req.headers.origin || "");
-  return origin === "" || origin.startsWith("chrome-extension://");
+  return isAllowedExtensionOrigin(req.headers.origin);
 }
 
 function writeJson(req, res, statusCode, payload) {
@@ -306,6 +332,8 @@ function extensionConfig() {
     automationRunId: settings.automationRunId,
     fastMode: settings.fastMode,
     retryIntervalSeconds: settings.retryIntervalSeconds,
+    storeNavigationIntervalSeconds: settings.storeNavigationIntervalSeconds,
+    overloadCooldownSeconds: settings.overloadCooldownSeconds,
     firstPartyOnly: true,
     token: settings.companionToken,
     configVersion,

@@ -4,6 +4,8 @@ const elements = {
   automationEnabled: document.getElementById("automationEnabled"),
   fastMode: document.getElementById("fastMode"),
   retryIntervalSeconds: document.getElementById("retryIntervalSeconds"),
+  storeNavigationIntervalSeconds: document.getElementById("storeNavigationIntervalSeconds"),
+  overloadCooldownSeconds: document.getElementById("overloadCooldownSeconds"),
   scheduledOpenEnabled: document.getElementById("scheduledOpenEnabled"),
   scheduledRetailer: document.getElementById("scheduledRetailer"),
   scheduledOpenAt: document.getElementById("scheduledOpenAt"),
@@ -36,6 +38,20 @@ const elements = {
 
 const STORE_LABELS = Object.freeze({ target: "Target", walmart: "Walmart", amazon: "Amazon" });
 const SKU_LABELS = Object.freeze({ target: "TCIN", walmart: "Walmart item ID", amazon: "ASIN" });
+const BLOCKING_REASONS = new Set([
+  "cart-unverified",
+  "manual-action-required",
+  "over-price",
+  "over-total",
+  "price-unavailable",
+  "quantity-unavailable",
+  "seller-unverified",
+  "store-error",
+  "third-party",
+  "total-unavailable",
+  "traffic-overload",
+  "unmatched-product"
+]);
 let currentSnapshot = null;
 let messageTimer = null;
 
@@ -137,6 +153,7 @@ function createProductRow(product = {}) {
   field(row, "productUrl").value = product.productUrl || "";
   field(row, "sku").value = product.sku || "";
   field(row, "maxPrice").value = Number(product.maxPrice || 0).toFixed(2);
+  field(row, "maxOrderTotal").value = Number(product.maxOrderTotal || 0).toFixed(2);
   field(row, "quantity").value = product.quantity || 1;
   field(row, "action").value = product.action || "cart";
   field(row, "enabled").checked = product.enabled !== false;
@@ -197,6 +214,8 @@ function populateForm(settings) {
   elements.automationEnabled.checked = settings.automationEnabled;
   elements.fastMode.checked = settings.fastMode;
   elements.retryIntervalSeconds.value = settings.retryIntervalSeconds;
+  elements.storeNavigationIntervalSeconds.value = settings.storeNavigationIntervalSeconds;
+  elements.overloadCooldownSeconds.value = settings.overloadCooldownSeconds;
   elements.scheduledOpenEnabled.checked = settings.scheduledOpenEnabled;
   elements.scheduledRetailer.value = settings.scheduledRetailer || "target";
   elements.scheduledOpenAt.value = toLocalInputValue(settings.scheduledOpenAt);
@@ -214,6 +233,7 @@ function collectProducts() {
       productUrl: field(row, "productUrl").value.trim(),
       sku: retailer === "amazon" ? sku.toUpperCase() : sku,
       maxPrice: Number(field(row, "maxPrice").value),
+      maxOrderTotal: Number(field(row, "maxOrderTotal").value),
       quantity: Number(field(row, "quantity").value),
       action: field(row, "action").value,
       enabled: field(row, "enabled").checked
@@ -230,6 +250,14 @@ function validateVisibleInputs() {
   }
   if (!elements.retryIntervalSeconds.checkValidity()) {
     elements.retryIntervalSeconds.reportValidity();
+    return false;
+  }
+  if (!elements.storeNavigationIntervalSeconds.checkValidity()) {
+    elements.storeNavigationIntervalSeconds.reportValidity();
+    return false;
+  }
+  if (!elements.overloadCooldownSeconds.checkValidity()) {
+    elements.overloadCooldownSeconds.reportValidity();
     return false;
   }
   if (elements.scheduledOpenEnabled.checked && !elements.scheduledOpenAt.value) {
@@ -249,6 +277,8 @@ function formSettings() {
     automationEnabled: elements.automationEnabled.checked,
     fastMode: elements.fastMode.checked,
     retryIntervalSeconds: Number(elements.retryIntervalSeconds.value),
+    storeNavigationIntervalSeconds: Number(elements.storeNavigationIntervalSeconds.value),
+    overloadCooldownSeconds: Number(elements.overloadCooldownSeconds.value),
     scheduledOpenEnabled: elements.scheduledOpenEnabled.checked,
     scheduledRetailer: elements.scheduledRetailer.value,
     scheduledOpenAt
@@ -272,7 +302,7 @@ function updateBoundary() {
     ? "Automation is armed."
     : "Automation is disarmed.";
   elements.boundaryText.textContent = armed
-    ? `${checkoutCount} enabled product${checkoutCount === 1 ? "" : "s"} may submit an order after every seller, price, stock, SKU, and quantity check passes.`
+    ? `${checkoutCount} enabled product${checkoutCount === 1 ? "" : "s"} may submit an order only after complete-cart, seller, unit-price, quantity, and final-total checks pass.`
     : "Save your buy list, verify every cap and quantity, then explicitly arm it when ready.";
 }
 
@@ -318,8 +348,9 @@ function updateCountdown() {
 
 function productStateClass(product, status) {
   if (!product.enabled) return "disabled";
-  if (status.order === "confirmed" || status.eligible) return "good";
-  if (["third-party", "over-price", "seller-unverified", "store-error"].includes(status.reason)) return "bad";
+  if (status.order === "confirmed") return "good";
+  if (BLOCKING_REASONS.has(status.reason)) return "bad";
+  if (status.eligible) return "good";
   if (status.cart !== "not-confirmed" || status.checkout !== "not-started") return "waiting";
   return "";
 }
@@ -327,6 +358,7 @@ function productStateClass(product, status) {
 function stateLabel(product, status) {
   if (!product.enabled) return "Disabled";
   if (status.order === "confirmed") return "Order confirmed";
+  if (BLOCKING_REASONS.has(status.reason)) return status.reason.replaceAll("-", " ");
   if (status.checkout === "reached") return "Checkout reached";
   if (status.cart === "confirmed") return "Cart confirmed";
   if (status.eligible) return "Eligible offer";
@@ -352,6 +384,7 @@ function renderProductStatuses(products, statuses) {
       eligible: false,
       reason: "",
       observedPrice: null,
+      observedOrderTotal: null,
       seller: "",
       firstParty: false,
       cart: "not-confirmed",
@@ -386,6 +419,9 @@ function renderProductStatuses(products, statuses) {
     metrics.className = "status-metrics";
     metrics.append(
       statusMetric("Observed / cap", `${money(status.observedPrice)} / ${money(product.maxPrice)}`, status.eligible ? "good" : ""),
+      statusMetric("Final total / cap", product.action === "checkout"
+        ? `${money(status.observedOrderTotal)} / ${money(product.maxOrderTotal)}`
+        : "Add only"),
       statusMetric("Seller", status.firstParty ? `${status.seller || STORE_LABELS[product.retailer]} ✓` : status.seller || "Unverified", status.firstParty ? "good" : ""),
       statusMetric("Availability", status.availability || "unknown"),
       statusMetric("Quantity", String(product.quantity)),
@@ -419,6 +455,7 @@ function renderEvents(events) {
     const detail = document.createElement("small");
     const parts = [STORE_LABELS[event.retailer], event.sku, eventName(event.eventType)].filter(Boolean);
     if (event.price !== undefined) parts.push(money(event.price));
+    if (event.orderTotal !== undefined) parts.push(`total ${money(event.orderTotal)}`);
     if (event.reason) parts.push(event.reason.replaceAll("-", " "));
     if (Number.isInteger(event.quantity)) parts.push(`qty ${event.quantity}`);
     if (Number.isInteger(event.attempt)) parts.push(`attempt ${event.attempt}`);
@@ -467,6 +504,7 @@ elements.addProductButton.addEventListener("click", () => {
   elements.productList.append(createProductRow({
     retailer: elements.storeShortcut.value,
     maxPrice: 0,
+    maxOrderTotal: 0,
     quantity: 1,
     action: "cart",
     enabled: true

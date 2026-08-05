@@ -2,7 +2,8 @@
 
 (() => {
   const Retailers = globalThis.CartConfirmRetailers;
-  if (!Retailers) return;
+  const Safety = globalThis.CartConfirmSafety;
+  if (!Retailers || !Safety) return;
 
   const ACTIVE_PRODUCT_KEY = "cartConfirmActiveProductId";
   const PROOF_KEY = "cartConfirmVerifiedOffer";
@@ -10,7 +11,7 @@
   const SUBMITTED_PREFIX = "cartConfirmSubmittedAt:";
   const CONFIG_REFRESH_MS = 5_000;
   const HEARTBEAT_MS = 10_000;
-  const PROOF_MAX_AGE_MS = 20 * 60_000;
+  const PROOF_MAX_AGE_MS = Safety.CART_PROOF_MAX_AGE_MS;
   const SUBMIT_SETTLE_MS = 30_000;
   const seen = new Map();
   let config = null;
@@ -113,16 +114,19 @@
     }
   }
 
-  function saveProof(product, offer, quantityConfirmed = false) {
-    const existing = proofFor(product);
+  function saveProof(product, offer, source = "product", quantityConfirmed = false) {
+    const existing = source === "cart" ? proofFor(product) : null;
+    const now = Date.now();
     const proof = {
       productId: product.id,
       runId: config?.automationRunId || "",
       price: Number.isFinite(offer?.price) ? offer.price : existing?.price,
       seller: offer?.seller || existing?.seller || "",
       firstParty: offer?.firstParty === true || existing?.firstParty === true,
-      quantityConfirmed: quantityConfirmed || existing?.quantityConfirmed === true,
-      verifiedAt: Date.now()
+      quantityConfirmed: source === "cart" && quantityConfirmed === true,
+      source,
+      cartConfirmedAt: source === "cart" ? now : 0,
+      verifiedAt: now
     };
     sessionStorage.setItem(PROOF_KEY, JSON.stringify(proof));
     return proof;
@@ -177,30 +181,6 @@
     return { eligible: true, reason: "eligible" };
   }
 
-  function effectiveLineOffer(product, line) {
-    if (!line) return { ok: false, reason: "unmatched-product" };
-    const proof = proofFor(product);
-    if (line.seller && line.firstParty !== true) return { ok: false, reason: "third-party" };
-    const firstParty = line.firstParty === true || proof?.firstParty === true;
-    const seller = line.seller || proof?.seller || "";
-    if (!firstParty) return { ok: false, reason: seller ? "third-party" : "seller-unverified" };
-
-    let price = line.price;
-    if (line.quantity > 1 && proof?.price && price > product.maxPrice) {
-      const expectedTotal = Math.round(proof.price * line.quantity * 100) / 100;
-      if (Math.abs(price - expectedTotal) <= 0.02) price = proof.price;
-    }
-    if (price === null || price === undefined) price = proof?.price;
-    if (price === null || price === undefined) return { ok: false, reason: "price-unavailable" };
-    if (price > product.maxPrice) return { ok: false, reason: "over-price", price, seller, firstParty };
-    return { ok: true, price, seller, firstParty, proof };
-  }
-
-  function extraCartItems(product) {
-    const ids = adapter.cartProductIds(document);
-    return ids.filter((sku) => sku !== product.sku);
-  }
-
   async function scheduleRetry(product, message, destination = "reload", errorBackoff = false) {
     if (!config?.automationEnabled || !product.enabled || retryTimer) return;
     const state = await productAutomationState(product);
@@ -211,14 +191,41 @@
     const multiplier = errorBackoff ? Math.min(8, 2 ** Math.min(3, Math.floor((attempt - 1) / 3))) : Math.min(3, 1 + Math.floor(attempt / 20));
     const jitter = Math.floor(Math.random() * Math.max(1, baseSeconds * 0.2));
     const delayMs = (baseSeconds * multiplier + jitter) * 1000;
+    const reservationId = `${config.automationRunId || "run"}:${product.id}:${attempt}:${Date.now()}`;
+    const reservation = await runtimeMessage({
+      type: "CART_CONFIRM_RESERVE_NAVIGATION",
+      retailer,
+      productId: product.id,
+      reservationId,
+      notBefore: Date.now() + delayMs
+    });
+    if (!reservation.ok) {
+      await send("automation-blocked", product, {
+        reason: "traffic-overload",
+        message: "A safe navigation slot could not be reserved; automatic navigation is paused."
+      }, `traffic-reservation:${product.id}:${attempt}`, 15_000);
+      return;
+    }
     await send("retry-scheduled", product, {
       attempt,
       reason: "retrying",
       message
     }, `retry:${product.id}:${attempt}`, 0);
 
-    retryTimer = setTimeout(async () => {
+    const navigateWhenAllowed = async () => {
       retryTimer = null;
+      const traffic = await runtimeMessage({
+        type: "CART_CONFIRM_REVALIDATE_NAVIGATION",
+        retailer,
+        productId: product.id,
+        reservationId
+      });
+      if (!traffic.ok) {
+        if (traffic.reason === "not-ready" && traffic.waitMs > 0) {
+          retryTimer = setTimeout(navigateWhenAllowed, traffic.waitMs);
+        }
+        return;
+      }
       const nextConfig = await requestConfig(true);
       if (!nextConfig?.automationEnabled) return;
       config = nextConfig;
@@ -227,7 +234,8 @@
       if (destination === "product") location.assign(product.productUrl);
       else if (destination === "cart") location.assign(adapter.cartUrl);
       else location.reload();
-    }, delayMs);
+    };
+    retryTimer = setTimeout(navigateWhenAllowed, reservation.waitMs);
   }
 
   async function clickAction(element) {
@@ -261,14 +269,14 @@
       select.dispatchEvent(new Event("input", { bubbles: true }));
       select.dispatchEvent(new Event("change", { bubbles: true }));
       await sleep(900);
-      return { ok: Number.parseInt(select.value, 10) === desired, pending: true, reason: "quantity-unavailable" };
+      return { ok: false, pending: true, reason: "quantity-unavailable" };
     }
 
     if (input) {
       setNativeValue(input, String(desired));
       input.blur?.();
       await sleep(900);
-      return { ok: Number.parseInt(input.value, 10) === desired, pending: true, reason: "quantity-unavailable" };
+      return { ok: false, pending: true, reason: "quantity-unavailable" };
     }
 
     if (Number.isInteger(line.quantity) && line.quantity < desired && increase) {
@@ -297,14 +305,33 @@
 
   async function handleConfirmation(product) {
     if (!adapter.orderConfirmed(document)) return false;
+    const orderTotal = adapter.orderTotal(document);
     await send("order-confirmed", product, {
-      attempt: currentAttempt(product)
+      attempt: currentAttempt(product),
+      orderTotal: orderTotal === null ? undefined : orderTotal
     }, `order-confirmed:${product.id}`, Number.MAX_SAFE_INTEGER);
     await completeProduct(product);
     return true;
   }
 
   async function handleProductPage(product) {
+    const error = adapter.storeError(document);
+    if (error) {
+      if (error === "traffic-overload") {
+        await runtimeMessage({ type: "CART_CONFIRM_TRAFFIC_OVERLOAD", retailer });
+      }
+      await send("store-error", product, {
+        attempt: currentAttempt(product),
+        reason: error,
+        message: error === "traffic-overload"
+          ? `${adapter.label} is overloaded. Automatic traffic is cooling down before another request.`
+          : "The store returned an error on the product page."
+      }, `product-error:${product.id}:${error}`, 10_000);
+      if (config.automationEnabled) {
+        await scheduleRetry(product, `Waiting for ${adapter.label} to recover.`, "reload", true);
+      }
+      return;
+    }
     const offer = adapter.offer(document, product);
     const result = eligibility(product, offer);
     await send("availability", product, {
@@ -352,7 +379,7 @@
     }
 
     setActiveProduct(product);
-    saveProof(product, offer);
+    saveProof(product, offer, "product");
     const attempt = nextAttempt(product);
     const clicked = await clickAction(offer.addButton);
     if (!clicked) {
@@ -381,6 +408,9 @@
   async function handleCartPage(product) {
     const error = adapter.storeError(document);
     if (error) {
+      if (error === "traffic-overload") {
+        await runtimeMessage({ type: "CART_CONFIRM_TRAFFIC_OVERLOAD", retailer });
+      }
       await send("store-error", product, {
         attempt: currentAttempt(product),
         reason: error,
@@ -404,7 +434,7 @@
       return;
     }
 
-    const safeLine = effectiveLineOffer(product, line);
+    const safeLine = Safety.effectiveLineOffer(product, line);
     if (!safeLine.ok) {
       await send("automation-blocked", product, {
         price: safeLine.price,
@@ -434,7 +464,6 @@
       return;
     }
 
-    saveProof(product, safeLine, true);
     await send("quantity-updated", product, {
       quantity: product.quantity,
       price: safeLine.price,
@@ -458,13 +487,17 @@
       return;
     }
 
-    if (extraCartItems(product).length) {
+    const cartSafety = Safety.verifySingleProductCart(product, adapter.cartInventory(document));
+    if (!cartSafety.ok) {
       await send("automation-blocked", product, {
-        reason: "manual-action-required",
-        message: "Checkout stopped because this store cart contains another product. Remove or purchase it manually first."
-      }, `extra-cart-items:${product.id}`, 30_000);
+        reason: cartSafety.reason,
+        message: cartSafety.reason === "cart-unverified"
+          ? "Checkout stopped because the complete cart inventory could not be verified."
+          : "Checkout stopped because this store cart contains another product or duplicate line. Remove or purchase it manually first."
+      }, `cart-scope:${product.id}:${cartSafety.reason}`, 30_000);
       return;
     }
+    saveProof(product, safeLine, "cart", true);
 
     const claim = await claimProduct(product);
     if (!claim.ok) return;
@@ -492,6 +525,9 @@
 
     const error = adapter.storeError(document);
     if (error) {
+      if (error === "traffic-overload") {
+        await runtimeMessage({ type: "CART_CONFIRM_TRAFFIC_OVERLOAD", retailer });
+      }
       sessionStorage.removeItem(submittedKey(product));
       await send("store-error", product, {
         attempt: currentAttempt(product),
@@ -504,18 +540,32 @@
       return;
     }
 
+    const inventory = adapter.cartInventory(document);
     const line = adapter.findLine(document, product);
-    const safeLine = effectiveLineOffer(product, line);
     const proof = proofFor(product);
-    if (!safeLine.ok || (!line?.quantity && !proof?.quantityConfirmed) || (line?.quantity && line.quantity !== product.quantity)) {
+    const orderTotal = adapter.orderTotal(document);
+    const review = Safety.checkoutSafety({
+      product,
+      inventory,
+      line,
+      proof,
+      orderTotal,
+      now: Date.now()
+    });
+    if (!review.ok) {
       await send("automation-blocked", product, {
-        price: safeLine.price,
-        seller: safeLine.seller,
-        firstParty: safeLine.firstParty,
+        price: review.price,
+        orderTotal: orderTotal === null ? undefined : orderTotal,
+        seller: review.seller,
+        firstParty: review.firstParty,
         eligible: false,
-        reason: safeLine.ok ? "quantity-unavailable" : safeLine.reason,
-        message: "Final order review could not re-verify the exact SKU, first-party offer, unit cap, and quantity."
-      }, `review-blocked:${product.id}:${safeLine.reason || "quantity"}`, 20_000);
+        reason: review.reason,
+        message: review.reason === "over-total"
+          ? `Final order total is above the $${product.maxOrderTotal.toFixed(2)} cap.`
+          : review.reason === "total-unavailable"
+            ? "Final order review did not expose a readable order total."
+            : "Final order review could not re-verify the complete cart, exact SKU, first-party offer, unit cap, and quantity."
+      }, `review-blocked:${product.id}:${review.reason}`, 20_000);
       return;
     }
 
@@ -541,8 +591,9 @@
       await send("order-submit-clicked", product, {
         attempt,
         quantity: product.quantity,
-        price: safeLine.price,
-        seller: safeLine.seller,
+        price: review.price,
+        orderTotal: review.orderTotal,
+        seller: review.seller,
         firstParty: true,
         eligible: true,
         reason: "eligible"

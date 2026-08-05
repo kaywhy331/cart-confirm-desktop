@@ -6,7 +6,7 @@
       label: "Target",
       hosts: ["target.com", "www.target.com"],
       cartUrl: "https://www.target.com/cart",
-      firstPartyPattern: /(?:sold|shipped|fulfilled)(?:\s+and\s+(?:sold|shipped|fulfilled))?\s+by\s+target(?:\.com)?|sold\s*&\s*shipped\s+by\s+target/i
+      firstPartyPattern: /sold(?:\s+(?:and|&)\s+shipped)?\s+by\s+target(?:\.com)?/i
     }),
     walmart: Object.freeze({
       label: "Walmart",
@@ -244,6 +244,70 @@
     return unique(ids);
   }
 
+  function normalizedEmbeddedSku(retailer, value) {
+    const text = String(value || "").trim().toUpperCase();
+    if (retailer === "amazon") return /^[A-Z0-9]{10}$/.test(text) ? text : "";
+    return /^\d{5,20}$/.test(text) ? text : "";
+  }
+
+  function skuFromContainer(container, retailer) {
+    const attributeNames = {
+      target: ["data-tcin"],
+      walmart: ["data-us-item-id", "data-item-id"],
+      amazon: ["data-asin"]
+    }[retailer] || [];
+    const ids = [];
+    const elements = [container, ...queryAll(container, attributeNames.map((name) => `[${name}]`))];
+    for (const element of elements) {
+      for (const name of attributeNames) {
+        ids.push(normalizedEmbeddedSku(retailer, element?.getAttribute?.(name)));
+      }
+    }
+    for (const link of queryAll(container, ["a[href]"])) {
+      ids.push(extractSkuFromUrl(retailer, link.href || link.getAttribute?.("href")));
+    }
+    const found = unique(ids);
+    return found.length === 1 ? found[0] : "";
+  }
+
+  function hasLineControls(container) {
+    return Boolean(container?.querySelector?.(
+      "select, input[aria-label*='quantity' i], button[aria-label*='quantity' i], button[aria-label*='remove' i], [data-action*='delete' i], [data-testid*='remove' i]"
+    ));
+  }
+
+  function cartInventory(doc, retailer, selectors) {
+    const candidates = queryAll(doc, selectors).filter((container) => (
+      hasLineControls(container)
+      || Boolean(container.querySelector?.("a[href]"))
+      || Boolean(skuFromContainer(container, retailer))
+    ));
+    const containers = candidates.filter((candidate) => !candidates.some((other) => (
+      other !== candidate && candidate.contains?.(other)
+    )));
+    const items = containers.map((container) => ({
+      sku: skuFromContainer(container, retailer),
+      container
+    }));
+    return {
+      complete: items.length > 0 && items.every((item) => Boolean(item.sku)),
+      ids: items.map((item) => item.sku).filter(Boolean),
+      items
+    };
+  }
+
+  function readOrderTotal(doc, selectors) {
+    for (const element of queryAll(doc, selectors)) {
+      const raw = element.getAttribute?.("content")
+        || element.getAttribute?.("data-price")
+        || element.getAttribute?.("value")
+        || textOf(element);
+      const total = parsePrice(raw);
+      if (total !== null) return total;
+    }
+    return null;
+  }
+
   function unique(values) {
     return [...new Set(values.filter(Boolean))];
   }
@@ -261,6 +325,9 @@
 
   function storeError(doc) {
     const text = pageText(doc, 160_000);
+    if (/too many requests|temporarily unavailable|service unavailable|site (?:is )?(?:busy|overloaded)|experiencing (?:high|heavy) (?:traffic|demand)|unusual traffic|please try again later|bad gateway|gateway time-?out/i.test(text)) {
+      return "traffic-overload";
+    }
     if (/item (?:is|was|has become) out of stock|no longer available|sold out|unavailable for purchase|removed from (?:your )?cart/i.test(text)) {
       return "out-of-stock";
     }
@@ -307,7 +374,24 @@
         ]);
       },
       cartProductIds(doc) {
-        return cartIdsFromLinks(doc, "target", ["main a[href*='/A-']", "main a[href*='-A-']"]);
+        return this.cartInventory(doc).ids;
+      },
+      cartInventory(doc) {
+        return cartInventory(doc, "target", [
+          "[data-test='cart-item']",
+          "[data-test='cartItem']",
+          "[data-testid='cart-item']",
+          "[data-test^='cart-item-']",
+          "[data-test^='cartItem-']"
+        ]);
+      },
+      orderTotal(doc) {
+        return readOrderTotal(doc, [
+          "[data-test='order-summary-total']",
+          "[data-test='orderTotal']",
+          "[data-test='grand-total']",
+          "[data-testid='order-total']"
+        ]);
       },
       checkoutButton(doc) {
         return findAction(doc, ["button[data-test*='checkout' i]", "a[data-test*='checkout' i]"], /(?:ready to |proceed to )?check\s*out/i);
@@ -348,7 +432,23 @@
         ]);
       },
       cartProductIds(doc) {
-        return cartIdsFromLinks(doc, "walmart", ["main a[href*='/ip/']"]);
+        return this.cartInventory(doc).ids;
+      },
+      cartInventory(doc) {
+        return cartInventory(doc, "walmart", [
+          "[data-testid='cart-item']",
+          "[data-automation-id='cart-item']",
+          "[data-testid^='cart-item-']",
+          "[data-automation-id^='cart-item-']"
+        ]);
+      },
+      orderTotal(doc) {
+        return readOrderTotal(doc, [
+          "[data-automation-id='order-total']",
+          "[data-testid='order-total']",
+          "[data-automation-id='summary-grand-total']",
+          "[data-testid='grand-total']"
+        ]);
       },
       checkoutButton(doc) {
         return findAction(doc, ["button[data-automation-id*='checkout' i]", "button[data-testid*='checkout' i]"], /(?:continue|proceed)?\s*(?:to )?checkout/i);
@@ -390,8 +490,23 @@
         ]);
       },
       cartProductIds(doc) {
-        return unique(queryAll(doc, ["#sc-active-cart [data-asin]:not([data-asin=''])"])
-          .map((element) => String(element.getAttribute("data-asin") || "").toUpperCase()));
+        return this.cartInventory(doc).ids;
+      },
+      cartInventory(doc) {
+        return cartInventory(doc, "amazon", [
+          "#sc-active-cart [data-asin]",
+          "#checkout-page-container [data-asin]",
+          "#spc-orders [data-asin]",
+          "[data-testid='order-item'][data-asin]"
+        ]);
+      },
+      orderTotal(doc) {
+        return readOrderTotal(doc, [
+          "#subtotals-marketplace-table .grand-total-price",
+          "#order-summary .grand-total-price",
+          "#summary-amount",
+          "[data-testid='order-total']"
+        ]);
       },
       checkoutButton(doc) {
         return findAction(doc, ["input[name='proceedToRetailCheckout']", "#sc-buy-box-ptc-button input", "#sc-buy-box-ptc-button button"], /proceed to checkout/i);
