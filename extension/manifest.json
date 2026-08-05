@@ -1,0 +1,39 @@
+{
+  "manifest_version": 3,
+  "name": "Cart Confirm Companion",
+  "version": "2.0.0",
+  "description": "Runs a first-party, price-capped buy list on Target, Walmart, and Amazon with explicit local controls.",
+  "permissions": [
+    "storage",
+    "declarativeNetRequest"
+  ],
+  "host_permissions": [
+    "https://target.com/*",
+    "https://www.target.com/*",
+    "https://walmart.com/*",
+    "https://www.walmart.com/*",
+    "https://amazon.com/*",
+    "https://www.amazon.com/*",
+    "http://127.0.0.1/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://target.com/*",
+        "https://www.target.com/*",
+        "https://walmart.com/*",
+        "https://www.walmart.com/*",
+        "https://amazon.com/*",
+        "https://www.amazon.com/*"
+      ],
+      "js": ["retailers.js", "content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_title": "Cart Confirm Companion"
+  }
+}
