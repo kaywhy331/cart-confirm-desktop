@@ -67,9 +67,12 @@ in the workflow, and none should be added.
 
 ## Status as of this checklist
 
-- [ ] `WINDOWS_CERTIFICATE` / `WINDOWS_CERTIFICATE_PASSWORD` secrets — not
-      confirmed present (requires repo-owner access to check; not visible to
-      this session).
+Checked via `gh secret list --repo kaywhy331/cart-confirm-desktop` on 2026-08-06:
+
+- [ ] `WINDOWS_CERTIFICATE` / `WINDOWS_CERTIFICATE_PASSWORD` secrets — **neither
+      is set.** The repo currently has zero Actions secrets configured, so a
+      tag push would fail at the "Require the Windows signing certificate"
+      step even if the tag itself were valid.
 - [ ] Signed, GitHub-verified `v2.2.0` tag — not yet created.
 - [ ] PR #1 review/merge — still open as a draft pending the manual validation
       in `VALIDATION-CHECKLIST.md`.
