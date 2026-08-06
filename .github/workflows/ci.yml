@@ -8,6 +8,16 @@ on:
 permissions:
   contents: read
 
+# push and pull_request both fire for the same commit whenever that commit is
+# also an open PR's head, doubling concurrent runner usage for no benefit.
+# Group by the actual commit SHA (pull_request events report a synthetic merge
+# SHA in github.sha, so the real pushed commit is github.event.pull_request.head.sha)
+# so the second trigger cancels the redundant first one instead of queuing
+# alongside it.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.head.sha || github.sha }}
+  cancel-in-progress: true
+
 jobs:
   verify:
     runs-on: ubuntu-latest
