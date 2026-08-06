@@ -72,5 +72,20 @@ test("Retry-After and overload status parsing are bounded", () => {
   assert.equal(parseRetryAfter("not-a-date", 0), 0);
   assert.equal(isOverloadStatus(429), true);
   assert.equal(isOverloadStatus(503), true);
+  assert.equal(isOverloadStatus(522), true);
   assert.equal(isOverloadStatus(500), false);
+});
+
+test("repeated overload signals escalate and then decay", () => {
+  const first = applyOverloadSignal({}, { now: 1_000, defaultCooldownMs: 60_000, status: 503 });
+  const second = applyOverloadSignal(first.state, { now: 62_000, defaultCooldownMs: 60_000, status: 503 });
+  assert.equal(first.cooldownMs, 60_000);
+  assert.equal(second.cooldownMs, 120_000);
+
+  const decayed = applyOverloadSignal(second.state, {
+    now: second.state.lastSignalAt + 6 * 60 * 60_000 + 1,
+    defaultCooldownMs: 60_000,
+    status: 503
+  });
+  assert.equal(decayed.cooldownMs, 60_000);
 });

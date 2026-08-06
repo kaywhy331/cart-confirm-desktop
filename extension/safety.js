@@ -40,6 +40,9 @@
       || proof.productId !== product.id
       || proof.source !== "cart"
       || proof.quantityConfirmed !== true
+      || proof.inventoryConfirmed !== true
+      || proof.cartLineCount !== 1
+      || proof.cartSku !== product.sku
       || proof.firstParty !== true
       || !Number.isFinite(proof.price)
       || !Number.isFinite(proof.cartConfirmedAt)
@@ -51,6 +54,12 @@
 
   function checkoutSafety(input) {
     const { product, inventory, line, orderTotal } = input;
+    if (product.action === "checkout" && Array.isArray(input.unsafeChoices) && input.unsafeChoices.length) {
+      return { ok: false, reason: "manual-action-required" };
+    }
+    if (product.action === "checkout" && input.fulfillmentMode !== product.fulfillmentMode) {
+      return { ok: false, reason: "fulfillment-unverified" };
+    }
     const cart = verifySingleProductCart(product, inventory);
     if (!cart.ok) return cart;
 

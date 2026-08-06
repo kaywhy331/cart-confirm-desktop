@@ -13,7 +13,7 @@ if errorlevel 1 (
   exit /b 1
 )
 
-call npm install --no-audit --no-fund
+call npm ci --no-fund
 if errorlevel 1 goto :failure
 
 call npm run verify

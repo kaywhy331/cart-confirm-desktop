@@ -1,8 +1,10 @@
 "use strict";
 
 (() => {
-  const OVERLOAD_STATUS_CODES = new Set([429, 502, 503, 504]);
+  const OVERLOAD_STATUS_CODES = new Set([429, 502, 503, 504, 520, 521, 522, 523, 524]);
   const RESERVATION_GRACE_MS = 120_000;
+  const OVERLOAD_DECAY_MS = 6 * 60 * 60_000;
+  const MAX_COOLDOWN_MS = 24 * 60 * 60_000;
 
   function finiteTime(value, fallback = 0) {
     const number = Number(value);
@@ -105,7 +107,9 @@
     const state = pruneReservations(cloneState(input), now);
     const defaultCooldownMs = Math.max(60_000, finiteTime(options.defaultCooldownMs, 300_000));
     const retryAfterMs = finiteTime(options.retryAfterMs);
-    const cooldownMs = Math.max(defaultCooldownMs, retryAfterMs);
+    if (state.lastSignalAt && now - state.lastSignalAt > OVERLOAD_DECAY_MS) state.overloadCount = 0;
+    const escalation = 2 ** Math.min(4, state.overloadCount);
+    const cooldownMs = Math.min(MAX_COOLDOWN_MS, Math.max(defaultCooldownMs * escalation, retryAfterMs));
     state.cooldownUntil = Math.max(state.cooldownUntil, now + cooldownMs);
     state.overloadCount += 1;
     state.lastStatus = Number.isInteger(options.status) ? options.status : 0;
@@ -127,6 +131,8 @@
 
   const api = Object.freeze({
     OVERLOAD_STATUS_CODES,
+    MAX_COOLDOWN_MS,
+    OVERLOAD_DECAY_MS,
     applyOverloadSignal,
     isOverloadStatus,
     parseRetryAfter,

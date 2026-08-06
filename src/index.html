@@ -56,7 +56,7 @@
               <input id="automationEnabled" type="checkbox">
               <span>Arm enabled products</span>
             </span>
-            <small>Add-only rows stop in the cart. Checkout rows may submit an order after all checks pass.</small>
+            <small>Add-only rows stop in the cart. Final-review rows stop before submission. Auto-submit rows can place a real order.</small>
           </label>
 
           <label class="control-card">
@@ -188,7 +188,7 @@
       <section class="panel log-panel">
         <div class="panel-heading">
           <div>
-            <span class="eyebrow">Local session only</span>
+            <span class="eyebrow">Persistent local safety ledger</span>
             <h2>Event log</h2>
           </div>
           <button class="button ghost compact" id="clearEventsButton" type="button">Clear</button>
@@ -248,13 +248,22 @@
           <span>Success action</span>
           <select data-field="action">
             <option value="cart">Add to cart only</option>
-            <option value="checkout">Complete checkout</option>
+            <option value="review">Stop at final review (recommended)</option>
+            <option value="checkout">Submit order automatically (advanced)</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>Required fulfillment</span>
+          <select data-field="fulfillmentMode">
+            <option value="manual">Confirm manually</option>
+            <option value="shipping">Shipping / delivery</option>
+            <option value="pickup">Store pickup</option>
           </select>
         </label>
       </div>
 
       <div class="product-row-footer">
-        <small class="row-help">The unit cap always applies. Checkout also requires a positive final-total cap and a fully verified one-product cart.</small>
+        <small class="row-help">The unit cap always applies. Final review and auto-submit also require a positive total cap and a fully verified one-product cart.</small>
         <div class="row-actions">
           <button class="button ghost compact open-product-row" type="button">Open</button>
           <button class="button ghost compact remove-product-row" type="button">Remove</button>

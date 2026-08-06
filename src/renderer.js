@@ -45,11 +45,15 @@ const BLOCKING_REASONS = new Set([
   "over-total",
   "price-unavailable",
   "quantity-unavailable",
+  "fulfillment-unverified",
   "seller-unverified",
   "store-error",
   "third-party",
   "total-unavailable",
   "traffic-overload",
+  "traffic-budget-exhausted",
+  "attempt-budget-exhausted",
+  "run-expired",
   "unmatched-product"
 ]);
 let currentSnapshot = null;
@@ -113,6 +117,22 @@ function detectRetailer(url) {
 
 function extractSku(retailer, value) {
   const text = String(value || "");
+  if (retailer === "walmart") {
+    try {
+      const url = new URL(text);
+      if (url.pathname === "/qp") {
+        const payload = JSON.parse(url.searchParams.get("qpdata") || "null");
+        const metadata = typeof payload?.customMetadata === "string"
+          ? JSON.parse(payload.customMetadata)
+          : payload?.customMetadata;
+        const item = typeof metadata?.item === "string" ? JSON.parse(metadata.item) : metadata?.item;
+        const itemId = String(item?.itemID || item?.itemId || "");
+        if (/^\d{5,20}$/.test(itemId)) return itemId;
+      }
+    } catch {
+      // Invalid or incomplete queue metadata cannot populate a product identity.
+    }
+  }
   const patterns = {
     target: [/(?:\/|-)A-(\d{6,12})(?:[/?#]|$)/i],
     walmart: [/\/ip\/(?:[^/?#]+\/)?(\d{5,20})(?:[/?#]|$)/i],
@@ -156,6 +176,7 @@ function createProductRow(product = {}) {
   field(row, "maxOrderTotal").value = Number(product.maxOrderTotal || 0).toFixed(2);
   field(row, "quantity").value = product.quantity || 1;
   field(row, "action").value = product.action || "cart";
+  field(row, "fulfillmentMode").value = product.fulfillmentMode || "manual";
   field(row, "enabled").checked = product.enabled !== false;
   updateRowStore(row);
 
@@ -236,6 +257,7 @@ function collectProducts() {
       maxOrderTotal: Number(field(row, "maxOrderTotal").value),
       quantity: Number(field(row, "quantity").value),
       action: field(row, "action").value,
+      fulfillmentMode: field(row, "fulfillmentMode").value,
       enabled: field(row, "enabled").checked
     };
   });
@@ -287,6 +309,17 @@ function formSettings() {
 
 async function saveCurrentForm() {
   if (!validateVisibleInputs()) throw new Error("Fix the highlighted settings before saving.");
+  const autoSubmitCount = [...elements.productList.querySelectorAll(".product-row")]
+    .filter((row) => field(row, "enabled").checked && field(row, "action").value === "checkout")
+    .length;
+  if (
+    elements.automationEnabled.checked
+    && !currentSnapshot?.settings?.automationEnabled
+    && autoSubmitCount > 0
+    && !window.confirm(`${autoSubmitCount} enabled product${autoSubmitCount === 1 ? "" : "s"} may submit a real order. Re-arming starts a new run and can retry an item whose prior submission was uncertain. Verify retailer order history first. Final-review mode is safer. Arm auto-submit anyway?`)
+  ) {
+    throw new Error("Automation was not armed.");
+  }
   const next = await window.cartAssist.saveSettings(formSettings());
   render(next, true);
   return next;
@@ -302,7 +335,7 @@ function updateBoundary() {
     ? "Automation is armed."
     : "Automation is disarmed.";
   elements.boundaryText.textContent = armed
-    ? `${checkoutCount} enabled product${checkoutCount === 1 ? "" : "s"} may submit an order only after complete-cart, seller, unit-price, quantity, and final-total checks pass.`
+    ? `${checkoutCount} advanced auto-submit product${checkoutCount === 1 ? "" : "s"} may place a real order. Final-review rows always stop for your click.`
     : "Save your buy list, verify every cap and quantity, then explicitly arm it when ready.";
 }
 
@@ -349,6 +382,7 @@ function updateCountdown() {
 function productStateClass(product, status) {
   if (!product.enabled) return "disabled";
   if (status.order === "confirmed") return "good";
+  if (status.reason === "retailer-queue" || status.checkout === "review-ready") return "waiting";
   if (BLOCKING_REASONS.has(status.reason)) return "bad";
   if (status.eligible) return "good";
   if (status.cart !== "not-confirmed" || status.checkout !== "not-started") return "waiting";
@@ -358,6 +392,8 @@ function productStateClass(product, status) {
 function stateLabel(product, status) {
   if (!product.enabled) return "Disabled";
   if (status.order === "confirmed") return "Order confirmed";
+  if (status.checkout === "review-ready") return "Final review ready";
+  if (status.reason === "retailer-queue") return "Retailer queue";
   if (BLOCKING_REASONS.has(status.reason)) return status.reason.replaceAll("-", " ");
   if (status.checkout === "reached") return "Checkout reached";
   if (status.cart === "confirmed") return "Cart confirmed";
@@ -419,13 +455,18 @@ function renderProductStatuses(products, statuses) {
     metrics.className = "status-metrics";
     metrics.append(
       statusMetric("Observed / cap", `${money(status.observedPrice)} / ${money(product.maxPrice)}`, status.eligible ? "good" : ""),
-      statusMetric("Final total / cap", product.action === "checkout"
+      statusMetric("Final total / cap", product.action !== "cart"
         ? `${money(status.observedOrderTotal)} / ${money(product.maxOrderTotal)}`
         : "Add only"),
       statusMetric("Seller", status.firstParty ? `${status.seller || STORE_LABELS[product.retailer]} ✓` : status.seller || "Unverified", status.firstParty ? "good" : ""),
       statusMetric("Availability", status.availability || "unknown"),
       statusMetric("Quantity", String(product.quantity)),
-      statusMetric("Action", product.action === "checkout" ? "Complete checkout" : "Add only"),
+      statusMetric("Action", product.action === "checkout"
+        ? "Auto-submit"
+        : product.action === "review" ? "Final review" : "Add only"),
+      statusMetric("Fulfillment", product.fulfillmentMode === "shipping"
+        ? "Shipping"
+        : product.fulfillmentMode === "pickup" ? "Pickup" : "Manual review"),
       statusMetric("Attempts", String(status.attempts || 0))
     );
 
@@ -470,9 +511,20 @@ function renderEvents(events) {
 }
 
 function render(snapshot, populate = false) {
+  const previousSettings = currentSnapshot?.settings;
   currentSnapshot = snapshot;
   const { settings, status, productStatuses, events, app } = snapshot;
   if (populate) populateForm(settings);
+  else if (previousSettings && (
+    previousSettings.scheduledOpenEnabled !== settings.scheduledOpenEnabled
+    || previousSettings.scheduledRetailer !== settings.scheduledRetailer
+    || previousSettings.scheduledOpenAt !== settings.scheduledOpenAt
+  )) {
+    elements.scheduledOpenEnabled.checked = settings.scheduledOpenEnabled;
+    elements.scheduledRetailer.value = settings.scheduledRetailer || "target";
+    elements.scheduledOpenAt.value = toLocalInputValue(settings.scheduledOpenAt);
+    updateScheduleControls();
+  }
 
   elements.connectionPill.classList.toggle("connected", status.companion === "connected");
   elements.connectionText.textContent = status.companion === "connected"
@@ -507,6 +559,7 @@ elements.addProductButton.addEventListener("click", () => {
     maxOrderTotal: 0,
     quantity: 1,
     action: "cart",
+    fulfillmentMode: "manual",
     enabled: true
   }));
   updateBoundary();

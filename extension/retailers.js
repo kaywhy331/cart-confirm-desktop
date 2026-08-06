@@ -77,6 +77,8 @@
 
   function parsePrice(value) {
     const text = String(value || "").replace(/\s+/g, " ");
+    if (/\b(?:CAD|AUD|NZD|MXN|SGD|HKD|TWD)\b/i.test(text)) return null;
+    if (/\b(?!US(?:D)?\b)[A-Z]{1,3}\s*\$/.test(text)) return null;
     const match = text.match(/(?:US\s*)?\$\s*([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]{1,2})?|[0-9]+(?:\.[0-9]{1,2})?)/i);
     if (!match) return null;
     const price = Number(match[1].replaceAll(",", ""));
@@ -106,6 +108,40 @@
     }
   }
 
+  function parseMaybeJson(value) {
+    if (value && typeof value === "object") return value;
+    try {
+      return JSON.parse(String(value || ""));
+    } catch {
+      return null;
+    }
+  }
+
+  function parseWalmartQueue(value) {
+    try {
+      const url = new URL(String(value || ""));
+      if (!["walmart.com", "www.walmart.com"].includes(url.hostname.toLowerCase()) || url.pathname !== "/qp") return null;
+      const payload = parseMaybeJson(url.searchParams.get("qpdata"));
+      const metadata = parseMaybeJson(payload?.customMetadata) || {};
+      const item = parseMaybeJson(metadata.item) || {};
+      const itemId = normalizedEmbeddedSku("walmart", item.itemID || item.itemId);
+      if (!itemId) return null;
+      const refreshSeconds = Number(metadata.nextRefreshRelativeTime);
+      return {
+        itemId,
+        queued: payload?.queued === true,
+        state: String(metadata.state || "pending").toLowerCase().slice(0, 40),
+        soldOut: metadata.soldOut === true,
+        expectedTurn: String(metadata.expectedTurn || "").slice(0, 80),
+        nextRefreshSeconds: Number.isFinite(refreshSeconds) && refreshSeconds >= 0
+          ? Math.min(3600, refreshSeconds)
+          : null
+      };
+    } catch {
+      return null;
+    }
+  }
+
   function extractSkuFromUrl(retailer, value) {
     const text = String(value || "");
     const patterns = {
@@ -113,6 +149,10 @@
       walmart: /\/ip\/(?:[^/?#]+\/)?(\d{5,20})(?:[/?#]|$)/i,
       amazon: /\/(?:dp|gp\/product|gp\/aw\/d)\/([A-Z0-9]{10})(?:[/?#]|$)/i
     };
+    if (retailer === "walmart") {
+      const queued = parseWalmartQueue(text);
+      if (queued) return queued.itemId;
+    }
     const match = text.match(patterns[retailer]);
     if (!match) return "";
     return retailer === "amazon" ? match[1].toUpperCase() : match[1];
@@ -156,6 +196,20 @@
       current = current.parentElement;
     }
     return best || element?.parentElement || null;
+  }
+
+  function closestOfferContainer(element) {
+    let current = element?.parentElement || null;
+    let priceRoot = null;
+    for (let depth = 0; depth < 12 && current; depth += 1) {
+      const text = textOf(current);
+      const hasPrice = /\$\s*\d/.test(text);
+      const hasSeller = /sold|seller|ships from|shipped by/i.test(text);
+      if (hasPrice && text.length < 40_000) priceRoot ||= current;
+      if (hasPrice && hasSeller && text.length < 60_000) return current;
+      current = current.parentElement;
+    }
+    return priceRoot;
   }
 
   function readQuantity(container) {
@@ -276,8 +330,24 @@
     ));
   }
 
+  function removalLineContainers(doc) {
+    return uniqueElements(queryAll(doc, [
+      "button[aria-label*='remove item' i]",
+      "button[title*='remove item' i]",
+      "input[name*='delete' i]",
+      "[data-testid*='remove-item' i]",
+      "[data-automation-id*='remove-item' i]",
+      "[data-action*='delete-item' i]"
+    ]).map((control) => closestLineContainer(control)).filter(Boolean));
+  }
+
+  function uniqueElements(values) {
+    return [...new Set(values.filter(Boolean))];
+  }
+
   function cartInventory(doc, retailer, selectors) {
-    const candidates = queryAll(doc, selectors).filter((container) => (
+    const removalContainers = removalLineContainers(doc);
+    const candidates = uniqueElements([...queryAll(doc, selectors), ...removalContainers]).filter((container) => (
       hasLineControls(container)
       || Boolean(container.querySelector?.("a[href]"))
       || Boolean(skuFromContainer(container, retailer))
@@ -289,8 +359,11 @@
       sku: skuFromContainer(container, retailer),
       container
     }));
+    const removalCountMatches = removalContainers.length === 0 || removalContainers.length === items.length;
     return {
-      complete: items.length > 0 && items.every((item) => Boolean(item.sku)),
+      complete: items.length > 0 && items.every((item) => Boolean(item.sku)) && removalCountMatches,
+      independentlyCounted: removalContainers.length > 0 && removalContainers.length === items.length,
+      removalLineCount: removalContainers.length,
       ids: items.map((item) => item.sku).filter(Boolean),
       items
     };
@@ -317,8 +390,10 @@
     return /captcha|robot check|verify (?:that )?you(?:'|’)re human|verify you are (?:a )?human|press and hold|unusual traffic|security challenge/i.test(text);
   }
 
-  function orderConfirmed(doc) {
-    const text = pageText(doc);
+  function orderConfirmed(doc, selectors) {
+    const roots = queryAll(doc, selectors || []);
+    if (!roots.length) return false;
+    const text = roots.map((root) => textOf(root)).join(" ").slice(0, 100_000);
     return /thanks for your order|thank you for your (?:order|purchase)|your order (?:is|has been) placed|we(?:'|’)ve received your order/i.test(text)
       && /order (?:number|#)|confirmation (?:email|number)|order details/i.test(text);
   }
@@ -337,9 +412,65 @@
     return "";
   }
 
+  function submissionFailure(doc) {
+    const errorRoots = queryAll(doc, [
+      "[role='alert']",
+      "[aria-live='assertive']",
+      "[data-testid*='error' i]",
+      "[data-automation-id*='error' i]",
+      "[id*='error' i]",
+      "[class*='error' i]"
+    ]).filter((root) => !root.hidden && root.getAttribute?.("aria-hidden") !== "true");
+    const page = pageText(doc, 160_000);
+    const text = errorRoots.length
+      ? errorRoots.map((root) => textOf(root)).join(" ").slice(0, 40_000)
+      : page.length <= 5_000 ? page : "";
+    return /\b(?:your\s+)?order\s+(?:was\s+)?not\s+(?:placed|submitted|processed|completed)\b/i.test(text)
+      || /\b(?:unable|could not|couldn(?:'|’)t|weren(?:'|’)t able)\s+to\s+(?:place|submit|process|complete)\s+(?:your\s+)?order\b/i.test(text)
+      || /\b(?:payment|card|payment method)\s+(?:was\s+|has been\s+)?(?:declined|rejected|not authorized)\b/i.test(text);
+  }
+
+  function unsafeOrderChoices(doc) {
+    const pattern = /subscribe|recurring|auto.?deliver|protection plan|warranty|insurance|monthly payments?|installments?|tip|donation|charity|gift wrap/i;
+    const choices = [];
+    for (const control of queryAll(doc, [
+      "input:checked",
+      "option:checked",
+      "[aria-checked='true']",
+      "[aria-pressed='true']"
+    ]).slice(0, 200)) {
+      const region = control.closest?.("label, fieldset, [role='radio'], [role='checkbox'], [data-testid], [data-automation-id]") || control.parentElement || control;
+      const text = `${control.getAttribute?.("name") || ""} ${control.getAttribute?.("value") || ""} ${textOf(region)}`;
+      if (pattern.test(text)) choices.push(text.replace(/\s+/g, " ").trim().slice(0, 160));
+    }
+    return unique(choices);
+  }
+
+  function fulfillmentMode(doc) {
+    const selected = queryAll(doc, [
+      "input:checked",
+      "[aria-checked='true']",
+      "[aria-selected='true']",
+      "[data-selected='true']"
+    ]).slice(0, 200);
+    const modes = new Set();
+    for (const control of selected) {
+      const region = control.closest?.("label, fieldset, [role='radio'], [data-testid], [data-automation-id]") || control.parentElement || control;
+      const text = `${control.getAttribute?.("name") || ""} ${control.getAttribute?.("value") || ""} ${textOf(region)}`;
+      if (/pickup|pick up|collect|curbside/i.test(text)) modes.add("pickup");
+      if (/shipping|ship to|delivery|deliver to/i.test(text)) modes.add("shipping");
+    }
+    return modes.size === 1 ? [...modes][0] : "";
+  }
+
   const adapters = {
     target: {
       ...STORE_CONFIG.target,
+      confirmationSelectors: [
+        "[data-test*='order-confirmation' i]",
+        "[data-testid*='order-confirmation' i]",
+        "[aria-label*='order confirmation' i]"
+      ],
       productMatches(product, url) {
         return extractSkuFromUrl("target", url) === product.sku;
       },
@@ -351,17 +482,18 @@
         return extractSkuFromUrl("target", url) ? "product" : "other";
       },
       offer(doc, product) {
-        const seller = sellerRegion(doc, ["[data-test*='sold-by' i]", "[data-test*='seller' i]", "[data-test*='fulfillment' i]"]);
         const addButton = query(doc, [
           `#addToCartButtonOrTextIdFor${cssEscape(product.sku)}`,
           `button[id$='${cssEscape(product.sku)}'][aria-label*='add to cart' i]`,
           "button[data-test='shipItButton']",
           "button[data-test*='addToCart' i]"
         ]) || findAction(doc, [], /add to cart/i);
+        const offerRoot = closestOfferContainer(addButton);
+        const seller = sellerRegion(offerRoot, ["[data-test*='sold-by' i]", "[data-test*='seller' i]", "[data-test*='fulfillment' i]"]);
         return {
           seller,
           firstParty: isFirstPartyText("target", seller),
-          price: readPrice(doc, ["[data-test='product-price']", "[data-test*='current-price' i]", "meta[itemprop='price']", "[itemprop='price']"]),
+          price: readPrice(offerRoot, ["[data-test='product-price']", "[data-test*='current-price' i]", "meta[itemprop='price']", "[itemprop='price']"]),
           available: isActionable(addButton) && !/sold out|out of stock|unavailable/i.test(textOf(addButton)),
           addButton
         };
@@ -402,24 +534,31 @@
     },
     walmart: {
       ...STORE_CONFIG.walmart,
+      confirmationSelectors: [
+        "[data-automation-id*='order-confirmation' i]",
+        "[data-testid*='order-confirmation' i]",
+        "[aria-label*='order confirmation' i]"
+      ],
       productMatches(product, url) {
         return extractSkuFromUrl("walmart", url) === product.sku;
       },
       pageKind(url) {
         const path = new URL(url).pathname.toLowerCase();
+        if (parseWalmartQueue(url)) return "queue";
         if (/thank.?you|order-confirm|confirmation/.test(path)) return "confirmation";
         if (path.includes("/checkout")) return "checkout";
         if (path.includes("/cart")) return "cart";
         return extractSkuFromUrl("walmart", url) ? "product" : "other";
       },
       offer(doc) {
-        const seller = sellerRegion(doc, ["[data-testid*='seller-fulfilled' i]", "[data-testid*='seller' i]", "[data-automation-id*='seller' i]"]);
         const addButton = query(doc, ["button[data-automation-id='add-to-cart']", "button[data-testid*='add-to-cart' i]"])
           || findAction(doc, [], /add to cart/i);
+        const offerRoot = closestOfferContainer(addButton);
+        const seller = sellerRegion(offerRoot, ["[data-testid*='seller-fulfilled' i]", "[data-testid*='seller' i]", "[data-automation-id*='seller' i]"]);
         return {
           seller,
           firstParty: isFirstPartyText("walmart", seller),
-          price: readPrice(doc, ["[data-automation-id='product-price']", "[data-testid='price-wrap'] [itemprop='price']", "meta[itemprop='price']", "[itemprop='price']"]),
+          price: readPrice(offerRoot, ["[data-automation-id='product-price']", "[data-testid='price-wrap'] [itemprop='price']", "meta[itemprop='price']", "[itemprop='price']"]),
           available: isActionable(addButton) && !/sold out|out of stock|unavailable/i.test(textOf(addButton)),
           addButton
         };
@@ -455,10 +594,19 @@
       },
       submitButton(doc) {
         return findAction(doc, ["button[data-automation-id*='place-order' i]", "button[data-testid*='place-order' i]"], /place (?:my |your )?order/i);
+      },
+      queueState(url) {
+        return parseWalmartQueue(url);
       }
     },
     amazon: {
       ...STORE_CONFIG.amazon,
+      confirmationSelectors: [
+        "#widget-purchaseConfirmationStatus",
+        "#thank-you",
+        "[data-testid*='order-confirmation' i]",
+        "[aria-label*='order confirmation' i]"
+      ],
       productMatches(product, url) {
         return extractSkuFromUrl("amazon", url) === product.sku;
       },
@@ -470,13 +618,14 @@
         return extractSkuFromUrl("amazon", url) ? "product" : "other";
       },
       offer(doc) {
-        const seller = sellerRegion(doc, ["#shipsFromSoldBy_feature_div", "#merchant-info", "#tabular-buybox", "#sellerProfileTriggerId"]);
         const addButton = query(doc, ["#add-to-cart-button", "input[name='submit.add-to-cart']", "#add-to-cart-button-ubb"]);
+        const offerRoot = closestOfferContainer(addButton);
+        const seller = sellerRegion(offerRoot, ["#shipsFromSoldBy_feature_div", "#merchant-info", "#tabular-buybox", "#sellerProfileTriggerId"]);
         const availabilityText = textOf(query(doc, ["#availability", "#outOfStock", "#availabilityInsideBuyBox_feature_div"]));
         return {
           seller,
           firstParty: isFirstPartyText("amazon", seller),
-          price: readPrice(doc, ["#corePrice_feature_div .a-price .a-offscreen", ".priceToPay .a-offscreen", "#price_inside_buybox", "#newBuyBoxPrice", "meta[itemprop='price']"]),
+          price: readPrice(offerRoot, ["#corePrice_feature_div .a-price .a-offscreen", ".priceToPay .a-offscreen", "#price_inside_buybox", "#newBuyBoxPrice", "meta[itemprop='price']"]),
           available: isActionable(addButton) && !/currently unavailable|out of stock|unavailable/i.test(availabilityText),
           addButton
         };
@@ -519,8 +668,11 @@
 
   for (const [retailer, adapter] of Object.entries(adapters)) {
     adapter.securityChallenge = securityChallenge;
-    adapter.orderConfirmed = orderConfirmed;
+    adapter.orderConfirmed = (doc) => orderConfirmed(doc, adapter.confirmationSelectors);
     adapter.storeError = storeError;
+    adapter.submissionFailure = submissionFailure;
+    adapter.unsafeOrderChoices = unsafeOrderChoices;
+    adapter.fulfillmentMode = fulfillmentMode;
     adapter.retailer = retailer;
   }
 
@@ -532,6 +684,7 @@
     isActionable,
     isFirstPartyText,
     parsePrice,
+    parseWalmartQueue,
     textOf
   });
 

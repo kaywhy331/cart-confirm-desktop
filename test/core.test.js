@@ -4,6 +4,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 
 const {
+  assertSafeArmedUpdate,
   createInitialStatus,
   createProductStatus,
   extractTcin,
@@ -19,6 +20,7 @@ const {
   detectRetailer,
   extractSku,
   normalizeProductUrl,
+  parseWalmartQueue,
   storeUrl
 } = require("../lib/retailers");
 
@@ -29,7 +31,8 @@ const PRODUCTS = [
     maxPrice: 49.99,
     maxOrderTotal: 125,
     quantity: 2,
-    action: "checkout"
+    action: "checkout",
+    fulfillmentMode: "shipping"
   },
   {
     productUrl: "https://www.walmart.com/ip/example/123456789?athbdg=L1100",
@@ -37,7 +40,8 @@ const PRODUCTS = [
     maxPrice: 25,
     maxOrderTotal: 0,
     quantity: 3,
-    action: "cart"
+    action: "cart",
+    fulfillmentMode: "manual"
   },
   {
     productUrl: "https://www.amazon.com/Example/dp/B0ABC12345/ref=abc",
@@ -45,7 +49,8 @@ const PRODUCTS = [
     maxPrice: 12.5,
     maxOrderTotal: 25,
     quantity: 1,
-    action: "checkout"
+    action: "checkout",
+    fulfillmentMode: "shipping"
   }
 ];
 
@@ -111,6 +116,7 @@ test("rejects unsafe or ambiguous product settings", () => {
   assert.throws(() => normalizeProduct({ ...PRODUCTS[0], quantity: 0 }), /Quantity/);
   assert.throws(() => normalizeProduct({ ...PRODUCTS[0], maxPrice: -1 }), /Maximum unit price/);
   assert.throws(() => normalizeProduct({ ...PRODUCTS[0], action: "buy-now" }), /Add to cart/);
+  assert.throws(() => normalizeProduct({ ...PRODUCTS[0], fulfillmentMode: "drone" }), /shipping, pickup/);
   assert.throws(
     () => normalizeSettings({ products: [PRODUCTS[0], PRODUCTS[0]] }),
     /appears more than once/
@@ -142,12 +148,42 @@ test("rejects unsafe or ambiguous product settings", () => {
     () => normalizeSettings({ products: [{ ...PRODUCTS[0], maxPrice: 0 }], automationEnabled: true }),
     /positive maximum unit price/
   );
+  assert.throws(
+    () => normalizeSettings({
+      products: [{ ...PRODUCTS[0], fulfillmentMode: "manual" }],
+      automationEnabled: true
+    }),
+    /explicitly require shipping or pickup/
+  );
+});
+
+test("review-only products are supported and armed product edits require disarming", () => {
+  const review = normalizeProduct({ ...PRODUCTS[0], action: "review" });
+  assert.equal(review.action, "review");
+
+  const armed = normalizeSettings({ products: [PRODUCTS[0]], automationEnabled: true });
+  const changed = normalizeSettings({
+    products: [{ ...PRODUCTS[0], maxPrice: PRODUCTS[0].maxPrice + 1 }],
+    automationEnabled: true
+  }, armed);
+  assert.throws(() => assertSafeArmedUpdate(armed, changed), /Disarm automation/);
+  assert.doesNotThrow(() => assertSafeArmedUpdate(armed, { ...changed, automationEnabled: false }));
 });
 
 test("returns store-aware cart and order links", () => {
   assert.equal(storeUrl("target", "cartUrl"), "https://www.target.com/cart");
   assert.equal(storeUrl("walmart", "ordersUrl"), "https://www.walmart.com/orders");
   assert.equal(storeUrl("amazon", "cartUrl"), "https://www.amazon.com/gp/cart/view.html");
+});
+
+test("volatile Walmart queue URLs normalize to the canonical product URL", () => {
+  const qpdata = encodeURIComponent(JSON.stringify({
+    queued: true,
+    customMetadata: { state: "pending", item: { itemID: "123456789" } }
+  }));
+  const queueUrl = `https://www.walmart.com/qp?qpdata=${qpdata}&signature=discard-me`;
+  assert.equal(parseWalmartQueue(queueUrl).itemId, "123456789");
+  assert.equal(normalizeProductUrl(queueUrl), "https://www.walmart.com/ip/123456789");
 });
 
 test("validates and minimizes retailer companion events", () => {

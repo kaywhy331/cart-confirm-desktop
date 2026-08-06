@@ -6,14 +6,11 @@
   if (!Retailers || !Safety) return;
 
   const ACTIVE_PRODUCT_KEY = "cartConfirmActiveProductId";
-  const PROOF_KEY = "cartConfirmVerifiedOffer";
-  const ATTEMPT_PREFIX = "cartConfirmAttempts:";
-  const SUBMITTED_PREFIX = "cartConfirmSubmittedAt:";
   const CONFIG_REFRESH_MS = 5_000;
   const HEARTBEAT_MS = 10_000;
   const PROOF_MAX_AGE_MS = Safety.CART_PROOF_MAX_AGE_MS;
-  const SUBMIT_SETTLE_MS = 30_000;
   const seen = new Map();
+  const attemptCache = new Map();
   let config = null;
   let configFingerprint = "";
   let scanTimer = null;
@@ -51,14 +48,12 @@
     }
   }
 
-  function send(eventType, product, details = {}, dedupeKey = "", dedupeMs = 1_500) {
+  async function send(eventType, product, details = {}, dedupeKey = "", dedupeMs = 1_500) {
     const key = dedupeKey || `${product?.id || "global"}:${eventType}:${JSON.stringify(details)}`;
     const previous = seen.get(key) || 0;
-    if (Date.now() - previous < dedupeMs) return Promise.resolve({ ok: true, deduped: true });
-    seen.set(key, Date.now());
-    pruneSeen();
+    if (Date.now() - previous < dedupeMs) return { ok: true, deduped: true };
 
-    return runtimeMessage({
+    const result = await runtimeMessage({
       type: "CART_CONFIRM_EVENT",
       payload: {
         eventType,
@@ -70,6 +65,11 @@
         ...details
       }
     });
+    if (result.ok) {
+      seen.set(key, Date.now());
+      pruneSeen();
+    }
+    return result;
   }
 
   async function requestConfig(force = false) {
@@ -95,60 +95,84 @@
   function clearActiveProduct(product) {
     if (sessionStorage.getItem(ACTIVE_PRODUCT_KEY) === product.id) {
       sessionStorage.removeItem(ACTIVE_PRODUCT_KEY);
-      sessionStorage.removeItem(PROOF_KEY);
     }
   }
 
-  function proofFor(product) {
-    try {
-      const proof = JSON.parse(sessionStorage.getItem(PROOF_KEY) || "null");
-      if (
-        !proof
-        || proof.productId !== product.id
-        || proof.runId !== config?.automationRunId
-        || Date.now() - proof.verifiedAt > PROOF_MAX_AGE_MS
-      ) return null;
-      return proof;
-    } catch {
-      return null;
-    }
-  }
-
-  function saveProof(product, offer, source = "product", quantityConfirmed = false) {
-    const existing = source === "cart" ? proofFor(product) : null;
-    const now = Date.now();
-    const proof = {
-      productId: product.id,
-      runId: config?.automationRunId || "",
-      price: Number.isFinite(offer?.price) ? offer.price : existing?.price,
-      seller: offer?.seller || existing?.seller || "",
-      firstParty: offer?.firstParty === true || existing?.firstParty === true,
-      quantityConfirmed: source === "cart" && quantityConfirmed === true,
-      source,
-      cartConfirmedAt: source === "cart" ? now : 0,
-      verifiedAt: now
-    };
-    sessionStorage.setItem(PROOF_KEY, JSON.stringify(proof));
+  async function proofFor(product) {
+    const state = await productAutomationState(product);
+    const proof = state.ok ? state.proof : null;
+    if (
+      !proof
+      || proof.productId !== product.id
+      || proof.runId !== config?.automationRunId
+      || Date.now() - proof.verifiedAt > PROOF_MAX_AGE_MS
+    ) return null;
     return proof;
   }
 
-  function attemptKey(product) {
-    return `${ATTEMPT_PREFIX}${config?.automationRunId || "run"}:${product.id}`;
+  function saveProof(product, offer, source = "product", quantityConfirmed = false, inventory = null) {
+    return runtimeMessage({
+      type: "CART_CONFIRM_SAVE_PROOF",
+      productId: product.id,
+      proof: {
+        price: Number.isFinite(offer?.price) ? offer.price : null,
+        seller: offer?.seller || "",
+        firstParty: offer?.firstParty === true,
+        quantityConfirmed: source === "cart" && quantityConfirmed === true,
+        inventoryConfirmed: source === "cart" && inventory?.independentlyCounted === true,
+        cartLineCount: source === "cart" ? inventory?.items?.length : 0,
+        cartSku: source === "cart" ? inventory?.items?.[0]?.sku : "",
+        source
+      }
+    });
   }
 
-  function nextAttempt(product) {
-    const key = attemptKey(product);
-    const next = Math.min(1_000_000, Number(sessionStorage.getItem(key) || 0) + 1);
-    sessionStorage.setItem(key, String(next));
-    return next;
+  async function nextAttempt(product) {
+    const result = await runtimeMessage({ type: "CART_CONFIRM_RECORD_ATTEMPT", productId: product.id });
+    if (result.ok) attemptCache.set(product.id, result.attempt);
+    return result;
   }
 
   function currentAttempt(product) {
-    return Number(sessionStorage.getItem(attemptKey(product)) || 0);
+    return Number(attemptCache.get(product.id) || 0);
   }
 
-  function submittedKey(product) {
-    return `${SUBMITTED_PREFIX}${config?.automationRunId || "run"}:${product.id}`;
+  async function requireAttempt(product) {
+    const result = await nextAttempt(product);
+    if (result.ok) return result.attempt;
+    const reason = ["run-expired", "attempt-budget-exhausted"].includes(result.reason)
+      ? result.reason
+      : "attempt-budget-exhausted";
+    await send("automation-blocked", product, {
+      attempt: currentAttempt(product),
+      reason,
+      message: reason === "run-expired"
+        ? "The four-hour automation run expired. Review the store state and re-arm manually."
+        : "This product reached the fixed 100-attempt run budget. Review it and re-arm manually."
+    }, `attempt-budget:${product.id}:${reason}`, 60_000);
+    return null;
+  }
+
+  async function requireStoreAction(product, kind) {
+    const result = await runtimeMessage({
+      type: "CART_CONFIRM_RESERVE_STORE_ACTION",
+      productId: product.id,
+      kind
+    });
+    if (result.ok) return true;
+    if (result.reason === "disarmed") return false;
+    const reason = ["traffic-budget-exhausted", "traffic-overload"].includes(result.reason)
+      ? result.reason
+      : "store-error";
+    await send("automation-blocked", product, {
+      reason,
+      message: reason === "traffic-budget-exhausted"
+        ? `${adapter.label} reached the fixed 120-action rolling-hour budget. Automatic store actions are paused.`
+        : reason === "traffic-overload"
+          ? `${adapter.label} is in an overload cooldown. Automatic store actions are paused.`
+          : "The desktop traffic governor could not authorize another store action."
+    }, `store-action-blocked:${product.id}:${reason}`, 60_000);
+    return false;
   }
 
   function clearRetry() {
@@ -166,9 +190,7 @@
 
   async function completeProduct(product) {
     clearRetry();
-    const result = await runtimeMessage({ type: "CART_CONFIRM_COMPLETE_PRODUCT", productId: product.id });
-    clearActiveProduct(product);
-    return result;
+    return runtimeMessage({ type: "CART_CONFIRM_COMPLETE_PRODUCT", productId: product.id });
   }
 
   function eligibility(product, offer) {
@@ -185,8 +207,14 @@
     if (!config?.automationEnabled || !product.enabled || retryTimer) return;
     const state = await productAutomationState(product);
     if (!state.ok || state.completed || !state.armed) return;
+    if (state.budgetReason) {
+      await requireAttempt(product);
+      return;
+    }
+    if (["intent", "uncertain"].includes(state.submission?.phase)) return;
 
-    const attempt = nextAttempt(product);
+    const attempt = await requireAttempt(product);
+    if (attempt === null) return;
     const baseSeconds = Math.max(5, Number(config.retryIntervalSeconds || 15));
     const multiplier = errorBackoff ? Math.min(8, 2 ** Math.min(3, Math.floor((attempt - 1) / 3))) : Math.min(3, 1 + Math.floor(attempt / 20));
     const jitter = Math.floor(Math.random() * Math.max(1, baseSeconds * 0.2));
@@ -200,10 +228,19 @@
       notBefore: Date.now() + delayMs
     });
     if (!reservation.ok) {
-      await send("automation-blocked", product, {
-        reason: "traffic-overload",
-        message: "A safe navigation slot could not be reserved; automatic navigation is paused."
-      }, `traffic-reservation:${product.id}:${attempt}`, 15_000);
+      if (["disarmed", "product-disabled"].includes(reservation.reason)) return;
+      if (reservation.reason === "traffic-budget-exhausted") {
+        await send("automation-blocked", product, {
+          reason: "traffic-budget-exhausted",
+          message: `${adapter.label} reached the fixed rolling-hour store-action budget.`
+        }, `traffic-reservation:${product.id}:${attempt}`, 15_000);
+      } else {
+        await send("store-error", product, {
+          attempt,
+          reason: "manual-action-required",
+          message: "Automatic navigation stopped because the desktop traffic governor could not reserve a safe slot. Review the store manually."
+        }, `traffic-reservation-failed:${product.id}:${reservation.reason}`, 60_000);
+      }
       return;
     }
     await send("retry-scheduled", product, {
@@ -223,6 +260,19 @@
       if (!traffic.ok) {
         if (traffic.reason === "not-ready" && traffic.waitMs > 0) {
           retryTimer = setTimeout(navigateWhenAllowed, traffic.waitMs);
+        } else if (traffic.reason === "reservation-missing") {
+          await scheduleRetry(product, "A throttled browser timer expired its traffic slot; reserving a fresh one.", destination, errorBackoff);
+        } else if (traffic.reason === "traffic-budget-exhausted") {
+          await send("automation-blocked", product, {
+            reason: "traffic-budget-exhausted",
+            message: `${adapter.label} reached the fixed 120-action rolling-hour budget. Automatic navigation is paused.`
+          }, `traffic-budget:${product.id}`, 60_000);
+        } else if (!["disarmed", "product-disabled"].includes(traffic.reason)) {
+          await send("store-error", product, {
+            attempt: currentAttempt(product),
+            reason: "manual-action-required",
+            message: "Automatic navigation stopped because the desktop traffic governor could not revalidate the request. Review the store manually."
+          }, `traffic-revalidation-failed:${product.id}:${traffic.reason}`, 60_000);
         }
         return;
       }
@@ -238,14 +288,20 @@
     retryTimer = setTimeout(navigateWhenAllowed, reservation.waitMs);
   }
 
-  async function clickAction(element) {
+  async function clickAction(element, beforeClick = null) {
     if (!Retailers.isActionable(element)) return false;
     element.scrollIntoView?.({ block: "center", inline: "nearest" });
     element.focus?.({ preventScroll: true });
     await sleep(180);
     if (!Retailers.isActionable(element) || adapter.securityChallenge(document)) return false;
-    element.click();
-    return true;
+    if (beforeClick && !await beforeClick()) return false;
+    if (!Retailers.isActionable(element) || adapter.securityChallenge(document)) return false;
+    try {
+      element.click();
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   function setNativeValue(input, value) {
@@ -265,6 +321,7 @@
     if (select) {
       const option = [...select.options].find((candidate) => Number.parseInt(candidate.value || candidate.textContent, 10) === desired);
       if (!option) return { ok: false, reason: "quantity-unavailable" };
+      if (!await requireStoreAction(product, "quantity-change")) return { ok: false, blocked: true };
       select.value = option.value;
       select.dispatchEvent(new Event("input", { bubbles: true }));
       select.dispatchEvent(new Event("change", { bubbles: true }));
@@ -273,6 +330,7 @@
     }
 
     if (input) {
+      if (!await requireStoreAction(product, "quantity-change")) return { ok: false, blocked: true };
       setNativeValue(input, String(desired));
       input.blur?.();
       await sleep(900);
@@ -280,10 +338,12 @@
     }
 
     if (Number.isInteger(line.quantity) && line.quantity < desired && increase) {
+      if (!await requireStoreAction(product, "quantity-increase")) return { ok: false, blocked: true };
       await clickAction(increase);
       return { ok: false, pending: true, reason: "quantity-unavailable" };
     }
     if (Number.isInteger(line.quantity) && line.quantity > desired && decrease) {
+      if (!await requireStoreAction(product, "quantity-decrease")) return { ok: false, blocked: true };
       await clickAction(decrease);
       return { ok: false, pending: true, reason: "quantity-unavailable" };
     }
@@ -303,14 +363,36 @@
     return true;
   }
 
+  async function handleRetailerQueue(product) {
+    const queue = adapter.queueState?.(location.href);
+    if (!queue || queue.itemId !== product.sku) return false;
+    clearRetry();
+    await send("queue-waiting", product, {
+      availability: queue.soldOut ? "unavailable" : "unknown",
+      reason: "retailer-queue",
+      message: queue.soldOut
+        ? `${adapter.label} reports that the queued item sold out. No queue request or refresh was attempted.`
+        : `${adapter.label} placed this item in its official queue. The companion will not refresh, call ticket endpoints, or bypass the queue; it will resume after the store admits this tab.`
+    }, `queue:${product.id}:${queue.state}:${queue.soldOut}`, 30_000);
+    return true;
+  }
+
   async function handleConfirmation(product) {
     if (!adapter.orderConfirmed(document)) return false;
+    const completed = await completeProduct(product);
+    if (!completed.ok) {
+      await send("automation-blocked", product, {
+        reason: "manual-action-required",
+        message: "The store displayed confirmation text without a matching durable submit intent. Verify the order manually."
+      }, `confirmation-unmatched:${product.id}:${completed.reason}`, 60_000);
+      return true;
+    }
     const orderTotal = adapter.orderTotal(document);
-    await send("order-confirmed", product, {
+    const reported = await send("order-confirmed", product, {
       attempt: currentAttempt(product),
       orderTotal: orderTotal === null ? undefined : orderTotal
     }, `order-confirmed:${product.id}`, Number.MAX_SAFE_INTEGER);
-    await completeProduct(product);
+    if (reported.ok) clearActiveProduct(product);
     return true;
   }
 
@@ -370,17 +452,27 @@
 
     const claim = await claimProduct(product);
     if (!claim.ok) {
-      if (claim.reason !== "completed") {
+      if (["run-expired", "attempt-budget-exhausted"].includes(claim.reason)) {
+        await requireAttempt(product);
+      } else if (claim.reason === "submission-uncertain") {
+        await send("automation-blocked", product, {
+          reason: "manual-action-required",
+          message: "A prior order submission is uncertain and remains locked for manual review."
+        }, `claim-uncertain:${product.id}`, 60_000);
+      } else if (claim.reason !== "completed") {
         await scheduleRetry(product, claim.reason === "store-busy"
-          ? `${adapter.label} checkout is busy with another configured product.`
+          ? `${adapter.label} is processing another configured product in this store.`
           : "Another tab is already processing this configured product.");
       }
       return;
     }
 
     setActiveProduct(product);
-    saveProof(product, offer, "product");
-    const attempt = nextAttempt(product);
+    const savedProof = await saveProof(product, offer, "product");
+    if (!savedProof.ok) return;
+    if (!await requireStoreAction(product, "add-to-cart")) return;
+    const attempt = await requireAttempt(product);
+    if (attempt === null) return;
     const clicked = await clickAction(offer.addButton);
     if (!clicked) {
       await send("store-error", product, {
@@ -402,6 +494,7 @@
     }, `add-clicked:${product.id}:${attempt}`, 0);
     await sleep(2_200);
     if (await handleChallenge(product)) return;
+    if (!await requireStoreAction(product, "cart-navigation")) return;
     location.assign(adapter.cartUrl);
   }
 
@@ -424,6 +517,7 @@
       return;
     }
 
+    const inventory = adapter.cartInventory(document);
     const line = adapter.findLine(document, product);
     if (!line) {
       await send("automation-blocked", product, {
@@ -449,6 +543,7 @@
 
     const quantity = await ensureQuantity(product, line);
     if (!quantity.ok) {
+      if (quantity.blocked) return;
       if (quantity.pending) {
         scheduleScan(1_200);
         return;
@@ -472,7 +567,7 @@
       eligible: true,
       reason: "eligible"
     }, `quantity-confirmed:${product.id}:${product.quantity}`, 10_000);
-    await send("cart-item-confirmed", product, {
+    const cartReported = await send("cart-item-confirmed", product, {
       quantity: product.quantity,
       price: safeLine.price,
       seller: safeLine.seller,
@@ -483,11 +578,13 @@
 
     if (!config.automationEnabled) return;
     if (product.action === "cart") {
-      await completeProduct(product);
+      if (!cartReported.ok) return;
+      const completed = await completeProduct(product);
+      if (completed.ok) clearActiveProduct(product);
       return;
     }
 
-    const cartSafety = Safety.verifySingleProductCart(product, adapter.cartInventory(document));
+    const cartSafety = Safety.verifySingleProductCart(product, inventory);
     if (!cartSafety.ok) {
       await send("automation-blocked", product, {
         reason: cartSafety.reason,
@@ -497,16 +594,22 @@
       }, `cart-scope:${product.id}:${cartSafety.reason}`, 30_000);
       return;
     }
-    saveProof(product, safeLine, "cart", true);
+    const savedProof = await saveProof(product, safeLine, "cart", true, inventory);
+    if (!savedProof.ok) return;
 
     const claim = await claimProduct(product);
-    if (!claim.ok) return;
+    if (!claim.ok) {
+      if (["run-expired", "attempt-budget-exhausted"].includes(claim.reason)) await requireAttempt(product);
+      return;
+    }
     const checkoutButton = adapter.checkoutButton(document);
     if (!checkoutButton) {
       await scheduleRetry(product, "Waiting for the store checkout control.", "reload", true);
       return;
     }
-    const attempt = nextAttempt(product);
+    if (!await requireStoreAction(product, "checkout")) return;
+    const attempt = await requireAttempt(product);
+    if (attempt === null) return;
     if (await clickAction(checkoutButton)) {
       await send("checkout-clicked", product, { attempt }, `checkout-clicked:${product.id}:${attempt}`, 0);
     } else {
@@ -514,21 +617,81 @@
     }
   }
 
+  async function readCheckoutReview(product) {
+    const inventory = adapter.cartInventory(document);
+    const line = adapter.findLine(document, product);
+    const proof = await proofFor(product);
+    const orderTotal = adapter.orderTotal(document);
+    const unsafeChoices = adapter.unsafeOrderChoices(document);
+    const fulfillmentMode = adapter.fulfillmentMode(document);
+    const review = Safety.checkoutSafety({
+      product,
+      inventory,
+      line,
+      proof,
+      orderTotal,
+      unsafeChoices,
+      fulfillmentMode,
+      now: Date.now()
+    });
+    return { ...review, inventory, line, orderTotal };
+  }
+
+  function reviewEvidenceHash(product, review) {
+    return JSON.stringify({
+      path: location.pathname,
+      productId: product.id,
+      quantity: product.quantity,
+      maxPrice: product.maxPrice,
+      maxOrderTotal: product.maxOrderTotal,
+      inventoryComplete: review.inventory?.complete === true,
+      inventoryIds: (review.inventory?.items || []).map((item) => item.sku),
+      lineQuantity: review.line?.quantity,
+      linePrice: review.price,
+      seller: review.seller,
+      firstParty: review.firstParty,
+      orderTotal: review.orderTotal
+    });
+  }
+
   async function handleCheckoutPage(product) {
     await send("checkout-reached", product, {
       attempt: currentAttempt(product)
     }, `checkout-reached:${product.id}:${pageAddress()}`, 10_000);
 
-    if (!config.automationEnabled || product.action !== "checkout") return;
-    const claim = await claimProduct(product);
-    if (!claim.ok) return;
+    if (!config.automationEnabled || !["review", "checkout"].includes(product.action)) return;
+    const state = await productAutomationState(product);
+    if (!state.ok || state.completed) return;
+    if (Number.isInteger(state.attempts)) attemptCache.set(product.id, state.attempts);
 
     const error = adapter.storeError(document);
     if (error) {
       if (error === "traffic-overload") {
         await runtimeMessage({ type: "CART_CONFIRM_TRAFFIC_OVERLOAD", retailer });
       }
-      sessionStorage.removeItem(submittedKey(product));
+      if (["intent", "uncertain"].includes(state.submission?.phase)) {
+        if (!adapter.submissionFailure(document)) {
+          await send("store-error", product, {
+            attempt: currentAttempt(product),
+            reason: "manual-action-required",
+            message: "Checkout displayed an error, but it did not explicitly prove the order was not placed. Submission remains locked for manual review."
+          }, `checkout-uncertain-error:${product.id}:${state.submission.updatedAt}:${error}`, 60_000);
+          return;
+        }
+        const failed = await runtimeMessage({
+          type: "CART_CONFIRM_MARK_SUBMISSION",
+          productId: product.id,
+          outcome: "failed"
+        });
+        if (!failed.ok) {
+          await send("store-error", product, {
+            attempt: currentAttempt(product),
+            reason: "manual-action-required",
+            message: "The store explicitly rejected the order, but the durable submission lock could not be cleared. Review it manually."
+          }, `checkout-failure-state-error:${product.id}:${failed.reason}`, 60_000);
+          return;
+        }
+      }
       await send("store-error", product, {
         attempt: currentAttempt(product),
         reason: error,
@@ -540,22 +703,25 @@
       return;
     }
 
-    const inventory = adapter.cartInventory(document);
-    const line = adapter.findLine(document, product);
-    const proof = proofFor(product);
-    const orderTotal = adapter.orderTotal(document);
-    const review = Safety.checkoutSafety({
-      product,
-      inventory,
-      line,
-      proof,
-      orderTotal,
-      now: Date.now()
-    });
+    if (["intent", "uncertain"].includes(state.submission?.phase)) {
+      await send("automation-blocked", product, {
+        reason: "manual-action-required",
+        message: "Order submission may have been sent. Automatic resubmission remains locked until a confirmation or explicit store failure is observed."
+      }, `submit-uncertain:${product.id}:${state.submission.updatedAt}`, 60_000);
+      return;
+    }
+
+    const claim = await claimProduct(product);
+    if (!claim.ok) {
+      if (["run-expired", "attempt-budget-exhausted"].includes(claim.reason)) await requireAttempt(product);
+      return;
+    }
+
+    const review = await readCheckoutReview(product);
     if (!review.ok) {
       await send("automation-blocked", product, {
         price: review.price,
-        orderTotal: orderTotal === null ? undefined : orderTotal,
+        orderTotal: review.orderTotal === null ? undefined : review.orderTotal,
         seller: review.seller,
         firstParty: review.firstParty,
         eligible: false,
@@ -564,18 +730,26 @@
           ? `Final order total is above the $${product.maxOrderTotal.toFixed(2)} cap.`
           : review.reason === "total-unavailable"
             ? "Final order review did not expose a readable order total."
+            : review.reason === "fulfillment-unverified"
+              ? `Final order review did not prove the required ${product.fulfillmentMode} fulfillment mode.`
             : "Final order review could not re-verify the complete cart, exact SKU, first-party offer, unit cap, and quantity."
       }, `review-blocked:${product.id}:${review.reason}`, 20_000);
       return;
     }
 
-    const submittedAt = Number(sessionStorage.getItem(submittedKey(product)) || 0);
-    if (submittedAt && Date.now() - submittedAt < SUBMIT_SETTLE_MS) return;
-    if (submittedAt) {
-      await send("automation-blocked", product, {
-        reason: "manual-action-required",
-        message: "Order submission was sent but no confirmation or explicit failure appeared. Automatic resubmission is paused to prevent a duplicate order."
-      }, `submit-uncertain:${product.id}:${submittedAt}`, 60_000);
+    if (product.action === "review") {
+      const reported = await send("review-ready", product, {
+        quantity: product.quantity,
+        price: review.price,
+        orderTotal: review.orderTotal,
+        seller: review.seller,
+        firstParty: true,
+        eligible: true,
+        reason: "eligible"
+      }, `review-ready:${product.id}:${review.orderTotal}`, Number.MAX_SAFE_INTEGER);
+      if (!reported.ok) return;
+      const completed = await completeProduct(product);
+      if (completed.ok) clearActiveProduct(product);
       return;
     }
 
@@ -585,9 +759,35 @@
       return;
     }
 
-    const attempt = nextAttempt(product);
-    sessionStorage.setItem(submittedKey(product), String(Date.now()));
-    if (await clickAction(submitButton)) {
+    const expectedHash = reviewEvidenceHash(product, review);
+    let intentCreated = false;
+    let attempt = 0;
+    const clicked = await clickAction(submitButton, async () => {
+      if (!await requireStoreAction(product, "order-submit")) return false;
+      attempt = await requireAttempt(product);
+      if (attempt === null) return false;
+      const freshReview = await readCheckoutReview(product);
+      if (!freshReview.ok || reviewEvidenceHash(product, freshReview) !== expectedHash) {
+        await send("automation-blocked", product, {
+          reason: "manual-action-required",
+          message: "The final order evidence changed before submission. Automatic checkout stopped for a fresh manual review."
+        }, `review-changed:${product.id}:${Date.now()}`, 0);
+        return false;
+      }
+      const intent = await runtimeMessage({
+        type: "CART_CONFIRM_BEGIN_SUBMISSION",
+        productId: product.id,
+        evidenceHash: expectedHash
+      });
+      intentCreated = intent.ok;
+      return intent.ok;
+    });
+    if (clicked) {
+      await runtimeMessage({
+        type: "CART_CONFIRM_MARK_SUBMISSION",
+        productId: product.id,
+        outcome: "clicked"
+      });
       await send("order-submit-clicked", product, {
         attempt,
         quantity: product.quantity,
@@ -599,8 +799,12 @@
         reason: "eligible"
       }, `order-submit:${product.id}:${attempt}`, 0);
       scheduleScan(2_000);
+    } else if (intentCreated) {
+      await send("automation-blocked", product, {
+        reason: "manual-action-required",
+        message: "A durable submit intent was recorded but the click result is uncertain. Automatic retry is locked for manual review."
+      }, `submit-intent-uncertain:${product.id}:${attempt}`, Number.MAX_SAFE_INTEGER);
     } else {
-      sessionStorage.removeItem(submittedKey(product));
       await scheduleRetry(product, "The final order control was not actionable.", "reload", true);
     }
   }
@@ -615,10 +819,18 @@
 
       await send("page-observed", product, {}, `page:${product.id}:${pageAddress()}`, 30_000);
       const kind = adapter.pageKind(location.href);
-      if (["checkout", "confirmation"].includes(kind) && await handleConfirmation(product)) return;
+      if (kind === "queue" && await handleRetailerQueue(product)) return;
+      if (kind === "confirmation" && await handleConfirmation(product)) return;
       if (kind === "product") await handleProductPage(product);
       else if (kind === "cart") await handleCartPage(product);
       else if (kind === "checkout" || kind === "confirmation") await handleCheckoutPage(product);
+      else {
+        clearRetry();
+        await send("automation-blocked", product, {
+          reason: "manual-action-required",
+          message: "The store redirected this workflow to an unrecognized page. Complete any sign-in or account prompt manually, then return to the configured product."
+        }, `unexpected-page:${product.id}:${pageAddress()}`, 60_000);
+      }
     } finally {
       scanning = false;
     }

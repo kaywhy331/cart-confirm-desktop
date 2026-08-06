@@ -15,6 +15,7 @@ test("legacy armed checkout settings are preserved but disarmed when the final-t
       maxPrice: 50,
       quantity: 2,
       action: "checkout",
+      fulfillmentMode: "shipping",
       enabled: true
     }]
   };
@@ -33,6 +34,7 @@ test("valid capped checkout settings remain armed during migration", () => {
       maxOrderTotal: 110,
       quantity: 2,
       action: "checkout",
+      fulfillmentMode: "shipping",
       enabled: true
     }]
   };

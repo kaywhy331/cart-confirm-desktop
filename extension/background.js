@@ -1,17 +1,18 @@
 "use strict";
 
-importScripts("traffic.js");
+importScripts("traffic.js", "automation-state.js");
 
 const Traffic = globalThis.CartConfirmTraffic;
+const AutomationState = globalThis.CartConfirmAutomationState;
 
 const PORTS = [32191, 32192, 32193, 32194, 32195];
 const CONFIG_TTL_MS = 5_000;
 const REQUEST_TIMEOUT_MS = 1_500;
-const CHECKOUT_LOCK_MS = 10 * 60_000;
 const FAST_MODE_RULE_ID = 91001;
-const AUTOMATION_STATE_KEY = "cartConfirmAutomationStateV2";
+const AUTOMATION_STATE_KEY = "cartConfirmAutomationStateV3";
 const TRAFFIC_STATE_KEY = "cartConfirmTrafficStateV1";
 const FAST_MODE_PAUSE_KEY = "cartConfirmFastModePausedUntil";
+const PAIRED_TOKEN_KEY = "cartConfirmPairedDesktopTokenV1";
 const OVERLOAD_DEDUPE_MS = 5_000;
 let cached = null;
 let appliedFastMode = null;
@@ -41,6 +42,22 @@ async function setBadge(config) {
   await chrome.action.setTitle({
     title: armed ? "Cart Confirm automation is armed" : "Cart Confirm is connected and disarmed"
   });
+}
+
+async function setConnectionProblemBadge(text, title) {
+  await chrome.action.setBadgeText({ text });
+  await chrome.action.setBadgeBackgroundColor({ color: "#b45309" });
+  await chrome.action.setTitle({ title });
+}
+
+async function acceptDesktopIdentity(config) {
+  const extensionVersion = chrome.runtime.getManifest().version;
+  if (String(config.appVersion || "") !== extensionVersion) return { ok: false, reason: "version-mismatch" };
+  const stored = await chrome.storage.local.get(PAIRED_TOKEN_KEY);
+  const pairedToken = String(stored[PAIRED_TOKEN_KEY] || "");
+  if (pairedToken && pairedToken !== config.token) return { ok: false, reason: "pairing-mismatch" };
+  if (!pairedToken) await chrome.storage.local.set({ [PAIRED_TOKEN_KEY]: config.token });
+  return { ok: true };
 }
 
 async function applyFastMode(enabled) {
@@ -82,8 +99,11 @@ function publicConfig(config) {
 
 function retailerFromUrl(value) {
   try {
-    const host = new URL(String(value || "")).hostname.toLowerCase().replace(/^www\./, "");
-    if (["target.com", "walmart.com", "amazon.com"].includes(host)) return host.split(".")[0];
+    const host = new URL(String(value || "")).hostname.toLowerCase();
+    for (const retailer of ["target", "walmart", "amazon"]) {
+      const domain = `${retailer}.com`;
+      if (host === domain || host.endsWith(`.${domain}`)) return retailer;
+    }
   } catch {
     // Invalid URLs cannot contribute traffic state.
   }
@@ -170,6 +190,18 @@ async function revalidateNavigation(message, sender) {
     });
     state.retailers[retailer] = result.state;
     await writeTrafficState(state);
+    if (result.allowed) {
+      const budget = await reserveStoreAction(product.id, "automatic-navigation");
+      if (!budget.ok) {
+        return {
+          ok: false,
+          reason: budget.reason || "traffic-budget-exhausted",
+          waitMs: 0,
+          cooldownUntil: result.state.cooldownUntil,
+          lastStatus: result.state.lastStatus
+        };
+      }
+    }
     return {
       ok: result.allowed,
       reason: result.reason,
@@ -263,6 +295,7 @@ async function syncActiveTrafficCooldowns(config) {
 async function discoverConfig(force = false) {
   if (!force && cached && Date.now() - cached.fetchedAt < CONFIG_TTL_MS) return cached;
 
+  let connectionProblem = "";
   for (const port of PORTS) {
     try {
       const baseUrl = `http://127.0.0.1:${port}`;
@@ -270,6 +303,11 @@ async function discoverConfig(force = false) {
       if (!response.ok) continue;
       const config = await response.json();
       if (!config.token || !Array.isArray(config.products)) continue;
+      const identity = await acceptDesktopIdentity(config);
+      if (!identity.ok) {
+        connectionProblem ||= identity.reason;
+        continue;
+      }
       cached = { ...config, baseUrl, fetchedAt: Date.now() };
       await setBadge(cached);
       await applyFastMode(cached.fastMode).catch(() => {});
@@ -281,7 +319,14 @@ async function discoverConfig(force = false) {
   }
 
   cached = null;
-  await setBadge(null);
+  await applyFastMode(false).catch(() => {});
+  if (connectionProblem === "version-mismatch") {
+    await setConnectionProblemBadge("UPD", "Cart Confirm app and extension versions differ; reload the unpacked extension");
+  } else if (connectionProblem === "pairing-mismatch") {
+    await setConnectionProblemBadge("PAIR", "Cart Confirm desktop pairing changed; review the local installation");
+  } else {
+    await setBadge(null);
+  }
   return null;
 }
 
@@ -319,32 +364,46 @@ async function postEvent(payload) {
   }
 }
 
-function productSignature(config, product) {
-  return [
-    config.automationRunId || "run",
-    product.id,
-    product.maxPrice,
-    product.maxOrderTotal,
-    product.quantity,
-    product.action
-  ].join("|");
+async function reserveStoreAction(productId, kind) {
+  let config = await discoverConfig(true);
+  if (!config?.automationEnabled) return { ok: false, reason: "disarmed" };
+  const product = configuredProduct(config, productId);
+  if (!product) return { ok: false, reason: "product-disabled" };
+  const trafficState = await readTrafficState(config);
+  const cooldownUntil = Number(trafficState.retailers?.[product.retailer]?.cooldownUntil || 0);
+  if (cooldownUntil > Date.now()) {
+    return { ok: false, reason: "traffic-overload", retryAt: cooldownUntil };
+  }
+
+  const send = () => fetchWithTimeout(`${config.baseUrl}/traffic/reserve`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Cart-Assist-Token": config.token
+    },
+    body: JSON.stringify({ retailer: product.retailer, kind: String(kind || "automatic-action").slice(0, 80) })
+  });
+
+  try {
+    let response = await send();
+    if (response.status === 401) {
+      config = await discoverConfig(true);
+      if (!config) return { ok: false, reason: "desktop-not-found" };
+      response = await send();
+    }
+    const result = await response.json().catch(() => ({}));
+    return response.ok && result.allowed
+      ? { ok: true, remaining: result.remaining }
+      : { ok: false, reason: result.reason || "traffic-budget-exhausted", retryAt: result.retryAt };
+  } catch {
+    return { ok: false, reason: "desktop-unreachable" };
+  }
 }
 
 async function readAutomationState(config) {
   const stored = await chrome.storage.local.get(AUTOMATION_STATE_KEY);
-  let state = stored[AUTOMATION_STATE_KEY];
   const runId = String(config.automationRunId || "");
-  if (!state || state.runId !== runId) {
-    state = { runId, locks: {}, completed: {} };
-  }
-
-  const now = Date.now();
-  for (const [retailer, lock] of Object.entries(state.locks || {})) {
-    if (!lock || lock.expiresAt <= now) delete state.locks[retailer];
-  }
-  state.locks ||= {};
-  state.completed ||= {};
-  return state;
+  return AutomationState.normalizeState(stored[AUTOMATION_STATE_KEY], runId, Date.now());
 }
 
 async function writeAutomationState(state) {
@@ -361,10 +420,6 @@ function configuredProduct(config, productId) {
   return config.products.find((product) => product.id === productId && product.enabled) || null;
 }
 
-function lockKey(product) {
-  return product.action === "checkout" ? `store:${product.retailer}` : `product:${product.id}`;
-}
-
 async function claimProduct(productId, ownerId) {
   const config = await discoverConfig(true);
   if (!config?.automationEnabled) return { ok: false, reason: "disarmed" };
@@ -372,26 +427,9 @@ async function claimProduct(productId, ownerId) {
   if (!product) return { ok: false, reason: "product-disabled" };
   return withAutomationStateLock(async () => {
     const state = await readAutomationState(config);
-    const signature = productSignature(config, product);
-    if (state.completed[signature]) return { ok: false, reason: "completed" };
-
-    const key = lockKey(product);
-    const lock = state.locks[key];
-    if (lock && lock.ownerId !== ownerId) {
-      return {
-        ok: false,
-        reason: product.action === "checkout" ? "store-busy" : "product-busy",
-        activeProductId: lock.productId
-      };
-    }
-    state.locks[key] = {
-      productId: product.id,
-      ownerId,
-      expiresAt: Date.now() + CHECKOUT_LOCK_MS
-    };
+    const result = AutomationState.claim(state, product, ownerId, Date.now());
     await writeAutomationState(state);
-
-    return { ok: true, product, signature };
+    return { ...result, product: result.ok ? product : undefined };
   });
 }
 
@@ -401,11 +439,11 @@ async function getProductState(productId) {
   const product = configuredProduct(config, productId);
   if (!product) return { ok: false, reason: "product-disabled" };
   const state = await readAutomationState(config);
+  const productState = AutomationState.productState(state, product, Date.now());
   return {
     ok: true,
     armed: Boolean(config.automationEnabled),
-    completed: Boolean(state.completed[productSignature(config, product)]),
-    lock: state.locks[lockKey(product)] || null
+    ...productState
   };
 }
 
@@ -416,12 +454,61 @@ async function completeProduct(productId) {
   if (!product) return { ok: false, reason: "product-disabled" };
   return withAutomationStateLock(async () => {
     const state = await readAutomationState(config);
-    state.completed[productSignature(config, product)] = new Date().toISOString();
-    for (const [key, lock] of Object.entries(state.locks)) {
-      if (lock?.productId === product.id) delete state.locks[key];
-    }
+    const result = AutomationState.complete(state, product, Date.now());
     await writeAutomationState(state);
-    return { ok: true };
+    return result;
+  });
+}
+
+async function recordProductAttempt(productId) {
+  const config = await discoverConfig(true);
+  if (!config?.automationEnabled) return { ok: false, reason: "disarmed" };
+  const product = configuredProduct(config, productId);
+  if (!product) return { ok: false, reason: "product-disabled" };
+  return withAutomationStateLock(async () => {
+    const state = await readAutomationState(config);
+    const result = AutomationState.recordAttempt(state, product, Date.now());
+    await writeAutomationState(state);
+    return result;
+  });
+}
+
+async function saveProductProof(productId, proof) {
+  const config = await discoverConfig(true);
+  if (!config?.automationEnabled) return { ok: false, reason: "disarmed" };
+  const product = configuredProduct(config, productId);
+  if (!product) return { ok: false, reason: "product-disabled" };
+  return withAutomationStateLock(async () => {
+    const state = await readAutomationState(config);
+    const result = AutomationState.saveProof(state, product, proof, Date.now());
+    await writeAutomationState(state);
+    return result;
+  });
+}
+
+async function beginProductSubmission(productId, ownerId, evidenceHash) {
+  const config = await discoverConfig(true);
+  if (!config?.automationEnabled) return { ok: false, reason: "disarmed" };
+  const product = configuredProduct(config, productId);
+  if (!product) return { ok: false, reason: "product-disabled" };
+  return withAutomationStateLock(async () => {
+    const state = await readAutomationState(config);
+    const result = AutomationState.beginSubmission(state, product, ownerId, evidenceHash, Date.now());
+    await writeAutomationState(state);
+    return result;
+  });
+}
+
+async function markProductSubmission(productId, ownerId, outcome) {
+  const config = await discoverConfig(true);
+  if (!config) return { ok: false, reason: "desktop-not-found" };
+  const product = configuredProduct(config, productId);
+  if (!product) return { ok: false, reason: "product-disabled" };
+  return withAutomationStateLock(async () => {
+    const state = await readAutomationState(config);
+    const result = AutomationState.markSubmission(state, product, ownerId, outcome, Date.now());
+    await writeAutomationState(state);
+    return result;
   });
 }
 
@@ -447,6 +534,24 @@ async function handleMessage(message, sender) {
       return getProductState(String(message.productId || ""));
     case "CART_CONFIRM_COMPLETE_PRODUCT":
       return completeProduct(String(message.productId || ""));
+    case "CART_CONFIRM_RECORD_ATTEMPT":
+      return recordProductAttempt(String(message.productId || ""));
+    case "CART_CONFIRM_RESERVE_STORE_ACTION":
+      return reserveStoreAction(String(message.productId || ""), message.kind);
+    case "CART_CONFIRM_SAVE_PROOF":
+      return saveProductProof(String(message.productId || ""), message.proof);
+    case "CART_CONFIRM_BEGIN_SUBMISSION":
+      return beginProductSubmission(
+        String(message.productId || ""),
+        `tab:${sender?.tab?.id ?? "unknown"}`,
+        message.evidenceHash
+      );
+    case "CART_CONFIRM_MARK_SUBMISSION":
+      return markProductSubmission(
+        String(message.productId || ""),
+        `tab:${sender?.tab?.id ?? "unknown"}`,
+        String(message.outcome || "")
+      );
     case "CART_CONFIRM_SECURITY_CHALLENGE":
       return pauseFastModeForChallenge();
     case "CART_CONFIRM_RESERVE_NAVIGATION":
@@ -496,6 +601,11 @@ chrome.webRequest.onBeforeRequest.addListener((details) => {
 });
 
 chrome.runtime.onInstalled.addListener(() => {
+  appliedFastMode = null;
+  void discoverConfig(true);
+});
+
+chrome.runtime.onStartup.addListener(() => {
   appliedFastMode = null;
   void discoverConfig(true);
 });

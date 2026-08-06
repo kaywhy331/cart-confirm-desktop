@@ -16,7 +16,7 @@ if errorlevel 1 (
 
 if not exist "node_modules\electron\package.json" (
   echo Installing desktop dependencies...
-  call npm install --no-audit --no-fund
+  call npm ci --no-fund
   if errorlevel 1 (
     echo.
     echo ERROR: Dependency installation failed.

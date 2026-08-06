@@ -15,6 +15,7 @@ test("the Manifest V3 companion declares every safety script and required permis
   assert.equal(manifest.permissions.includes("declarativeNetRequest"), true);
   assert.equal(manifest.permissions.includes("webRequest"), true);
   assert.equal(manifest.host_permissions.includes("http://127.0.0.1/*"), true);
+  assert.equal(manifest.host_permissions.includes("https://*.walmart.com/*"), true);
 
   const scripts = [manifest.background.service_worker, ...manifest.content_scripts.flatMap((entry) => entry.js)];
   for (const script of scripts) {
