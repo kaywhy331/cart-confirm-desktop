@@ -14,6 +14,49 @@ after any noticeable change to a store's checkout pages (new checkout redesign,
 new account, new saved address/card, etc.). Keep automation **disarmed** for all
 of it.
 
+## 0. Recommended order (read this first)
+
+Sections 1–5 below are the checks. This section is the *sequence* to run them
+in — it minimizes blast radius by proving the tool safe on one cheap product
+before trusting it with the real buy list, and by deliberately testing that it
+blocks bad states rather than only ever testing the happy path.
+
+1. **Pick one store and one low-stakes test product.** In-stock, first-party,
+   cheap enough that an unexpected charge is a non-event, not a scarce or
+   hyped item. Don't start the first pass across all three stores or all 50
+   products at once — if something's wrong, a single store/product run tells
+   you which adapter broke it instead of leaving you guessing.
+2. **Optional but recommended:** temporarily set that store account's default
+   payment to a gift card balance or a low-limit card for the duration of
+   testing. Section 1 below is explicit that Cart Confirm cannot verify which
+   payment method is selected — this hedges that exact blind spot so a worst
+   case is cheap instead of a real problem.
+3. Run **section 2** (account-level checks) for that one store.
+4. Run **section 3** (Add-to-cart-only dry run) for that one product.
+5. Run **section 4** (final-review dry run) for that one product, including
+   one supervised **Submit order automatically** run, watched live with a
+   hand on the disarm control.
+6. **Before widening scope, deliberately trigger the block paths** — this is
+   the part that's easy to skip and the highest-value part to actually test,
+   since the tool's entire premise is failing closed:
+   - [ ] Temporarily raise a cap below the real price (or add a second,
+         unconfigured item to that store's cart) and confirm the run stops
+         with the expected reason in the event log instead of proceeding.
+   - [ ] If you can find a marketplace/third-party offer for any item,
+         confirm it's rejected by the first-party check instead of added.
+   - [ ] If the store's UI offers a subscription/protection-plan/tip add-on
+         anywhere in the flow, confirm a pre-checked instance of it blocks
+         submission (section 4's third item) rather than silently proceeding.
+   - [ ] Force-quit the desktop app mid-run once, relaunch it, and confirm it
+         comes back **disarmed** and does not attempt to resubmit.
+7. **Only after 3–6 all look correct**, widen one axis at a time: more
+   products on the same store first, then repeat 3–6 fresh on the next store.
+   Don't switch the whole buy list to auto-submit in one step.
+8. Fold this same one-product-first approach into section 5's "ongoing"
+   re-checks — a quick Add-to-cart-only pass on one product is the cheapest
+   possible smoke test before trusting a scheduled or high-stakes run,
+   especially after time away from the tool.
+
 ## 1. What the app actually verifies (for calibration)
 
 So you know exactly where the automated coverage ends:
