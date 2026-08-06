@@ -89,6 +89,13 @@ To use the one allowed schedule, enable it, select a store, and select one futur
 
 When an item is out of stock, the companion reserves a per-store navigation slot after the configured minimum delay. If it becomes unavailable in the cart or checkout, the companion returns to the product and resumes. Safety failures such as a third-party seller, unreadable price or total, quantity mismatch, incomplete cart enumeration, extra cart item, or uncertain order submission stop the affected workflow for manual review.
 
+Before switching any product to **Submit order automatically**, work through
+[`VALIDATION-CHECKLIST.md`](VALIDATION-CHECKLIST.md). Cart Confirm verifies SKU
+identity, first-party seller, price/total caps, cart completeness, and
+fulfillment *category* (pickup vs. shipping) — it never reads or chooses your
+payment method, delivery address, or pickup store location, so those still
+need a human pass on the real final-review page first.
+
 ## Traffic overload behavior
 
 The desktop opening queue and extension share the same safety goal: do not create bursts against one retailer. The desktop spaces its scheduled and manual openings per store, while the extension centrally serializes retry navigation across tabs. Main-frame store navigations are observed so a retry cannot immediately follow a newly opened page.
@@ -107,7 +114,7 @@ Run:
 BUILD-WINDOWS.cmd
 ```
 
-The separately named NSIS installer, portable executable, and `SHA256SUMS.txt` are written to `dist\`. Pull-request artifacts are intentionally unsigned. A release requires a GitHub-verified signed tag matching `package.json`, plus `WINDOWS_CERTIFICATE` and `WINDOWS_CERTIFICATE_PASSWORD` secrets; the workflow verifies both Authenticode signatures and checksums before publishing.
+The separately named NSIS installer, portable executable, and `SHA256SUMS.txt` are written to `dist\`. Pull-request artifacts are intentionally unsigned. A release requires a GitHub-verified signed tag matching `package.json`, plus `WINDOWS_CERTIFICATE` and `WINDOWS_CERTIFICATE_PASSWORD` secrets; the workflow verifies both Authenticode signatures and checksums before publishing. See [`RELEASE.md`](RELEASE.md) for the full signed-release checklist.
 
 ## Verify the source
 
