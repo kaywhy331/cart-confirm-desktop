@@ -6,6 +6,7 @@ contextBridge.exposeInMainWorld("cartAssist", {
   getSnapshot: () => ipcRenderer.invoke("cart-assist:snapshot"),
   saveSettings: (settings) => ipcRenderer.invoke("cart-assist:save-settings", settings),
   openProduct: (productId) => ipcRenderer.invoke("cart-assist:open-product", productId),
+  stopAll: () => ipcRenderer.invoke("cart-assist:stop-all"),
   openBuyList: () => ipcRenderer.invoke("cart-assist:open-buy-list"),
   openCart: (retailer) => ipcRenderer.invoke("cart-assist:open-cart", retailer),
   openOrders: (retailer) => ipcRenderer.invoke("cart-assist:open-orders", retailer),

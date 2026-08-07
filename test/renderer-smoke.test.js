@@ -64,6 +64,7 @@ test("the renderer boots the guided-step UI and tracks step state", async () => 
     showExtension: async () => "",
     copyExtensionPath: async () => "",
     clearEvents: async () => snapshotFixture(),
+    stopAll: async () => snapshotFixture(),
     testEvent: async () => ({ ok: true }),
     onUpdate: (callback) => {
       pushUpdate = callback;

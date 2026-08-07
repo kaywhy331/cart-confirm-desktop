@@ -43,6 +43,32 @@ test("a blocked store queue does not block a different retailer", async () => {
   assert.deepEqual(opened, ["amazon", "target"]);
 });
 
+test("cancelPending stops queued openings before their action runs", async () => {
+  let clock = 1_000;
+  const opened = [];
+  const queue = createStoreOpenQueue({
+    now: () => clock,
+    intervalMs: () => 20_000,
+    wait: async (milliseconds) => {
+      clock += milliseconds;
+      queue.cancelPending();
+    }
+  });
+
+  const first = await queue.enqueue("target", async () => {
+    opened.push("first");
+    return { via: "chrome" };
+  });
+  const second = await queue.enqueue("target", async () => {
+    opened.push("second");
+    return { via: "chrome" };
+  });
+
+  assert.deepEqual(opened, ["first"]);
+  assert.equal(first.via, "chrome");
+  assert.equal(second.cancelled, true);
+});
+
 test("a cooldown arriving during a queued wait extends the opening time", async () => {
   let clock = 1_000;
   let cooldownUntil = 0;

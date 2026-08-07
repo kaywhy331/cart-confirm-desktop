@@ -69,6 +69,7 @@ let serverDiagnostics = {
   configServedAt: ""
 };
 let lastDiagnosticsBroadcastAt = 0;
+let stopEpoch = 0;
 const lastNotificationAt = new Map();
 const storeOverloadUntil = new Map();
 const retailerTabSeenAt = new Map();
@@ -276,7 +277,8 @@ async function openExternalRetailer(url) {
   }
   pendingNavigationKeys.add(navigationKey);
   try {
-    return await storeOpenQueue.enqueue(retailer, async () => {
+    const result = await storeOpenQueue.enqueue(retailer, async () => {
+      const taskEpoch = stopEpoch;
       const budget = reserveStoreAction(retailer, "desktop-navigation");
       if (!budget.allowed) {
         throw new Error(`${retailerLabel(retailer)} reached the fixed 120-action hourly safety budget.`);
@@ -289,9 +291,11 @@ async function openExternalRetailer(url) {
           return { retailer, url: parsed.href, via: "companion-tab" };
         }
       }
+      if (taskEpoch !== stopEpoch) return { retailer, url: parsed.href, via: "cancelled" };
       const via = await openPageInChrome(parsed.href);
       return { retailer, url: parsed.href, via };
     });
+    return result?.cancelled ? { retailer, url: parsed.href, via: "cancelled" } : result;
   } finally {
     pendingNavigationKeys.delete(navigationKey);
   }
@@ -324,7 +328,7 @@ async function openBuyList(retailer = "") {
 
   const results = await Promise.all(enabledProducts.map((product) => openExternalRetailer(product.productUrl)));
   return {
-    count: results.filter((result) => result.via !== "already-queued").length,
+    count: results.filter((result) => !["already-queued", "cancelled"].includes(result.via)).length,
     reused: results.filter((result) => result.via === "companion-tab").length,
     deduped: results.filter((result) => result.via === "already-queued").length,
     defaultBrowser: results.some((result) => result.via === "default-browser"),
@@ -699,6 +703,21 @@ function registerIpc() {
     persistRuntimeState();
     resetProductStatuses();
     lastNotificationAt.clear();
+    broadcast();
+    return snapshot();
+  });
+
+  ipcMain.handle("cart-assist:stop-all", () => {
+    stopEpoch += 1;
+    storeOpenQueue.cancelPending();
+    openRequests.cancelAll();
+    settings = { ...settings, automationEnabled: false, scheduledOpenEnabled: false };
+    persistSettings();
+    configVersion += 1;
+    status = {
+      ...status,
+      lastMessage: "Stopped. Automation disarmed, queued page openings cancelled, and the schedule cleared."
+    };
     broadcast();
     return snapshot();
   });

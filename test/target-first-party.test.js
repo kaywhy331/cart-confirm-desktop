@@ -88,6 +88,49 @@ test("a marketplace-labeled target cart line stays blocked", () => {
   assert.equal(effectiveLineOffer(PRODUCT, line).ok, false);
 });
 
+test("a shipping blurb hiding the DOM price falls back to the JSON-LD product record", () => {
+  const doc = new JSDOM(`<body><main>
+    <h1>Trading Cards Booster Box</h1>
+    <script type="application/ld+json">
+      {"@context":"https://schema.org","@graph":[{"@type":"Product","sku":"95298172",
+        "url":"https://www.target.com/p/restocks/-/A-95298172",
+        "offers":{"@type":"Offer","price":"27.99","priceCurrency":"USD"}}]}
+    </script>
+    <div>
+      <div data-test="fulfillment-cell">Ships free with RedCard or $35 orders</div>
+      <button id="addToCartButtonOrTextIdFor95298172" aria-label="Add to cart">Add to cart</button>
+    </div>
+  </main></body>`, { url: "https://www.target.com/p/restocks/A-95298172" }).window.document;
+  const offer = getAdapter("target").offer(doc, PRODUCT);
+  assert.equal(offer.price, 27.99);
+  assert.equal(offer.firstParty, true);
+  assert.equal(offer.seller, "", "fulfillment copy must not be reported as a seller name");
+});
+
+test("a JSON-LD record for a different product is not borrowed", () => {
+  const doc = new JSDOM(`<body><main>
+    <script type="application/ld+json">
+      [{"@type":"Product","sku":"111111","offers":{"price":"9.99"}},
+       {"@type":"Product","sku":"222222","offers":{"price":"19.99"}}]
+    </script>
+    <div data-test="fulfillment-cell">Ships free with RedCard or $35 orders</div>
+    <button id="addToCartButtonOrTextIdFor95298172" aria-label="Add to cart">Add to cart</button>
+  </main></body>`, { url: "https://www.target.com/p/restocks/A-95298172" }).window.document;
+  const offer = getAdapter("target").offer(doc, PRODUCT);
+  assert.equal(offer.price, null);
+});
+
+test("a single unkeyed JSON-LD product record is accepted as the page's product", () => {
+  const doc = new JSDOM(`<body><main>
+    <script type="application/ld+json">
+      {"@type":"Product","name":"Trading Cards","offers":{"lowPrice":"31.49"}}
+    </script>
+    <div data-test="fulfillment-cell">Ships free with RedCard or $35 orders</div>
+    <button id="addToCartButtonOrTextIdFor95298172" aria-label="Add to cart">Add to cart</button>
+  </main></body>`, { url: "https://www.target.com/p/restocks/A-95298172" }).window.document;
+  assert.equal(getAdapter("target").offer(doc, PRODUCT).price, 31.49);
+});
+
 test("walmart still requires an explicit first-party seller label", () => {
   const doc = new JSDOM(`<body><main>
     <div data-automation-id="product-price">$24.50</div>

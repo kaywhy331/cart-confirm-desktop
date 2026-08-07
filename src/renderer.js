@@ -105,6 +105,7 @@ function formatTime(value) {
 }
 
 function money(value) {
+  if (value === null || value === undefined || value === "") return "Not observed";
   return Number.isFinite(Number(value)) ? `$${Number(value).toFixed(2)}` : "Not observed";
 }
 
@@ -681,7 +682,6 @@ function render(snapshot, populate = false) {
   elements.latestTime.textContent = formatDateTime(status.lastEventAt);
   elements.portBadge.textContent = app.companionPort ? `Port ${app.companionPort}` : "Port unavailable";
   elements.versionText.textContent = `${app.name} v${app.version}`;
-  elements.disarmButton.disabled = !settings.automationEnabled;
   renderProductStatuses(settings.products, productStatuses);
   renderEvents(events);
   updateCountdown();
@@ -768,13 +768,9 @@ elements.openBuyListButton.addEventListener("click", async () => {
 });
 
 elements.disarmButton.addEventListener("click", () => runAction(async () => {
-  if (!currentSnapshot) throw new Error("Settings have not loaded yet.");
-  const next = await window.cartAssist.saveSettings({
-    ...currentSnapshot.settings,
-    automationEnabled: false
-  });
+  const next = await window.cartAssist.stopAll();
   render(next, true);
-}, "Automation disarmed and saved."));
+}, "Stopped. Automation disarmed, queued page openings cancelled, and the schedule cleared."));
 
 elements.openCartButton.addEventListener("click", () => runAction(
   () => window.cartAssist.openCart(elements.storeShortcut.value),
