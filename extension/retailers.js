@@ -162,6 +162,16 @@
     return Boolean(STORE_CONFIG[retailer]?.firstPartyPattern.test(String(value || "")));
   }
 
+  // Target labels marketplace (Target Plus) offers explicitly and renders no
+  // seller text at all for items it sells itself. When no seller label exists,
+  // the absence of every marketplace marker is the first-party signal; any
+  // marker in scope fails closed. Walmart and Amazon keep the strict labels.
+  const TARGET_MARKETPLACE_PATTERN = /sold\s+(?:and|&)\s+shipped\s+by\s+(?!target\b)|sold\s+by\s+(?!target\b)|target\s*plus|marketplace\s+seller/i;
+
+  function targetFirstPartyByAbsence(scopeText) {
+    return !TARGET_MARKETPLACE_PATTERN.test(String(scopeText || ""));
+  }
+
   function sellerRegion(doc, selectors) {
     const direct = query(doc, selectors);
     if (direct) return textOf(direct).slice(0, 240);
@@ -261,10 +271,14 @@
       }
     };
     const seller = sellerRegion(container, configs[retailer].seller);
+    let firstParty = isFirstPartyText(retailer, seller || textOf(container));
+    if (!firstParty && retailer === "target") {
+      firstParty = targetFirstPartyByAbsence(textOf(container));
+    }
     return {
       container,
       seller,
-      firstParty: isFirstPartyText(retailer, seller || textOf(container)),
+      firstParty,
       price: readPrice(container, configs[retailer].price),
       quantity: readQuantity(container),
       controls: quantityControls(container)
@@ -492,7 +506,8 @@
         const seller = sellerRegion(offerRoot, ["[data-test*='sold-by' i]", "[data-test*='seller' i]", "[data-test*='fulfillment' i]"]);
         return {
           seller,
-          firstParty: isFirstPartyText("target", seller),
+          firstParty: isFirstPartyText("target", seller)
+            || targetFirstPartyByAbsence(pageText(doc, 200_000)),
           price: readPrice(offerRoot, ["[data-test='product-price']", "[data-test*='current-price' i]", "meta[itemprop='price']", "[itemprop='price']"]),
           available: isActionable(addButton) && !/sold out|out of stock|unavailable/i.test(textOf(addButton)),
           addButton

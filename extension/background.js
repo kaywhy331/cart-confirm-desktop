@@ -292,6 +292,72 @@ async function syncActiveTrafficCooldowns(config) {
   }
 }
 
+const RETAILER_TAB_PATTERNS = Object.freeze({
+  target: ["https://target.com/*", "https://*.target.com/*"],
+  walmart: ["https://walmart.com/*", "https://*.walmart.com/*"],
+  amazon: ["https://amazon.com/*", "https://*.amazon.com/*"]
+});
+let openRequestsInFlight = false;
+
+async function claimOpenRequest(config, id) {
+  try {
+    const response = await fetchWithTimeout(`${config.baseUrl}/open-requests/claim`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Cart-Assist-Token": config.token
+      },
+      body: JSON.stringify({ id })
+    });
+    if (!response.ok) return null;
+    const result = await response.json().catch(() => null);
+    return result?.ok ? result : null;
+  } catch {
+    return null;
+  }
+}
+
+async function reuseTabForOpenRequest(config, request) {
+  const retailer = String(request?.retailer || "");
+  const url = String(request?.url || "");
+  const patterns = RETAILER_TAB_PATTERNS[retailer];
+  if (!patterns || retailerFromUrl(url) !== retailer) return;
+  const tabs = await chrome.tabs.query({ url: patterns });
+  if (!tabs.length) return; // Unclaimed requests fall back to a desktop-opened page.
+  const tab = tabs.find((candidate) => candidate.active)
+    || [...tabs].sort((a, b) => Number(b.lastAccessed || 0) - Number(a.lastAccessed || 0))[0];
+  const claimed = await claimOpenRequest(config, String(request.id || ""));
+  if (!claimed) return;
+  try {
+    await chrome.tabs.update(tab.id, { url, active: true });
+    await chrome.windows.update(tab.windowId, { focused: true }).catch(() => {});
+  } catch {
+    // The tab closed between query and navigation; the claim already stopped
+    // the desktop fallback, so open the page in a fresh tab instead.
+    await chrome.tabs.create({ url, active: true });
+  }
+}
+
+async function processOpenRequests(config) {
+  if (openRequestsInFlight || !config) return;
+  openRequestsInFlight = true;
+  try {
+    const response = await fetchWithTimeout(`${config.baseUrl}/open-requests`, {
+      headers: { "X-Cart-Assist-Token": config.token }
+    });
+    if (!response.ok) return;
+    const payload = await response.json().catch(() => ({}));
+    const requests = Array.isArray(payload.requests) ? payload.requests : [];
+    for (const request of requests.slice(0, 10)) {
+      await reuseTabForOpenRequest(config, request).catch(() => {});
+    }
+  } catch {
+    // The desktop opens a fresh page whenever requests cannot be served.
+  } finally {
+    openRequestsInFlight = false;
+  }
+}
+
 async function discoverConfig(force = false) {
   if (!force && cached && Date.now() - cached.fetchedAt < CONFIG_TTL_MS) return cached;
 
@@ -312,6 +378,7 @@ async function discoverConfig(force = false) {
       await setBadge(cached);
       await applyFastMode(cached.fastMode).catch(() => {});
       void syncActiveTrafficCooldowns(cached).catch(() => {});
+      void processOpenRequests(cached).catch(() => {});
       return cached;
     } catch {
       // Try the next local port.

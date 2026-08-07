@@ -10,7 +10,7 @@ These rules are enforced in code and cannot be disabled from the UI:
 
 - The URL and exact store identifier must match: Target TCIN, Walmart item ID, or Amazon ASIN.
 - The page must expose a readable unit price at or below the product's cap.
-- The seller must be verifiably first-party: Target, Walmart, or Amazon directly. Marketplace, fulfilled-only, and missing-seller offers are blocked.
+- The seller must be verifiably first-party: Target, Walmart, or Amazon directly. Marketplace, fulfilled-only, and missing-seller offers are blocked. Because Target labels marketplace (Target Plus) offers explicitly and shows no seller text for items it sells itself, an unlabeled Target offer is treated as first-party only when no marketplace marker appears anywhere on the page; any marker fails closed. Walmart and Amazon always require an explicit first-party label.
 - The requested cart quantity must be confirmed after any quantity change settles.
 - Current cart seller and price evidence must be readable; product-page evidence cannot make an ambiguous cart safe.
 - Before checkout, the companion must completely enumerate exactly one cart line, independently reconcile remove controls, and prove that it is the configured SKU. Unknown, duplicate, and extra lines block submission.
@@ -28,10 +28,12 @@ Start with **Add to cart only** until you have verified the current store select
 
 ## Features
 
-- Up to 50 unique products across Target, Walmart, and Amazon.
-- Per-product maximum unit price, maximum final order total, quantity, fulfillment mode, enabled state, and add-only/review/auto-submit action.
+- A guided four-step layout: connect Chrome, add items, save and test, then arm and run. Each step shows whether it is done or still needs attention.
+- Up to 50 unique products across Target, Walmart, and Amazon, each with an optional display name.
+- Per-product maximum unit price, maximum final order total, quantity, fulfillment mode, enabled state, and add-only/review/auto-submit action. Rarely used fields live behind each row's **Advanced** section.
+- A **Test (no buying)** button that opens the first enabled item while disarmed so the companion can report price, seller, and stock without touching the cart.
 - One global schedule: choose one store and one local date/time. At that time, only enabled products for that store are queued.
-- Manual **Open enabled buy list** action for all enabled stores, with each store's pages queued independently.
+- Manual **Open enabled items now** action for all enabled stores, with each store's pages queued independently. When the companion is connected, an existing Chrome tab for that store is navigated instead of opening a new window, and identical pending opens are deduplicated.
 - Configurable retry interval from 5 to 3,600 seconds, with jitter and increasing backoff after repeated store errors.
 - Configurable per-store navigation spacing from 10 to 3,600 seconds and overload cooldown from 60 to 86,400 seconds.
 - Automatic recovery when an item becomes unavailable in the cart or during checkout.
@@ -62,30 +64,28 @@ The extension badge reads `IDLE` when the desktop app is connected but automatio
 
 ## Configure a buy list
 
-For each row:
+For each row in step 2:
 
-1. Choose Target, Walmart, or Amazon.
-2. Paste the canonical product URL. The UI attempts to infer the store and SKU.
-3. Confirm the TCIN, Walmart item ID, or ASIN.
-4. Set a maximum **per-unit** price in US dollars.
-5. For final-review or auto-submit rows, set a positive maximum **final order total**. It must be at least the capped unit price multiplied by quantity.
-6. Set the total quantity for that product.
-7. Choose **Add to cart only**, **Stop at final review (recommended)**, or **Submit order automatically (advanced)**.
-8. For auto-submit, explicitly require **Shipping / delivery** or **Store pickup**. If the final page cannot prove that choice, submission is blocked.
-9. Enable the row and save.
+1. Paste the product page URL. The store, and the TCIN / Walmart item ID / ASIN, are detected automatically (the ID is visible under **Advanced**).
+2. Optionally name the item so statuses and the event log are easy to read.
+3. Set a maximum **per-unit** price in US dollars and the quantity.
+4. Choose **Add to cart only**, **Prepare checkout, I submit** (stops at the final review), or **Submit order automatically** (advanced).
+5. For the two checkout-involving actions, open **Advanced** and set a positive maximum **final order total** (at least the capped unit price multiplied by quantity). For auto-submit, also explicitly require **Shipping / delivery** or **Store pickup**; if the final page cannot prove that choice, submission is blocked.
+6. Enable the row and save in step 3.
 
 To use the one allowed schedule, enable it, select a store, and select one future local date/time. There is no per-product or second schedule. A receipt is persisted before pages open, the schedule disables itself after that attempt, and a time missed by more than two minutes is marked missed instead of running late.
 
 ## Recommended workflow
 
-1. Leave automation disarmed and save the complete buy list.
+1. Leave automation disarmed and save the complete buy list (step 3).
 2. Empty unrelated items from any store cart that will use checkout mode.
-3. Open the enabled buy list and confirm that each store page and SKU are correct.
+3. Use **Test (no buying)** to open the first enabled item, and confirm in "What the companion sees" that the page, SKU, price, and seller are recognized. Nothing is added while disarmed.
 4. Use add-only mode for an initial low-risk test.
 5. Review every quantity, unit cap, final-total cap, and action again.
-6. Arm automation and keep the intended Chrome profile plus Cart Confirm open. The app will require explicit re-arming after every restart.
-7. Complete sign-in or security prompts manually if a store presents them.
-8. Watch the per-product status and event log. Disarm immediately if the configuration or store page looks wrong.
+6. Arm automation in step 4 and keep the intended Chrome profile plus Cart Confirm open. The app will require explicit re-arming after every restart.
+7. Use **Open enabled items now** to open each enabled product page; while armed, the companion acts as each page loads.
+8. Complete sign-in or security prompts manually if a store presents them.
+9. Watch the per-product status and event log. Disarm immediately if the configuration or store page looks wrong.
 
 When an item is out of stock, the companion reserves a per-store navigation slot after the configured minimum delay. If it becomes unavailable in the cart or checkout, the companion returns to the product and resumes. Safety failures such as a third-party seller, unreadable price or total, quantity mismatch, incomplete cart enumeration, extra cart item, or uncertain order submission stop the affected workflow for manual review.
 
@@ -128,7 +128,7 @@ Or:
 npm run verify
 ```
 
-Verification performs a syntax check and runs the Node test suite, including queue URL reduction, exactly-once schedule receipts, durable submission transitions, action/run budgets, overload escalation, safety migration, first-party seller classification, and jsdom cart/order-review fixtures for all three retailers. GitHub CI also builds both unsigned Windows artifacts. Tests do not place live orders or guarantee that current retailer selectors are unchanged.
+Verification performs a syntax check and runs the Node test suite, including queue URL reduction, exactly-once schedule receipts, durable submission transitions, action/run budgets, overload escalation, safety migration, first-party seller classification (including Target's labeled-marketplace/absence rule), companion tab-reuse open requests, a jsdom boot of the guided-step UI, and jsdom cart/order-review fixtures for all three retailers. GitHub CI also builds both unsigned Windows artifacts. Tests do not place live orders or guarantee that current retailer selectors are unchanged.
 
 ## Privacy and local security
 

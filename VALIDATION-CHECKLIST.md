@@ -65,7 +65,11 @@ So you know exactly where the automated coverage ends:
   URL, matched against the cart line (`findLine` in `extension/retailers.js`).
 - **First-party seller** — text match against a "sold/shipped by `<retailer>`"
   pattern (`firstPartyPattern` per store). Marketplace/third-party offers are
-  blocked.
+  blocked. For Target only, an offer with no seller text is accepted as
+  first-party when no marketplace marker ("sold/shipped by" a non-Target name,
+  "Target Plus", "marketplace seller") appears in scope, because Target labels
+  marketplace offers and leaves its own items unlabeled; any marker fails
+  closed.
 - **Unit price and final order total** — read from price/total selectors and
   compared to your configured caps.
 - **Cart completeness** — every cart line is enumerated; unknown/duplicate/extra
@@ -103,12 +107,14 @@ For each of Target, Walmart, and Amazon you plan to automate:
 With automation disarmed, for every row you intend to eventually auto-submit:
 
 - [ ] Set the row's action to **Add to cart only** and run it manually once.
-- [ ] Confirm the product page shows a seller string matching first-party
-      phrasing (e.g. Target: "Sold and shipped by Target.com"; Walmart: "Sold
-      and shipped by Walmart.com"; Amazon: "Ships from Amazon.com / Sold by
-      Amazon.com"). If the page currently shows different wording than those
-      patterns for a first-party item, the safety check will misfire — flag it
-      instead of proceeding.
+- [ ] Confirm the product page's seller state matches what the app expects:
+      Walmart needs "Sold and shipped by Walmart.com" and Amazon needs "Ships
+      from Amazon.com / Sold by Amazon.com" phrasing. Target items sold by
+      Target usually show no seller text at all — that is accepted, as long as
+      no "Sold and shipped by <someone else>" / "Target Plus" marker is
+      visible. If the wording on screen doesn't fit those expectations for a
+      first-party item, the safety check will misfire — flag it instead of
+      proceeding.
 - [ ] Confirm the unit price read in the event log matches what's on the page.
 - [ ] Confirm the quantity landed in the cart matches what you configured.
 

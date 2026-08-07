@@ -31,6 +31,7 @@ const { evaluateSchedule } = require("./lib/schedule");
 const { loadRuntimeState, saveRuntimeState } = require("./lib/runtime-state");
 const { isAllowedExtensionOrigin } = require("./lib/extension-identity");
 const { createStoreOpenQueue } = require("./lib/store-open-queue");
+const { createOpenRequestStore } = require("./lib/open-requests");
 const {
   RETAILERS,
   parseRetailUrl,
@@ -42,6 +43,8 @@ const PORT_CANDIDATES = [32191, 32192, 32193, 32194, 32195];
 const MAX_BODY_BYTES = 64 * 1024;
 const MAX_EVENTS = 250;
 const NOTIFICATION_COOLDOWN_MS = 15_000;
+const COMPANION_TAB_FRESH_MS = 20_000;
+const COMPANION_CLAIM_TIMEOUT_MS = 7_000;
 
 let mainWindow = null;
 let companionServer = null;
@@ -56,6 +59,9 @@ let schedulerTimer = null;
 let configVersion = 1;
 const lastNotificationAt = new Map();
 const storeOverloadUntil = new Map();
+const retailerTabSeenAt = new Map();
+const pendingNavigationKeys = new Set();
+const openRequests = createOpenRequestStore();
 const storeOpenQueue = createStoreOpenQueue({
   intervalMs: () => Number(settings?.storeNavigationIntervalSeconds || 20) * 1000,
   notBefore: (retailer) => storeOverloadUntil.get(retailer) || 0
@@ -215,15 +221,37 @@ function reserveStoreAction(retailer, kind = "navigation") {
     : { allowed: false, reason: result.reason, retryAt: result.retryAt, kind };
 }
 
+function companionTabLikely(retailer) {
+  return Date.now() - (retailerTabSeenAt.get(retailer) || 0) < COMPANION_TAB_FRESH_MS;
+}
+
 async function openExternalRetailer(url) {
   const { parsed, retailer } = parseRetailUrl(url);
-  await storeOpenQueue.enqueue(retailer, () => {
-    const budget = reserveStoreAction(retailer, "desktop-navigation");
-    if (!budget.allowed) {
-      throw new Error(`${retailerLabel(retailer)} reached the fixed 120-action hourly safety budget.`);
-    }
-    return shell.openExternal(parsed.href, { activate: true });
-  });
+  const navigationKey = `${retailer}|${parsed.href}`;
+  if (pendingNavigationKeys.has(navigationKey)) {
+    return { retailer, url: parsed.href, via: "already-queued" };
+  }
+  pendingNavigationKeys.add(navigationKey);
+  try {
+    return await storeOpenQueue.enqueue(retailer, async () => {
+      const budget = reserveStoreAction(retailer, "desktop-navigation");
+      if (!budget.allowed) {
+        throw new Error(`${retailerLabel(retailer)} reached the fixed 120-action hourly safety budget.`);
+      }
+      // Ask a connected companion to reuse an existing store tab first; a
+      // request nobody claims falls back to opening a fresh page.
+      if (companionTabLikely(retailer)) {
+        const request = openRequests.add(retailer, parsed.href);
+        if (await openRequests.waitForClaim(request.id, COMPANION_CLAIM_TIMEOUT_MS)) {
+          return { retailer, url: parsed.href, via: "companion-tab" };
+        }
+      }
+      await shell.openExternal(parsed.href, { activate: true });
+      return { retailer, url: parsed.href, via: "new-window" };
+    });
+  } finally {
+    pendingNavigationKeys.delete(navigationKey);
+  }
 }
 
 function findProduct(productId) {
@@ -237,8 +265,8 @@ async function openProduct(productId) {
     ? findProduct(productId)
     : settings.products.find((candidate) => candidate.enabled);
   if (!product) throw new Error("Enable at least one product first.");
-  await openExternalRetailer(product.productUrl);
-  return product.id;
+  const opened = await openExternalRetailer(product.productUrl);
+  return { productId: product.id, via: opened.via };
 }
 
 async function openBuyList(retailer = "") {
@@ -251,8 +279,13 @@ async function openBuyList(retailer = "") {
       : "Enable at least one product first.");
   }
 
-  await Promise.all(enabledProducts.map((product) => openExternalRetailer(product.productUrl)));
-  return enabledProducts.length;
+  const results = await Promise.all(enabledProducts.map((product) => openExternalRetailer(product.productUrl)));
+  return {
+    count: results.filter((result) => result.via !== "already-queued").length,
+    reused: results.filter((result) => result.via === "companion-tab").length,
+    deduped: results.filter((result) => result.via === "already-queued").length,
+    armed: settings.automationEnabled
+  };
 }
 
 async function openStorePage(retailer, type) {
@@ -343,6 +376,9 @@ function handleCompanionEvent(rawEvent) {
   if (result.error) return { accepted: false, reason: result.error };
 
   const { event, product } = result;
+  if (event.retailer && RETAILERS[event.retailer]) {
+    retailerTabSeenAt.set(event.retailer, Date.now());
+  }
   if (event.eventType === "traffic-overload") {
     const previousCooldown = storeOverloadUntil.get(event.retailer) || 0;
     if (event.cooldownUntil <= previousCooldown) return { accepted: true, deduped: true };
@@ -463,6 +499,27 @@ function startServerOnPort(port) {
         readJsonRequest(req, res, (body) => {
           const eventResult = handleCompanionEvent(body);
           return { statusCode: eventResult.accepted ? 202 : 200, payload: eventResult };
+        });
+        return;
+      }
+
+      if (req.method === "GET" && requestUrl.pathname === "/open-requests") {
+        if (req.headers["x-cart-assist-token"] !== settings.companionToken) {
+          writeJson(req, res, 401, { error: "invalid-token" });
+          return;
+        }
+        writeJson(req, res, 200, { requests: openRequests.pending() });
+        return;
+      }
+
+      if (req.method === "POST" && requestUrl.pathname === "/open-requests/claim") {
+        if (req.headers["x-cart-assist-token"] !== settings.companionToken) {
+          writeJson(req, res, 401, { error: "invalid-token" });
+          return;
+        }
+        readJsonRequest(req, res, (body) => {
+          const result = openRequests.claim(String(body?.id || ""));
+          return { statusCode: result.ok ? 200 : 409, payload: result };
         });
         return;
       }
