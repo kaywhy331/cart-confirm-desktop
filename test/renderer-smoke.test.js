@@ -140,5 +140,31 @@ test("the renderer boots the guided-step UI and tracks step state", async () => 
   pushUpdate(reportMissing);
   assert.equal(doc.getElementById("stepConnectState").textContent, "Report missing");
 
+  // An eligible offer while disarmed points at the arming step, and an unread
+  // price renders as "Not observed", never "$0.00".
+  const eligible = snapshotFixture();
+  eligible.productStatuses = {
+    "target:95298172": {
+      availability: "available",
+      eligible: true,
+      reason: "eligible",
+      observedPrice: 31.99,
+      observedOrderTotal: null,
+      seller: "",
+      firstParty: true,
+      cart: "not-confirmed",
+      checkout: "not-started",
+      order: "not-confirmed",
+      attempts: 0,
+      lastMessage: "Target has an eligible first-party offer at $31.99."
+    }
+  };
+  pushUpdate(eligible);
+  assert.match(doc.querySelector(".product-status-card p").textContent, /arm it in step 4/);
+
+  const unread = snapshotFixture();
+  pushUpdate(unread);
+  assert.match(doc.querySelector(".status-metric strong").textContent, /Not observed/);
+
   window.close();
 });

@@ -15,6 +15,7 @@ const elements = {
   productStatusList: document.getElementById("productStatusList"),
   addProductButton: document.getElementById("addProductButton"),
   saveButton: document.getElementById("saveButton"),
+  stopTestButton: document.getElementById("stopTestButton"),
   openBuyListButton: document.getElementById("openBuyListButton"),
   disarmButton: document.getElementById("disarmButton"),
   storeShortcut: document.getElementById("storeShortcut"),
@@ -593,7 +594,11 @@ function renderProductStatuses(products, statuses) {
     heading.append(identity, state);
 
     const message = document.createElement("p");
-    message.textContent = status.lastMessage || "Waiting for this item to be observed.";
+    const armed = Boolean(currentSnapshot?.settings?.automationEnabled);
+    const disarmedEligibleHint = product.enabled && status.eligible && !armed
+      ? " Automation is disarmed, so nothing was added — arm it in step 4 and reopen the item to add it to the cart."
+      : "";
+    message.textContent = `${status.lastMessage || "Waiting for this item to be observed."}${disarmedEligibleHint}`;
 
     const metrics = document.createElement("div");
     metrics.className = "status-metrics";
@@ -767,10 +772,13 @@ elements.openBuyListButton.addEventListener("click", async () => {
   }
 });
 
-elements.disarmButton.addEventListener("click", () => runAction(async () => {
+async function stopEverything() {
   const next = await window.cartAssist.stopAll();
   render(next, true);
-}, "Stopped. Automation disarmed, queued page openings cancelled, and the schedule cleared."));
+}
+const STOP_MESSAGE = "Stopped. Automation disarmed, queued page openings cancelled, and the schedule cleared.";
+elements.disarmButton.addEventListener("click", () => runAction(stopEverything, STOP_MESSAGE));
+elements.stopTestButton.addEventListener("click", () => runAction(stopEverything, STOP_MESSAGE));
 
 elements.openCartButton.addEventListener("click", () => runAction(
   () => window.cartAssist.openCart(elements.storeShortcut.value),

@@ -85,7 +85,7 @@
             <span class="step-number">3</span>
             <div class="step-title">
               <h2>Save, then test</h2>
-              <p>Test opens your first enabled item in Chrome while disarmed — the companion reports price, seller, and stock without adding anything.</p>
+              <p>Test opens your first enabled item in Chrome while disarmed and reports price, seller, stock, and whether the offer would qualify. Nothing is added to any cart until you arm in step 4.</p>
             </div>
             <span class="step-state" id="stepVerifyState">Save needed</span>
           </header>
@@ -93,7 +93,9 @@
             <div class="action-row">
               <button class="button primary" id="saveButton" type="button">Save changes</button>
               <button class="button secondary" id="testButton" type="button">Test (no buying)</button>
+              <button class="button danger compact" id="stopTestButton" type="button">Stop</button>
             </div>
+            <p class="step-hint">A result of “Eligible offer” means arming would add it. Closing the store tab in Chrome ends the test’s reporting.</p>
           </div>
         </section>
 
