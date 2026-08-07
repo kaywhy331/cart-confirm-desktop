@@ -399,6 +399,8 @@ function sendEventNotification(event, product) {
     return;
   }
   if (!product) return;
+  if (product.alertLevel === "silent") return;
+  const force = product.alertLevel === "alarm";
   const store = retailerLabel(product.retailer);
   const key = `${product.id}:${event.eventType}:${event.reason || ""}`;
 
@@ -406,12 +408,13 @@ function sendEventNotification(event, product) {
     notifyOnce(
       key,
       `${store} offer is eligible`,
-      `${product.sku} is first-party at $${event.price.toFixed(2)} (cap $${product.maxPrice.toFixed(2)}).`
+      `${product.title || product.sku} is first-party at $${event.price.toFixed(2)} (cap $${product.maxPrice.toFixed(2)}).`,
+      force
     );
   } else if (event.eventType === "automation-blocked") {
     notifyOnce(key, `${store} safety check stopped`, event.message || "The offer did not pass every configured check.");
   } else if (event.eventType === "cart-item-confirmed") {
-    notifyOnce(key, `${store} cart confirmed`, `${product.sku}, quantity ${product.quantity}, is in the cart.`);
+    notifyOnce(key, `${store} cart confirmed`, `${product.title || product.sku}, quantity ${product.quantity}, is in the cart.`, force);
   } else if (event.eventType === "checkout-reached") {
     notifyOnce(key, `${store} checkout reached`, "The browser companion is validating the order review before submission.");
   } else if (event.eventType === "order-confirmed") {
@@ -670,7 +673,8 @@ function createWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
-      webSecurity: true
+      webSecurity: true,
+      autoplayPolicy: "no-user-gesture-required"
     }
   });
 

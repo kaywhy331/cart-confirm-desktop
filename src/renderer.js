@@ -24,6 +24,11 @@ const elements = {
   copyExtensionButton: document.getElementById("copyExtensionButton"),
   clearEventsButton: document.getElementById("clearEventsButton"),
   testButton: document.getElementById("testButton"),
+  worstCase: document.getElementById("worstCase"),
+  alarmBar: document.getElementById("alarmBar"),
+  alarmText: document.getElementById("alarmText"),
+  silenceAlarmButton: document.getElementById("silenceAlarmButton"),
+  eventFilterButton: document.getElementById("eventFilterButton"),
   connectionPill: document.getElementById("connectionPill"),
   connectionText: document.getElementById("connectionText"),
   boundaryBanner: document.getElementById("boundaryBanner"),
@@ -74,6 +79,12 @@ let testedSinceSave = false;
 let expandedIndex = -1;
 let previousAdvanceDone = null;
 let accordionInitialized = false;
+let eventFilterProductId = null;
+let lastAlarmEventStamp = "";
+const alarmLastFiredAt = new Map();
+let alarmAudio = null;
+let alarmBeepInterval = null;
+let alarmStopTimer = null;
 
 function setMessage(text, kind = "") {
   clearTimeout(messageTimer);
@@ -206,6 +217,7 @@ function createProductRow(product = {}) {
   field(row, "maxOrderTotal").value = String(Math.round(Number(product.maxOrderTotal || 0)));
   field(row, "quantity").value = product.quantity || 1;
   field(row, "action").value = product.action || "cart";
+  field(row, "alertLevel").value = product.alertLevel || "standard";
   field(row, "fulfillmentMode").value = product.fulfillmentMode || "manual";
   field(row, "enabled").checked = product.enabled !== false;
   updateRowStore(row);
@@ -297,6 +309,7 @@ function collectProducts() {
       maxOrderTotal: Number(field(row, "maxOrderTotal").value),
       quantity: Number(field(row, "quantity").value),
       action: field(row, "action").value,
+      alertLevel: field(row, "alertLevel").value,
       fulfillmentMode: field(row, "fulfillmentMode").value,
       enabled: field(row, "enabled").checked
     };
@@ -365,6 +378,23 @@ function updateBoundary() {
   elements.boundaryText.textContent = armed
     ? `${checkoutCount} auto-submit item${checkoutCount === 1 ? "" : "s"} may place a real order. "Prepare checkout" items always stop for your click.`
     : "Nothing is added to any cart until you arm automation in step 4.";
+  updateWorstCase();
+}
+
+// The hard ceiling Guppy-style: what everything hitting at once could cost.
+function updateWorstCase() {
+  let total = 0;
+  for (const row of elements.productList.querySelectorAll(".product-row")) {
+    if (!field(row, "enabled").checked) continue;
+    const action = field(row, "action").value;
+    if (action === "watch") continue;
+    total += ["review", "checkout"].includes(action)
+      ? Number(field(row, "maxOrderTotal").value) || 0
+      : (Number(field(row, "maxPrice").value) || 0) * (Number(field(row, "quantity").value) || 1);
+  }
+  elements.worstCase.textContent = total > 0
+    ? `Worst case if every enabled item hits its cap: $${Math.round(total)}. Automation can never exceed the caps you set.`
+    : "No spending exposure: only watch-only items are enabled.";
 }
 
 function setStepState(section, chip, done, label, attention = false) {
@@ -672,16 +702,88 @@ function renderProductStatuses(products, statuses) {
     state.textContent = stateLabel(product, status);
 
     card.append(store, title, age, state);
+    card.addEventListener("click", () => {
+      eventFilterProductId = eventFilterProductId === product.id ? null : product.id;
+      renderEvents(currentSnapshot?.events || []);
+    });
     return card;
   });
   elements.productStatusList.replaceChildren(...cards);
 }
 
-function renderEvents(events) {
+// --- Loud alarm for alert-level "alarm" items (throttled per item) ---
+
+const ALARM_EVENT_TYPES = new Set(["offer-observed", "cart-item-confirmed", "review-ready", "order-confirmed"]);
+const ALARM_THROTTLE_MS = 5 * 60_000;
+const ALARM_MAX_MS = 30_000;
+
+function silenceAlarm() {
+  clearInterval(alarmBeepInterval);
+  clearTimeout(alarmStopTimer);
+  alarmBeepInterval = null;
+  alarmStopTimer = null;
+  elements.alarmBar.hidden = true;
+}
+
+function beep() {
+  try {
+    alarmAudio ||= new (window.AudioContext || window.webkitAudioContext)();
+    const now = alarmAudio.currentTime;
+    for (const [offset, frequency] of [[0, 880], [0.18, 1245], [0.36, 880]]) {
+      const oscillator = alarmAudio.createOscillator();
+      const gain = alarmAudio.createGain();
+      oscillator.type = "square";
+      oscillator.frequency.value = frequency;
+      gain.gain.setValueAtTime(0.12, now + offset);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + offset + 0.15);
+      oscillator.connect(gain).connect(alarmAudio.destination);
+      oscillator.start(now + offset);
+      oscillator.stop(now + offset + 0.16);
+    }
+  } catch {
+    // Audio is best-effort; the visual alarm bar still shows.
+  }
+}
+
+function startAlarm(label) {
+  elements.alarmText.textContent = `🔔 ${label}`;
+  elements.alarmBar.hidden = false;
+  beep();
+  clearInterval(alarmBeepInterval);
+  clearTimeout(alarmStopTimer);
+  alarmBeepInterval = setInterval(beep, 1_500);
+  alarmStopTimer = setTimeout(silenceAlarm, ALARM_MAX_MS);
+}
+
+function checkForAlarmEvents(events) {
+  const products = currentSnapshot?.settings?.products || [];
+  for (const event of events.slice(0, 20)) {
+    if (!event.timestamp || event.timestamp <= lastAlarmEventStamp) break;
+    if (!ALARM_EVENT_TYPES.has(event.eventType)) continue;
+    if (event.eventType === "offer-observed" && event.eligible !== true) continue;
+    const product = products.find((candidate) => candidate.id === event.productId);
+    if (!product || product.alertLevel !== "alarm") continue;
+    const lastFired = alarmLastFiredAt.get(product.id) || 0;
+    if (Date.now() - lastFired < ALARM_THROTTLE_MS) continue;
+    alarmLastFiredAt.set(product.id, Date.now());
+    startAlarm(event.message || `${productLabel(product)}: ${eventName(event.eventType)}`);
+    break;
+  }
+  if (events.length && events[0].timestamp) lastAlarmEventStamp = events[0].timestamp;
+}
+
+function renderEvents(allEvents) {
+  const events = eventFilterProductId
+    ? allEvents.filter((event) => event.productId === eventFilterProductId)
+    : allEvents;
+  elements.eventFilterButton.hidden = !eventFilterProductId;
+  if (eventFilterProductId) {
+    elements.eventFilterButton.textContent = `Showing ${productTitle(eventFilterProductId) || "one item"} — show all`;
+  }
   if (!events.length) {
     const empty = document.createElement("div");
     empty.className = "empty-state";
-    empty.textContent = "No events yet.";
+    empty.textContent = eventFilterProductId ? "No events for this item yet." : "No events yet.";
     elements.eventList.replaceChildren(empty);
     return;
   }
@@ -738,6 +840,7 @@ function render(snapshot, populate = false) {
   elements.armButton.disabled = Boolean(settings.automationEnabled);
   elements.armButton.textContent = settings.automationEnabled ? "Armed" : "Arm automation";
   renderProductStatuses(settings.products, productStatuses);
+  checkForAlarmEvents(events);
   renderEvents(events);
   renderSchedule();
   updateBoundary();
@@ -873,6 +976,12 @@ elements.armButton.addEventListener("click", () => runAction(async () => {
   render(next, true);
   return next;
 }, "Armed. Open enabled items now — the companion acts as each page loads."));
+
+elements.silenceAlarmButton.addEventListener("click", silenceAlarm);
+elements.eventFilterButton.addEventListener("click", () => {
+  eventFilterProductId = null;
+  renderEvents(currentSnapshot?.events || []);
+});
 
 window.cartAssist.onUpdate((snapshot) => render(snapshot));
 setInterval(() => {

@@ -35,6 +35,11 @@
       <span id="boundaryText">Nothing is added to any cart until you arm automation in step 4.</span>
     </div>
 
+    <div class="alarm-bar" id="alarmBar" hidden>
+      <span id="alarmText">Alert</span>
+      <button class="button danger compact" id="silenceAlarmButton" type="button">Silence</button>
+    </div>
+
     <main class="layout">
       <div class="steps-column" id="stepsColumn">
 
@@ -112,8 +117,9 @@
           <div class="step-body">
             <div class="arm-row">
               <button class="button danger" id="armButton" type="button">Arm automation</button>
-              <span><strong>Arming applies immediately</strong> (unsaved edits are saved first). “Add to cart only” items stop in the cart; “I submit” items stop at the final review; only “Submit automatically” items can place a real order.</span>
+              <span><strong>Arming applies immediately</strong> (unsaved edits are saved first). “Watch” items only alert; “Add to cart only” items stop in the cart; “I submit” items stop at the final review; only “Submit automatically” items can place a real order.</span>
             </div>
+            <p class="step-hint worst-case" id="worstCase"></p>
             <div class="action-row run-row">
               <button class="button primary" id="openBuyListButton" type="button">Open enabled items now</button>
               <button class="button danger" id="disarmButton" type="button">Stop everything</button>
@@ -207,7 +213,10 @@
               <span class="eyebrow">Persistent local safety ledger</span>
               <h2>Event log</h2>
             </div>
-            <button class="button ghost compact" id="clearEventsButton" type="button">Clear</button>
+            <div class="action-row">
+              <button class="button ghost compact" id="eventFilterButton" type="button" hidden>Show all</button>
+              <button class="button ghost compact" id="clearEventsButton" type="button">Clear</button>
+            </div>
           </div>
           <div class="event-list" id="eventList">
             <div class="empty-state">No events yet.</div>
@@ -258,6 +267,7 @@
         <label class="field">
           <span>When it is in stock</span>
           <select data-field="action">
+            <option value="watch">Watch &amp; alert only</option>
             <option value="cart">Add to cart only</option>
             <option value="review">Prepare checkout, I submit</option>
             <option value="checkout">Submit order automatically</option>
@@ -286,6 +296,14 @@
               <option value="manual">Confirm manually</option>
               <option value="shipping">Shipping / delivery</option>
               <option value="pickup">Store pickup</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Alert loudness</span>
+            <select data-field="alertLevel">
+              <option value="standard">Standard ping</option>
+              <option value="alarm">Loud alarm until silenced</option>
+              <option value="silent">Silent log only</option>
             </select>
           </label>
         </div>

@@ -193,6 +193,17 @@ test("the renderer boots the guided-step UI and tracks step state", async () => 
   assert.equal(doc.querySelector("[data-field='maxPrice']").value, "40");
   assert.equal(doc.querySelector("[data-field='maxPrice']").step, "1");
 
+  // Guppy-style additions: watch mode, alert loudness, worst-case exposure,
+  // and clicking a status row filters the event log to that item.
+  assert.ok(doc.querySelector("[data-field='action'] option[value='watch']"));
+  assert.equal(doc.querySelector("[data-field='alertLevel']").value, "standard");
+  assert.match(doc.getElementById("worstCase").textContent, /\$40/);
+  assert.equal(doc.getElementById("alarmBar").hidden, true);
+  doc.querySelector(".product-status-card").click();
+  assert.equal(doc.getElementById("eventFilterButton").hidden, false);
+  doc.getElementById("eventFilterButton").click();
+  assert.equal(doc.getElementById("eventFilterButton").hidden, true);
+
   // Arming is a one-click action, not a form field needing a resave.
   assert.equal(doc.getElementById("armButton").disabled, false);
   assert.equal(doc.getElementById("armButton").textContent, "Arm automation");

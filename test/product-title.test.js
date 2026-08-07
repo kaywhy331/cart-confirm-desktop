@@ -44,3 +44,20 @@ test("editing only a schedule time is allowed while automation stays armed", () 
   };
   assert.doesNotThrow(() => assertSafeArmedUpdate(current, next));
 });
+
+test("watch-only missions and alert levels normalize and arm without purchase caps", () => {
+  const { normalizeSettings } = require("../lib/core");
+  const base = { productUrl: "https://www.target.com/p/restocks/A-95298172", maxPrice: 40 };
+  assert.equal(normalizeProduct({ ...base, action: "watch" }).action, "watch");
+  assert.equal(normalizeProduct(base).alertLevel, "standard");
+  assert.equal(normalizeProduct({ ...base, alertLevel: "alarm" }).alertLevel, "alarm");
+  assert.throws(() => normalizeProduct({ ...base, alertLevel: "shout" }), /alert level/);
+
+  // A watch mission never needs an order-total cap to arm.
+  const armed = normalizeSettings({
+    products: [{ ...base, action: "watch", alertLevel: "alarm" }],
+    automationEnabled: true
+  }, {});
+  assert.equal(armed.automationEnabled, true);
+  assert.equal(armed.products[0].maxOrderTotal, 0);
+});

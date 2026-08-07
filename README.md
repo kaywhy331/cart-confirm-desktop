@@ -30,7 +30,10 @@ Start with **Add to cart only** until you have verified the current store select
 
 - A guided four-step layout: connect Chrome, add items, save and test, then arm and run. Cards collapse to one expanded step, advance automatically as each stage completes, and reopen with a click; each shows whether it is done or still needs attention.
 - Up to 50 unique products across Target, Walmart, and Amazon, each with an optional display name.
-- Per-product maximum unit price, maximum final order total, quantity, fulfillment mode, enabled state, and add-only/review/auto-submit action. Rarely used fields live behind each row's **Advanced** section.
+- Per-product maximum unit price, maximum final order total, quantity, fulfillment mode, enabled state, and a mission action: **Watch & alert only** (monitors and alerts at or under your cap without ever clicking), add-only, final-review, or auto-submit. Rarely used fields live behind each row's **Advanced** section.
+- Per-product alert loudness: standard ping, **loud alarm** (repeating audible alert with an on-screen Silence bar, throttled to once per five minutes per item), or silent log only.
+- A worst-case exposure line in step 4: the total if every enabled item hits its cap — automation can never exceed the caps you set.
+- Click any live-status row to filter the event log to that item's timeline.
 - A **Test (no buying)** button that opens the first enabled item while disarmed so the companion can report price, seller, and stock without touching the cart.
 - Per-product scheduled openings for known drop times: give any item an **Open at** date/time, save, and arm in advance. At that moment its page opens in Chrome (reusing an existing tab when possible) and the armed companion takes over. Step 4 shows a seven-day calendar strip of upcoming openings with a live countdown; times fire exactly once, are marked missed instead of running more than two minutes late, and an old single global schedule migrates onto its store's enabled products automatically.
 - Manual **Open enabled items now** action for all enabled stores, with each store's pages queued independently. When the companion is connected, an existing Chrome tab for that store is navigated instead of opening a new window, and identical pending opens are deduplicated.

@@ -216,7 +216,10 @@
     }
     if (["intent", "uncertain"].includes(state.submission?.phase)) return;
 
-    const attempt = await requireAttempt(product);
+    // Watch-only items monitor without consuming the purchase attempt budget;
+    // the four-hour run limit and the store traffic budget still apply.
+    const counted = product.action !== "watch";
+    const attempt = counted ? await requireAttempt(product) : currentAttempt(product) + 1;
     if (attempt === null) return;
     const baseSeconds = Math.max(5, Number(config.retryIntervalSeconds || 15));
     const multiplier = errorBackoff ? Math.min(8, 2 ** Math.min(3, Math.floor((attempt - 1) / 3))) : Math.min(3, 1 + Math.floor(attempt / 20));
@@ -451,6 +454,11 @@
         }, `blocked:${product.id}:${result.reason}:${offer.price}:${offer.seller}`, 30_000);
       }
       await scheduleRetry(product, `Waiting for an eligible ${adapter.label} first-party offer.`);
+      return;
+    }
+
+    if (product.action === "watch") {
+      await scheduleRetry(product, `Watching this ${adapter.label} item; alerts fire while it stays eligible.`);
       return;
     }
 
