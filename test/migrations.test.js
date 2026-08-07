@@ -53,3 +53,23 @@ test("legacy single-product auto-checkout settings are also preserved and disarm
   assert.equal(migrated.automationEnabled, false);
   assert.equal(migrated.productUrl, stored.productUrl);
 });
+
+test("the legacy global schedule migrates onto matching enabled products", () => {
+  const openAt = "2026-08-14T14:00:00.000Z";
+  const migrated = migrateStoredSettings({
+    scheduledOpenEnabled: true,
+    scheduledOpenAt: openAt,
+    scheduledRetailer: "target",
+    products: [
+      { retailer: "target", sku: "1", enabled: true },
+      { retailer: "target", sku: "2", enabled: false },
+      { retailer: "walmart", sku: "3", enabled: true },
+      { retailer: "target", sku: "4", enabled: true, openAt: "2026-08-20T10:00:00.000Z" }
+    ]
+  });
+  assert.equal(migrated.scheduledOpenEnabled, false);
+  assert.equal(migrated.products[0].openAt, openAt);
+  assert.equal(migrated.products[1].openAt, undefined);
+  assert.equal(migrated.products[2].openAt, undefined);
+  assert.equal(migrated.products[3].openAt, "2026-08-20T10:00:00.000Z");
+});

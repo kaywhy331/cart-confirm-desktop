@@ -73,6 +73,7 @@
             </div>
             <span class="step-state" id="stepProductsState">Add an item</span>
             <button class="button ghost compact" id="addProductButton" type="button">+ Add item</button>
+            <button class="button primary compact" id="saveProductsButton" type="button">Save items</button>
           </header>
           <div class="step-body">
             <div class="product-list" id="productList"></div>
@@ -117,11 +118,19 @@
               <button class="button primary" id="openBuyListButton" type="button">Open enabled items now</button>
               <button class="button danger" id="disarmButton" type="button">Stop everything</button>
             </div>
-            <p class="step-hint">Stop disarms automation, cancels queued page openings, and clears the schedule — it is always available.</p>
-            <p class="step-hint">Opening reuses your existing Chrome store tab when one is available, and paces multiple opens to respect store limits.</p>
+            <p class="step-hint">Stop disarms automation, cancels queued page openings, and clears scheduled times. Opening reuses your existing Chrome store tab when one is available.</p>
+
+            <div class="schedule-panel">
+              <div class="schedule-panel-head">
+                <span class="eyebrow">Scheduled openings</span>
+                <span class="schedule-next" id="scheduleNext"></span>
+              </div>
+              <div class="schedule-week" id="scheduleWeek"></div>
+              <p class="step-hint">For a known drop, set “Open at” on the item (step 2), save, and arm now. At that moment the item’s page opens in Chrome and the armed companion takes over.</p>
+            </div>
 
             <details class="advanced-box">
-              <summary>Advanced: timing, schedule, and store shortcuts</summary>
+              <summary>Advanced: timing and store shortcuts</summary>
               <div class="automation-grid">
                 <label class="control-card">
                   <span class="control-title">Fast-load mode</span>
@@ -155,28 +164,6 @@
                   </span>
                   <small>429s and temporary gateway failures pause that store; a longer Retry-After wins.</small>
                 </label>
-              </div>
-
-              <div class="schedule-box">
-                <label class="toggle-row schedule-toggle">
-                  <input id="scheduledOpenEnabled" type="checkbox">
-                  <span>Open every enabled item for one store once at a scheduled time</span>
-                </label>
-                <div class="schedule-fields">
-                  <label class="field">
-                    <span>Store</span>
-                    <select id="scheduledRetailer">
-                      <option value="target">Target</option>
-                      <option value="walmart">Walmart</option>
-                      <option value="amazon">Amazon</option>
-                    </select>
-                  </label>
-                  <label class="field">
-                    <span>Local date and time</span>
-                    <input id="scheduledOpenAt" type="datetime-local">
-                  </label>
-                </div>
-                <div class="countdown" id="countdown">No scheduled opening.</div>
               </div>
 
               <div class="store-shortcuts">
@@ -275,6 +262,10 @@
             <option value="review">Prepare checkout, I submit</option>
             <option value="checkout">Submit order automatically</option>
           </select>
+        </label>
+        <label class="field">
+          <span>Open at (optional)</span>
+          <input data-field="openAt" type="datetime-local">
         </label>
       </div>
 

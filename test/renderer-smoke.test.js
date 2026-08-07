@@ -80,9 +80,18 @@ test("the renderer boots the guided-step UI and tracks step state", async () => 
   assert.equal(doc.querySelector("[data-field='title']").value, "Booster Box");
   assert.equal(doc.getElementById("stepConnectState").textContent, "Connected ✓");
   assert.equal(doc.getElementById("stepProductsState").textContent, "Ready ✓");
-  assert.equal(doc.getElementById("stepVerifyState").textContent, "Saved ✓");
+  assert.equal(doc.getElementById("stepVerifyState").textContent, "Saved — now test");
   assert.equal(doc.getElementById("stepRunState").textContent, "Disarmed");
   assert.match(doc.getElementById("stepConnect").className, /done/);
+
+  // Accordion: connected + saved but untested boots with step 3 expanded and
+  // the completed steps collapsed; clicking a header switches cards.
+  assert.match(doc.getElementById("stepConnect").className, /collapsed/);
+  assert.match(doc.getElementById("stepProducts").className, /collapsed/);
+  assert.doesNotMatch(doc.getElementById("stepVerify").className, /collapsed/);
+  doc.getElementById("stepProducts").querySelector(".step-header").click();
+  assert.doesNotMatch(doc.getElementById("stepProducts").className, /collapsed/);
+  assert.match(doc.getElementById("stepVerify").className, /collapsed/);
 
   doc.getElementById("addProductButton").click();
   assert.equal(doc.querySelectorAll(".product-row").length, 2);
@@ -186,6 +195,16 @@ test("the renderer boots the guided-step UI and tracks step state", async () => 
   pushUpdate(armed);
   assert.equal(doc.getElementById("armButton").disabled, true);
   assert.equal(doc.getElementById("stepRunState").textContent, "Armed — live");
+
+  // A saved per-product schedule renders as a chip in the week strip with a
+  // live countdown to the next opening.
+  const scheduled = snapshotFixture();
+  scheduled.settings.products[0].openAt = new Date(Date.now() + 3_600_000).toISOString();
+  pushUpdate(scheduled);
+  const chip = doc.querySelector(".schedule-chip");
+  assert.ok(chip, "expected a schedule chip in the week strip");
+  assert.match(chip.textContent, /Booster Box/);
+  assert.match(doc.getElementById("scheduleNext").textContent, /Next: Booster Box in/);
 
   window.close();
 });

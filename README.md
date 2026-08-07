@@ -28,11 +28,11 @@ Start with **Add to cart only** until you have verified the current store select
 
 ## Features
 
-- A guided four-step layout: connect Chrome, add items, save and test, then arm and run. Each step shows whether it is done or still needs attention.
+- A guided four-step layout: connect Chrome, add items, save and test, then arm and run. Cards collapse to one expanded step, advance automatically as each stage completes, and reopen with a click; each shows whether it is done or still needs attention.
 - Up to 50 unique products across Target, Walmart, and Amazon, each with an optional display name.
 - Per-product maximum unit price, maximum final order total, quantity, fulfillment mode, enabled state, and add-only/review/auto-submit action. Rarely used fields live behind each row's **Advanced** section.
 - A **Test (no buying)** button that opens the first enabled item while disarmed so the companion can report price, seller, and stock without touching the cart.
-- One global schedule: choose one store and one local date/time. At that time, only enabled products for that store are queued.
+- Per-product scheduled openings for known drop times: give any item an **Open at** date/time, save, and arm in advance. At that moment its page opens in Chrome (reusing an existing tab when possible) and the armed companion takes over. Step 4 shows a seven-day calendar strip of upcoming openings with a live countdown; times fire exactly once, are marked missed instead of running more than two minutes late, and an old single global schedule migrates onto its store's enabled products automatically.
 - Manual **Open enabled items now** action for all enabled stores, with each store's pages queued independently. When the companion is connected, an existing Chrome tab for that store is navigated instead of opening a new window, and identical pending opens are deduplicated.
 - Configurable retry interval from 5 to 3,600 seconds, with jitter and increasing backoff after repeated store errors.
 - Configurable per-store navigation spacing from 10 to 3,600 seconds and overload cooldown from 60 to 86,400 seconds.
@@ -73,7 +73,7 @@ For each row in step 2:
 5. For the two checkout-involving actions, open **Advanced** and set a positive maximum **final order total** (at least the capped unit price multiplied by quantity). For auto-submit, also explicitly require **Shipping / delivery** or **Store pickup**; if the final page cannot prove that choice, submission is blocked.
 6. Enable the row and save in step 3.
 
-To use the one allowed schedule, enable it, select a store, and select one future local date/time. There is no per-product or second schedule. A receipt is persisted before pages open, the schedule disables itself after that attempt, and a time missed by more than two minutes is marked missed instead of running late.
+To schedule an item for a known drop, set its **Open at** field to a future local date/time and save. Each product schedules independently. A receipt is persisted before the page opens, the time clears itself after that single attempt, and a time missed by more than two minutes is marked missed instead of running late. **Stop everything** clears all scheduled times.
 
 ## Recommended workflow
 

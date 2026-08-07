@@ -28,7 +28,7 @@ const {
 } = require("./lib/core");
 const { migrateStoredSettings } = require("./lib/migrations");
 const { consumeStoreAction } = require("./lib/action-budget");
-const { evaluateSchedule } = require("./lib/schedule");
+const { evaluateProductSchedules, evaluateSchedule } = require("./lib/schedule");
 const { loadRuntimeState, saveRuntimeState } = require("./lib/runtime-state");
 const { isAllowedExtensionOrigin, isTrustedCompanionRequest } = require("./lib/extension-identity");
 const { createStoreOpenQueue } = require("./lib/store-open-queue");
@@ -693,6 +693,11 @@ function registerIpc() {
     if (normalized.scheduledOpenEnabled && new Date(normalized.scheduledOpenAt).getTime() <= Date.now()) {
       throw new Error("Choose a future date and time for the single store schedule.");
     }
+    for (const product of normalized.products) {
+      if (product.openAt && new Date(product.openAt).getTime() <= Date.now()) {
+        throw new Error(`Choose a future opening time for ${product.title || product.sku}.`);
+      }
+    }
     if (normalized.automationEnabled && !wasArmed) {
       normalized = { ...normalized, automationRunId: crypto.randomUUID() };
     }
@@ -711,7 +716,14 @@ function registerIpc() {
     stopEpoch += 1;
     storeOpenQueue.cancelPending();
     openRequests.cancelAll();
-    settings = { ...settings, automationEnabled: false, scheduledOpenEnabled: false };
+    settings = {
+      ...settings,
+      automationEnabled: false,
+      scheduledOpenEnabled: false,
+      products: settings.products.map((product) => (
+        product.openAt ? { ...product, openAt: "" } : product
+      ))
+    };
     persistSettings();
     configVersion += 1;
     status = {
@@ -747,6 +759,59 @@ function registerIpc() {
   });
 }
 
+function clearProductOpenAt(productId) {
+  settings = {
+    ...settings,
+    products: settings.products.map((product) => (
+      product.id === productId ? { ...product, openAt: "" } : product
+    ))
+  };
+  persistSettings();
+  configVersion += 1;
+}
+
+function handleProductSchedule(decision) {
+  const product = settings.products.find((candidate) => candidate.id === decision.productId);
+  if (!product) return;
+  const label = product.title || `${retailerLabel(product.retailer)} ${product.sku}`;
+  runtimeState.productScheduleReceipts[decision.key] = {
+    status: decision.action === "fire" ? "firing" : "missed",
+    recordedAt: new Date().toISOString()
+  };
+  clearProductOpenAt(decision.productId);
+  persistRuntimeState();
+
+  if (decision.action === "missed") {
+    status = {
+      ...status,
+      lastMessage: `The scheduled opening for ${label} was missed by more than two minutes. Save a new future time.`
+    };
+    notifyOnce(`product-schedule-missed:${decision.key}`, "Scheduled opening missed", `${label} was not opened. Save a new future time.`, true);
+    broadcast();
+    return;
+  }
+
+  status = { ...status, lastMessage: `Scheduled opening: ${label} is opening now.` };
+  broadcast();
+  void openProduct(decision.productId)
+    .then(() => {
+      runtimeState.productScheduleReceipts[decision.key] = {
+        status: "fired",
+        recordedAt: new Date().toISOString()
+      };
+      persistRuntimeState();
+      notifyOnce(
+        `product-schedule:${decision.key}`,
+        `${retailerLabel(product.retailer)} scheduled opening`,
+        `${label} was opened at its scheduled time.`,
+        true
+      );
+    })
+    .catch((error) => {
+      notifyOnce(`product-schedule-error:${decision.key}`, "Scheduled opening failed", error.message, true);
+    });
+}
+
 function startScheduler() {
   schedulerTimer = setInterval(() => {
     if (status.companion === "connected" && status.lastHeartbeatAt) {
@@ -755,6 +820,14 @@ function startScheduler() {
         status = { ...status, companion: "waiting" };
         broadcast();
       }
+    }
+
+    for (const productDecision of evaluateProductSchedules(
+      settings.products,
+      runtimeState?.productScheduleReceipts,
+      Date.now()
+    )) {
+      handleProductSchedule(productDecision);
     }
 
     const decision = evaluateSchedule(settings, runtimeState?.scheduleReceipt, Date.now());

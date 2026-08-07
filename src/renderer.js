@@ -6,15 +6,14 @@ const elements = {
   retryIntervalSeconds: document.getElementById("retryIntervalSeconds"),
   storeNavigationIntervalSeconds: document.getElementById("storeNavigationIntervalSeconds"),
   overloadCooldownSeconds: document.getElementById("overloadCooldownSeconds"),
-  scheduledOpenEnabled: document.getElementById("scheduledOpenEnabled"),
-  scheduledRetailer: document.getElementById("scheduledRetailer"),
-  scheduledOpenAt: document.getElementById("scheduledOpenAt"),
-  countdown: document.getElementById("countdown"),
+  scheduleNext: document.getElementById("scheduleNext"),
+  scheduleWeek: document.getElementById("scheduleWeek"),
   productList: document.getElementById("productList"),
   productRowTemplate: document.getElementById("productRowTemplate"),
   productStatusList: document.getElementById("productStatusList"),
   addProductButton: document.getElementById("addProductButton"),
   saveButton: document.getElementById("saveButton"),
+  saveProductsButton: document.getElementById("saveProductsButton"),
   stopTestButton: document.getElementById("stopTestButton"),
   openBuyListButton: document.getElementById("openBuyListButton"),
   disarmButton: document.getElementById("disarmButton"),
@@ -71,6 +70,10 @@ let currentSnapshot = null;
 let messageTimer = null;
 let formDirty = false;
 let openRunInFlight = false;
+let testedSinceSave = false;
+let expandedIndex = -1;
+let previousAdvanceDone = null;
+let accordionInitialized = false;
 
 function setMessage(text, kind = "") {
   clearTimeout(messageTimer);
@@ -196,6 +199,7 @@ function createProductRow(product = {}) {
   row.dataset.productId = product.id || "";
   field(row, "retailer").value = retailer;
   field(row, "title").value = product.title || "";
+  field(row, "openAt").value = toLocalInputValue(product.openAt);
   field(row, "productUrl").value = product.productUrl || "";
   field(row, "sku").value = product.sku || "";
   field(row, "maxPrice").value = Number(product.maxPrice || 0).toFixed(2);
@@ -272,12 +276,8 @@ function populateForm(settings) {
   elements.retryIntervalSeconds.value = settings.retryIntervalSeconds;
   elements.storeNavigationIntervalSeconds.value = settings.storeNavigationIntervalSeconds;
   elements.overloadCooldownSeconds.value = settings.overloadCooldownSeconds;
-  elements.scheduledOpenEnabled.checked = settings.scheduledOpenEnabled;
-  elements.scheduledRetailer.value = settings.scheduledRetailer || "target";
-  elements.scheduledOpenAt.value = toLocalInputValue(settings.scheduledOpenAt);
   elements.productList.replaceChildren(...settings.products.map(createProductRow));
   formDirty = false;
-  updateScheduleControls();
   updateBoundary();
   updateSteps();
 }
@@ -286,9 +286,11 @@ function collectProducts() {
   return [...elements.productList.querySelectorAll(".product-row")].map((row) => {
     const retailer = field(row, "retailer").value;
     const sku = field(row, "sku").value.trim();
+    const openAtValue = field(row, "openAt").value;
     return {
       retailer,
       title: field(row, "title").value.trim(),
+      openAt: openAtValue ? new Date(openAtValue).toISOString() : "",
       productUrl: field(row, "productUrl").value.trim(),
       sku: retailer === "amazon" ? sku.toUpperCase() : sku,
       maxPrice: Number(field(row, "maxPrice").value),
@@ -324,19 +326,10 @@ function validateVisibleInputs() {
       return false;
     }
   }
-  if (elements.scheduledOpenEnabled.checked && !elements.scheduledOpenAt.value) {
-    setMessage("Choose a date and time for the single store schedule.", "error");
-    reportInvalid(elements.scheduledOpenAt);
-    elements.scheduledOpenAt.focus();
-    return false;
-  }
   return true;
 }
 
 function formSettings() {
-  const scheduledOpenAt = elements.scheduledOpenAt.value
-    ? new Date(elements.scheduledOpenAt.value).toISOString()
-    : "";
   return {
     products: collectProducts(),
     // Armed state is not form data: it only changes through Arm and Stop.
@@ -345,15 +338,17 @@ function formSettings() {
     retryIntervalSeconds: Number(elements.retryIntervalSeconds.value),
     storeNavigationIntervalSeconds: Number(elements.storeNavigationIntervalSeconds.value),
     overloadCooldownSeconds: Number(elements.overloadCooldownSeconds.value),
-    scheduledOpenEnabled: elements.scheduledOpenEnabled.checked,
-    scheduledRetailer: elements.scheduledRetailer.value,
-    scheduledOpenAt
+    // The single global schedule is retired; per-product openAt replaces it.
+    scheduledOpenEnabled: false,
+    scheduledRetailer: currentSnapshot?.settings?.scheduledRetailer || "target",
+    scheduledOpenAt: ""
   };
 }
 
 async function saveCurrentForm() {
   if (!validateVisibleInputs()) throw new Error("Fix the highlighted settings before saving.");
   const next = await window.cartAssist.saveSettings(formSettings());
+  testedSinceSave = false;
   render(next, true);
   return next;
 }
@@ -462,7 +457,7 @@ function updateSteps() {
     elements.stepVerify,
     elements.stepVerifyState,
     !formDirty,
-    formDirty ? "Save needed" : "Saved ✓",
+    formDirty ? "Save needed" : testedSinceSave ? "Tested ✓" : "Saved — now test",
     formDirty
   );
 
@@ -471,46 +466,138 @@ function updateSteps() {
   elements.stepRun.classList.toggle("done", armed);
   elements.stepRun.classList.toggle("armed", armed);
   elements.stepRun.classList.remove("attention");
+
+  // Accordion auto-advance fires only on discrete completions (connect, save,
+  // test, arm) of the currently expanded card — never on keystrokes, and never
+  // by yanking the user away from a card they opened themselves.
+  const advanceDone = [
+    companionState.done,
+    hasReadyRow && !formDirty,
+    !formDirty && testedSinceSave,
+    armed
+  ];
+  if (!accordionInitialized && currentSnapshot) {
+    accordionInitialized = true;
+    const target = firstIncompleteStep(advanceDone);
+    expandStep(target === -1 ? STEP_SECTIONS.length - 1 : target);
+  } else if (
+    previousAdvanceDone
+    && expandedIndex >= 0
+    && !previousAdvanceDone[expandedIndex]
+    && advanceDone[expandedIndex]
+  ) {
+    const next = firstIncompleteStep(advanceDone, expandedIndex + 1);
+    if (next !== -1) expandStep(next);
+  }
+  previousAdvanceDone = advanceDone;
 }
 
-function updateScheduleControls() {
-  const enabled = elements.scheduledOpenEnabled.checked;
-  elements.scheduledRetailer.disabled = !enabled;
-  elements.scheduledOpenAt.disabled = !enabled;
-  updateCountdown();
+// --- Accordion steps ---
+
+const STEP_SECTIONS = [elements.stepConnect, elements.stepProducts, elements.stepVerify, elements.stepRun];
+
+function applyAccordion() {
+  STEP_SECTIONS.forEach((section, index) => {
+    section.classList.toggle("collapsed", index !== expandedIndex);
+  });
 }
 
-function updateCountdown() {
-  const enabled = elements.scheduledOpenEnabled.checked;
-  const value = elements.scheduledOpenAt.value;
-  const store = STORE_LABELS[elements.scheduledRetailer.value] || "Selected store";
+function expandStep(index) {
+  expandedIndex = index;
+  applyAccordion();
+}
 
-  if (!enabled || !value) {
-    elements.countdown.textContent = "No scheduled opening. Only one store schedule can be active.";
-    return;
+function firstIncompleteStep(flags, from = 0) {
+  for (let index = from; index < flags.length; index += 1) {
+    if (!flags[index]) return index;
   }
+  return -1;
+}
 
-  const target = new Date(value).getTime();
-  if (Number.isNaN(target)) {
-    elements.countdown.textContent = "Choose a valid local date and time.";
-    return;
-  }
+STEP_SECTIONS.forEach((section, index) => {
+  section.querySelector(".step-header").addEventListener("click", (event) => {
+    if (event.target instanceof Element && event.target.closest("button")) return;
+    expandedIndex = expandedIndex === index ? -1 : index;
+    applyAccordion();
+  });
+});
 
-  const remaining = target - Date.now();
-  if (remaining <= 0) {
-    elements.countdown.textContent = `${store} scheduled time reached. Save a future time to arm it again.`;
-    return;
-  }
+// --- Per-product schedule agenda ---
 
-  const totalSeconds = Math.floor(remaining / 1000);
+function scheduledProducts() {
+  return (currentSnapshot?.settings?.products || [])
+    .filter((product) => product.enabled && product.openAt)
+    .map((product) => ({ ...product, openAtMs: new Date(product.openAt).getTime() }))
+    .filter((product) => Number.isFinite(product.openAtMs))
+    .sort((a, b) => a.openAtMs - b.openAtMs);
+}
+
+function productLabel(product) {
+  return product.title || `${STORE_LABELS[product.retailer]} ${product.sku}`;
+}
+
+function formatRemaining(ms) {
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
   const days = Math.floor(totalSeconds / 86400);
   const hours = Math.floor((totalSeconds % 86400) / 3600);
   const minutes = Math.floor((totalSeconds % 3600) / 60);
   const seconds = totalSeconds % 60;
   const chunks = [];
   if (days) chunks.push(`${days}d`);
-  chunks.push(`${hours}h`, `${minutes}m`, `${seconds}s`);
-  elements.countdown.textContent = `${store} items open once in ${chunks.join(" ")}.`;
+  if (days || hours) chunks.push(`${hours}h`);
+  chunks.push(`${minutes}m`, `${seconds}s`);
+  return chunks.join(" ");
+}
+
+function updateScheduleNext() {
+  const items = scheduledProducts();
+  if (!items.length) {
+    elements.scheduleNext.textContent = "Nothing scheduled";
+    return;
+  }
+  const item = items[0];
+  const remaining = item.openAtMs - Date.now();
+  elements.scheduleNext.textContent = remaining <= 0
+    ? `${productLabel(item)}: opening now`
+    : `Next: ${productLabel(item)} in ${formatRemaining(remaining)}`;
+}
+
+function renderSchedule() {
+  const items = scheduledProducts();
+  const dayStart = new Date();
+  dayStart.setHours(0, 0, 0, 0);
+  const weekStart = dayStart.getTime();
+  const cells = [];
+  for (let dayOffset = 0; dayOffset < 7; dayOffset += 1) {
+    const start = weekStart + dayOffset * 86_400_000;
+    const end = start + 86_400_000;
+    const cell = document.createElement("div");
+    cell.className = dayOffset === 0 ? "schedule-day today" : "schedule-day";
+    const head = document.createElement("span");
+    head.className = "day-head";
+    head.textContent = new Date(start).toLocaleDateString([], { weekday: "short", day: "numeric" });
+    cell.append(head);
+    for (const item of items.filter((candidate) => candidate.openAtMs >= start && candidate.openAtMs < end)) {
+      const chip = document.createElement("span");
+      chip.className = "schedule-chip";
+      chip.dataset.retailer = item.retailer;
+      chip.textContent = `${new Date(item.openAtMs).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })} · ${productLabel(item)}`;
+      chip.title = `${STORE_LABELS[item.retailer]} · ${productLabel(item)}`;
+      cell.append(chip);
+    }
+    cells.push(cell);
+  }
+  const later = items.filter((item) => item.openAtMs >= weekStart + 7 * 86_400_000);
+  if (later.length) {
+    const div = document.createElement("div");
+    div.className = "schedule-later";
+    div.textContent = `Later: ${later.map((item) => (
+      `${productLabel(item)} — ${new Date(item.openAtMs).toLocaleString([], { dateStyle: "medium", timeStyle: "short" })}`
+    )).join(" · ")}`;
+    cells.push(div);
+  }
+  elements.scheduleWeek.replaceChildren(...cells);
+  updateScheduleNext();
 }
 
 function productStateClass(product, status) {
@@ -660,15 +747,11 @@ function render(snapshot, populate = false) {
   currentSnapshot = snapshot;
   const { settings, status, productStatuses, events, app } = snapshot;
   if (populate) populateForm(settings);
-  else if (previousSettings && (
-    previousSettings.scheduledOpenEnabled !== settings.scheduledOpenEnabled
-    || previousSettings.scheduledRetailer !== settings.scheduledRetailer
-    || previousSettings.scheduledOpenAt !== settings.scheduledOpenAt
-  )) {
-    elements.scheduledOpenEnabled.checked = settings.scheduledOpenEnabled;
-    elements.scheduledRetailer.value = settings.scheduledRetailer || "target";
-    elements.scheduledOpenAt.value = toLocalInputValue(settings.scheduledOpenAt);
-    updateScheduleControls();
+  else if (previousSettings && !formDirty && JSON.stringify(
+    previousSettings.products.map((product) => [product.id, product.openAt])
+  ) !== JSON.stringify(settings.products.map((product) => [product.id, product.openAt]))) {
+    // The scheduler cleared or fired a per-product time; refresh the clean form.
+    populateForm(settings);
   }
 
   elements.connectionPill.classList.toggle("connected", status.companion === "connected");
@@ -683,7 +766,7 @@ function render(snapshot, populate = false) {
   elements.armButton.textContent = settings.automationEnabled ? "Armed" : "Arm automation";
   renderProductStatuses(settings.products, productStatuses);
   renderEvents(events);
-  updateCountdown();
+  renderSchedule();
   updateBoundary();
   updateSteps();
 }
@@ -724,10 +807,9 @@ elements.addProductButton.addEventListener("click", () => {
   updateBoundary();
 });
 
-elements.saveButton.addEventListener("click", () => runAction(
-  saveCurrentForm,
-  "Saved. The browser companion picks up the new list within a few seconds."
-));
+const SAVE_MESSAGE = "Saved. The browser companion picks up the new list within a few seconds.";
+elements.saveButton.addEventListener("click", () => runAction(saveCurrentForm, SAVE_MESSAGE));
+elements.saveProductsButton.addEventListener("click", () => runAction(saveCurrentForm, SAVE_MESSAGE));
 
 elements.testButton.addEventListener("click", () => runAction(async () => {
   if (formDirty) throw new Error("Save your changes first (step 3), then run the test.");
@@ -735,7 +817,10 @@ elements.testButton.addEventListener("click", () => runAction(async () => {
     throw new Error("Disarm automation before testing — Test opens the product page without buying anything.");
   }
   await window.cartAssist.testEvent();
-  return window.cartAssist.openProduct();
+  const opened = await window.cartAssist.openProduct();
+  testedSinceSave = true;
+  updateSteps();
+  return opened;
 }, (result) => (result?.via === "companion-tab"
   ? "Test started in your existing Chrome tab. Watch “What the companion sees” — nothing is added while disarmed."
   : result?.via === "default-browser"
@@ -816,12 +901,8 @@ elements.armButton.addEventListener("click", () => runAction(async () => {
   return next;
 }, "Armed. Open enabled items now — the companion acts as each page loads."));
 
-elements.scheduledOpenEnabled.addEventListener("change", updateScheduleControls);
-elements.scheduledRetailer.addEventListener("change", updateCountdown);
-elements.scheduledOpenAt.addEventListener("input", updateCountdown);
-
 window.cartAssist.onUpdate((snapshot) => render(snapshot));
-setInterval(updateCountdown, 1000);
+setInterval(updateScheduleNext, 1000);
 
 window.cartAssist.getSnapshot()
   .then((snapshot) => render(snapshot, true))

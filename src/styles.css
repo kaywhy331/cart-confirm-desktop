@@ -131,7 +131,18 @@ h1 { font-size: 21px; letter-spacing: -0.025em; }
   display: flex;
   align-items: flex-start;
   gap: 13px;
+  cursor: pointer;
+  user-select: none;
 }
+.step-header::after {
+  content: "▾";
+  align-self: center;
+  color: var(--subtle);
+  font-size: 12px;
+}
+.step.collapsed .step-header::after { content: "▸"; }
+.step.collapsed .step-body { display: none; }
+.step.collapsed .step-title p { display: none; }
 .step-number {
   display: grid;
   place-items: center;
@@ -262,9 +273,10 @@ h1 { font-size: 21px; letter-spacing: -0.025em; }
 .product-url-field { margin-bottom: 10px; }
 .product-fields {
   display: grid;
-  grid-template-columns: minmax(120px, 0.8fr) minmax(70px, 0.4fr) minmax(170px, 1fr);
+  grid-template-columns: minmax(110px, 0.75fr) minmax(64px, 0.35fr) minmax(150px, 0.95fr) minmax(150px, 0.95fr);
   gap: 10px;
 }
+.advanced-fields .product-fields { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .product-fields .field { margin-bottom: 0; }
 
 .advanced-fields {
@@ -375,17 +387,62 @@ button:disabled:hover { transform: none; }
 .control-card small { color: var(--subtle); font-size: 10px; line-height: 1.45; }
 .control-title { color: #dbe5f4; font-size: 10.5px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.08em; }
 
-.schedule-box {
+.schedule-panel {
+  margin-top: 14px;
   padding: 12px;
   border: 1px solid var(--line);
   border-radius: 12px;
-  background: rgba(3, 8, 17, 0.3);
-  margin-bottom: 11px;
+  background: var(--panel-soft);
 }
-.schedule-toggle { margin-bottom: 11px; color: #dbe5f4; font-weight: 700; }
-.schedule-fields { display: grid; grid-template-columns: minmax(140px, 0.55fr) minmax(200px, 1fr); gap: 10px; }
-.schedule-fields .field { margin-bottom: 7px; }
-.countdown { min-height: 16px; color: var(--muted); font-size: 10.5px; }
+.schedule-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.schedule-next { color: var(--warning); font-size: 11px; font-weight: 700; }
+.schedule-week {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 6px;
+}
+.schedule-day {
+  min-height: 58px;
+  padding: 7px 6px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: rgba(3, 8, 17, 0.32);
+}
+.schedule-day.today { border-color: rgba(125, 211, 252, 0.35); }
+.day-head {
+  display: block;
+  margin-bottom: 5px;
+  color: var(--subtle);
+  font-size: 9px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.schedule-day.today .day-head { color: var(--accent); }
+.schedule-chip {
+  --store-accent: var(--target);
+  display: block;
+  overflow: hidden;
+  margin-bottom: 4px;
+  padding: 3px 6px;
+  border-left: 2px solid var(--store-accent);
+  border-radius: 5px;
+  background: rgba(125, 211, 252, 0.07);
+  color: #dbe5f4;
+  font-size: 9.5px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.schedule-chip[data-retailer="walmart"] { --store-accent: var(--walmart); }
+.schedule-chip[data-retailer="amazon"] { --store-accent: var(--amazon); }
+.schedule-later { grid-column: 1 / -1; color: var(--muted); font-size: 10px; line-height: 1.5; }
 
 .store-shortcuts {
   display: flex;
@@ -527,6 +584,7 @@ footer {
   .step-header { flex-wrap: wrap; }
   .product-row-top { flex-wrap: wrap; }
   .title-input { flex-basis: 100%; order: 5; }
-  .product-fields, .automation-grid, .schedule-fields, .status-metrics { grid-template-columns: 1fr; }
+  .product-fields, .automation-grid, .status-metrics { grid-template-columns: 1fr; }
+  .schedule-week { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .action-row .button { flex: 1 1 auto; }
 }
