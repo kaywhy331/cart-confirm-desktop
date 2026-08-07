@@ -388,6 +388,13 @@ function setStepState(section, chip, done, label, attention = false) {
 }
 
 function companionStepState() {
+  if (currentSnapshot && !currentSnapshot.app?.companionPort) {
+    return {
+      done: false,
+      label: "Local server error",
+      hint: "This app could not start its local server on ports 32191–32195, so the extension has nothing to connect to. Close any other Cart Confirm windows or programs using those ports, then restart the app."
+    };
+  }
   const connected = currentSnapshot?.status?.companion === "connected";
   if (connected) return { done: true, label: "Connected ✓", hint: "" };
   const hello = currentSnapshot?.companionHello;
@@ -396,7 +403,7 @@ function companionStepState() {
     return {
       done: false,
       label: "Waiting for Chrome",
-      hint: "The extension has not reported in. Load it in chrome://extensions — or, if it is already there, click the reload arrow on its card."
+      hint: "The extension has not reported in. In chrome://extensions, click the reload arrow on its card, then click the Cart Confirm toolbar icon in Chrome (pin it via the puzzle-piece menu). Its badge tells you why: IDLE/ARM = connected · OFF = Chrome cannot reach this app (firewall/antivirus or the app is not running) · UPD = version mismatch, reload the extension · PAIR = pairing issue."
     };
   }
   if (hello.reason === "version-mismatch") {

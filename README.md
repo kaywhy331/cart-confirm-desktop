@@ -150,8 +150,9 @@ Also check:
 
 - Confirm Cart Confirm is running.
 - Confirm the unpacked extension is enabled and reloaded after every update.
+- Click the Cart Confirm toolbar icon in Chrome to force an immediate connection check.
 - Reload a supported store tab in the same Chrome profile the extension is loaded in.
-- Check for `IDLE` or `ARM` on the extension badge (`UPD` = version mismatch, `PAIR` = pairing mismatch).
+- Read the extension badge: `IDLE`/`ARM` = connected, `OFF` = Chrome cannot reach the app on `127.0.0.1` (app not running, or a firewall/antivirus is intercepting loopback), `UPD` = version mismatch, `PAIR` = pairing mismatch.
 - The app opens product pages directly in Chrome when it can find it; if Chrome is not installed, pages fall back to the default browser, where the companion cannot see them.
 - Close duplicate desktop app processes if ports `32191` through `32195` are occupied.
 

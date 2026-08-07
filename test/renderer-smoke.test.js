@@ -109,5 +109,12 @@ test("the renderer boots the guided-step UI and tracks step state", async () => 
   pushUpdate(noTab);
   assert.equal(doc.getElementById("stepConnectState").textContent, "Open a store tab");
 
+  const noServer = snapshotFixture();
+  noServer.status.companion = "waiting";
+  noServer.app.companionPort = 0;
+  pushUpdate(noServer);
+  assert.equal(doc.getElementById("stepConnectState").textContent, "Local server error");
+  assert.match(doc.getElementById("stepConnectHint").textContent, /32191/);
+
   window.close();
 });

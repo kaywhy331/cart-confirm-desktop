@@ -50,6 +50,16 @@ async function setConnectionProblemBadge(text, title) {
   await chrome.action.setTitle({ title });
 }
 
+// Never leave the badge blank: OFF must be distinguishable from "never tried",
+// or a blocked loopback connection looks identical to a missing extension.
+async function setDisconnectedBadge() {
+  await chrome.action.setBadgeText({ text: "OFF" });
+  await chrome.action.setBadgeBackgroundColor({ color: "#475569" });
+  await chrome.action.setTitle({
+    title: "Cart Confirm desktop app not reachable on 127.0.0.1:32191-32195. Is the app running? Click to retry."
+  });
+}
+
 async function acceptDesktopIdentity(config) {
   const extensionVersion = chrome.runtime.getManifest().version;
   if (String(config.appVersion || "") !== extensionVersion) return { ok: false, reason: "version-mismatch" };
@@ -298,13 +308,15 @@ const RETAILER_TAB_PATTERNS = Object.freeze({
   amazon: ["https://amazon.com/*", "https://*.amazon.com/*"]
 });
 let openRequestsInFlight = false;
-let lastHelloAt = 0;
+const lastHelloAtByPort = new Map();
 
 // Announce this extension to the desktop even when identity checks fail, so
 // the app can show "reload the extension" instead of a blanket waiting state.
+// Throttled per port: a stale process on a lower port must not suppress the
+// hello owed to the real desktop app on a later port.
 async function sendCompanionHello(baseUrl, token, reason) {
-  if (Date.now() - lastHelloAt < 10_000) return;
-  lastHelloAt = Date.now();
+  if (Date.now() - (lastHelloAtByPort.get(baseUrl) || 0) < 10_000) return;
+  lastHelloAtByPort.set(baseUrl, Date.now());
   try {
     await fetchWithTimeout(`${baseUrl}/companion/hello`, {
       method: "POST",
@@ -416,7 +428,7 @@ async function discoverConfig(force = false) {
   } else if (connectionProblem === "pairing-mismatch") {
     await setConnectionProblemBadge("PAIR", "Cart Confirm desktop pairing changed; review the local installation");
   } else {
-    await setBadge(null);
+    await setDisconnectedBadge();
   }
   return null;
 }
@@ -450,7 +462,7 @@ async function postEvent(payload) {
     return { ok: response.ok, ...result };
   } catch {
     cached = null;
-    await setBadge(null);
+    await setDisconnectedBadge();
     return { ok: false, reason: "desktop-unreachable" };
   }
 }
@@ -693,10 +705,19 @@ chrome.webRequest.onBeforeRequest.addListener((details) => {
 
 chrome.runtime.onInstalled.addListener(() => {
   appliedFastMode = null;
+  lastHelloAtByPort.clear();
   void discoverConfig(true);
 });
 
 chrome.runtime.onStartup.addListener(() => {
   appliedFastMode = null;
+  lastHelloAtByPort.clear();
+  void discoverConfig(true);
+});
+
+// Clicking the toolbar icon is a manual re-check: force a fresh discovery and
+// an immediate hello so the desktop's step 1 reacts within a second.
+chrome.action.onClicked.addListener(() => {
+  lastHelloAtByPort.clear();
   void discoverConfig(true);
 });
