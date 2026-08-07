@@ -53,6 +53,7 @@ function snapshotFixture() {
 test("the renderer boots the guided-step UI and tracks step state", async () => {
   const dom = new JSDOM(html, { url: "file:///app/index.html", runScripts: "outside-only" });
   const { window } = dom;
+  let pushUpdate = null;
   window.cartAssist = {
     getSnapshot: async () => snapshotFixture(),
     saveSettings: async () => snapshotFixture(),
@@ -64,7 +65,10 @@ test("the renderer boots the guided-step UI and tracks step state", async () => 
     copyExtensionPath: async () => "",
     clearEvents: async () => snapshotFixture(),
     testEvent: async () => ({ ok: true }),
-    onUpdate: () => () => {}
+    onUpdate: (callback) => {
+      pushUpdate = callback;
+      return () => {};
+    }
   };
 
   window.eval(rendererSource);
@@ -83,6 +87,27 @@ test("the renderer boots the guided-step UI and tracks step state", async () => 
   assert.equal(doc.querySelectorAll(".product-row").length, 2);
   assert.equal(doc.getElementById("stepVerifyState").textContent, "Save needed");
   assert.match(doc.getElementById("stepVerify").className, /attention/);
+
+  // Companion diagnostics: no hello yet → waiting; stale extension → reload;
+  // hello without store-tab heartbeats → open a store tab.
+  const waiting = snapshotFixture();
+  waiting.status.companion = "waiting";
+  pushUpdate(waiting);
+  assert.equal(doc.getElementById("stepConnectState").textContent, "Waiting for Chrome");
+  assert.equal(doc.getElementById("stepConnectHint").hidden, false);
+
+  const mismatch = snapshotFixture();
+  mismatch.status.companion = "waiting";
+  mismatch.companionHello = { version: "2.2.0", reason: "version-mismatch", seenAt: "2026-01-01T00:00:00.000Z" };
+  pushUpdate(mismatch);
+  assert.equal(doc.getElementById("stepConnectState").textContent, "Reload the extension");
+  assert.match(doc.getElementById("stepConnectHint").textContent, /v2\.2\.0/);
+
+  const noTab = snapshotFixture();
+  noTab.status.companion = "waiting";
+  noTab.companionHello = { version: "0.0.0-test", reason: "", seenAt: "2026-01-01T00:00:00.000Z" };
+  pushUpdate(noTab);
+  assert.equal(doc.getElementById("stepConnectState").textContent, "Open a store tab");
 
   window.close();
 });

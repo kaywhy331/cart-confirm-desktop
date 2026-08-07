@@ -37,6 +37,7 @@ const elements = {
   stepsColumn: document.getElementById("stepsColumn"),
   stepConnect: document.getElementById("stepConnect"),
   stepConnectState: document.getElementById("stepConnectState"),
+  stepConnectHint: document.getElementById("stepConnectHint"),
   stepProducts: document.getElementById("stepProducts"),
   stepProductsState: document.getElementById("stepProductsState"),
   stepVerify: document.getElementById("stepVerify"),
@@ -245,7 +246,9 @@ function createProductRow(product = {}) {
       () => window.cartAssist.openProduct(row.dataset.productId),
       (result) => (result?.via === "companion-tab"
         ? `${STORE_LABELS[field(row, "retailer").value]} item opened in your existing Chrome tab.`
-        : `${STORE_LABELS[field(row, "retailer").value]} item page opened.`)
+        : result?.via === "default-browser"
+          ? `${STORE_LABELS[field(row, "retailer").value]} item opened in your default browser — Chrome was not found, and the companion only works inside Chrome.`
+          : `${STORE_LABELS[field(row, "retailer").value]} item page opened in Chrome.`)
     );
   });
 
@@ -384,15 +387,50 @@ function setStepState(section, chip, done, label, attention = false) {
   section.classList.toggle("attention", Boolean(attention) && !done);
 }
 
-function updateSteps() {
+function companionStepState() {
   const connected = currentSnapshot?.status?.companion === "connected";
+  if (connected) return { done: true, label: "Connected ✓", hint: "" };
+  const hello = currentSnapshot?.companionHello;
+  const appVersion = currentSnapshot?.app?.version || "";
+  if (!hello) {
+    return {
+      done: false,
+      label: "Waiting for Chrome",
+      hint: "The extension has not reported in. Load it in chrome://extensions — or, if it is already there, click the reload arrow on its card."
+    };
+  }
+  if (hello.reason === "version-mismatch") {
+    return {
+      done: false,
+      label: "Reload the extension",
+      hint: `Chrome has companion v${hello.version} but this app is v${appVersion}. In chrome://extensions, click the reload arrow on the Cart Confirm Companion card.`
+    };
+  }
+  if (hello.reason === "pairing-mismatch") {
+    return {
+      done: false,
+      label: "Re-pair the extension",
+      hint: "The pinned pairing changed. Remove the unpacked extension and load it again from the companion folder."
+    };
+  }
+  return {
+    done: false,
+    label: "Open a store tab",
+    hint: "Extension loaded ✓ — now open (or reload) a Target, Walmart, or Amazon tab in the same Chrome profile. If product links open in another browser (like Edge), this app now opens them in Chrome for you."
+  };
+}
+
+function updateSteps() {
+  const companionState = companionStepState();
   setStepState(
     elements.stepConnect,
     elements.stepConnectState,
-    connected,
-    connected ? "Connected ✓" : "Waiting for Chrome",
-    !connected
+    companionState.done,
+    companionState.label,
+    !companionState.done
   );
+  elements.stepConnectHint.textContent = companionState.hint;
+  elements.stepConnectHint.hidden = !companionState.hint;
 
   const hasReadyRow = [...elements.productList.querySelectorAll(".product-row")].some((row) => (
     field(row, "enabled").checked
@@ -678,7 +716,9 @@ elements.testButton.addEventListener("click", () => runAction(async () => {
   return window.cartAssist.openProduct();
 }, (result) => (result?.via === "companion-tab"
   ? "Test started in your existing Chrome tab. Watch “What the companion sees” — nothing is added while disarmed."
-  : "Test started: the product page is opening. Watch “What the companion sees” — nothing is added while disarmed.")));
+  : result?.via === "default-browser"
+    ? "Test page opened, but Chrome was not found — it used your default browser, where the companion cannot see it. Install Chrome or open the link in Chrome manually."
+    : "Test started: the product page is opening in Chrome. Watch “What the companion sees” — nothing is added while disarmed.")));
 
 elements.openBuyListButton.addEventListener("click", async () => {
   if (openRunInFlight) return;
@@ -693,7 +733,10 @@ elements.openBuyListButton.addEventListener("click", async () => {
     const armNote = result.armed
       ? "Automation is armed — the companion acts as each page loads."
       : "Automation is disarmed — nothing will be added until you arm it in step 4.";
-    setMessage(`${parts.join(", ")}. ${armNote}`, result.armed ? "success" : "warn");
+    const browserNote = result.defaultBrowser
+      ? " Chrome was not found, so your default browser was used — the companion only works inside Chrome."
+      : "";
+    setMessage(`${parts.join(", ")}. ${armNote}${browserNote}`, result.defaultBrowser ? "error" : result.armed ? "success" : "warn");
   } catch (error) {
     setMessage(error.message || "The action failed.", "error");
   } finally {

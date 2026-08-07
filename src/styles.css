@@ -178,6 +178,14 @@ h1 { font-size: 21px; letter-spacing: -0.025em; }
   font-size: 10.5px;
   line-height: 1.5;
 }
+.attention-hint {
+  padding: 9px 11px;
+  border: 1px solid rgba(253, 230, 138, 0.28);
+  border-radius: 10px;
+  background: rgba(113, 63, 18, 0.12);
+  color: var(--warning);
+  font-size: 11px;
+}
 .shield {
   display: grid;
   place-items: center;

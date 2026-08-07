@@ -144,10 +144,15 @@ Verification performs a syntax check and runs the Node test suite, including que
 
 ### Companion remains disconnected
 
+Step 1 in the app diagnoses this: **Waiting for Chrome** means the extension has never reported in (load it, or click its reload arrow); **Reload the extension** means its version differs from the app; **Open a store tab** means the extension is loaded and the last requirement is a Target, Walmart, or Amazon tab in that Chrome profile — "Connected ✓" appears only once a store tab is reporting.
+
+Also check:
+
 - Confirm Cart Confirm is running.
-- Confirm the unpacked extension is enabled and reloaded after an update.
-- Reload a supported store tab.
-- Check for `IDLE` or `ARM` on the extension badge.
+- Confirm the unpacked extension is enabled and reloaded after every update.
+- Reload a supported store tab in the same Chrome profile the extension is loaded in.
+- Check for `IDLE` or `ARM` on the extension badge (`UPD` = version mismatch, `PAIR` = pairing mismatch).
+- The app opens product pages directly in Chrome when it can find it; if Chrome is not installed, pages fall back to the default browser, where the companion cannot see them.
 - Close duplicate desktop app processes if ports `32191` through `32195` are occupied.
 
 ### Offer is blocked

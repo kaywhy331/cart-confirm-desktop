@@ -13,6 +13,7 @@ const fs = require("node:fs");
 const http = require("node:http");
 const path = require("node:path");
 const crypto = require("node:crypto");
+const { spawn } = require("node:child_process");
 
 const {
   DEFAULT_SETTINGS,
@@ -32,6 +33,7 @@ const { loadRuntimeState, saveRuntimeState } = require("./lib/runtime-state");
 const { isAllowedExtensionOrigin } = require("./lib/extension-identity");
 const { createStoreOpenQueue } = require("./lib/store-open-queue");
 const { createOpenRequestStore } = require("./lib/open-requests");
+const { findChrome } = require("./lib/chrome-launcher");
 const {
   RETAILERS,
   parseRetailUrl,
@@ -57,6 +59,7 @@ let runtimeState = null;
 let startupWasDisarmed = false;
 let schedulerTimer = null;
 let configVersion = 1;
+let companionHello = null;
 const lastNotificationAt = new Map();
 const storeOverloadUntil = new Map();
 const retailerTabSeenAt = new Map();
@@ -157,6 +160,7 @@ function snapshot() {
   return {
     settings: publicSettings(),
     status,
+    companionHello,
     productStatuses,
     events,
     retailers: Object.fromEntries(
@@ -225,6 +229,35 @@ function companionTabLikely(retailer) {
   return Date.now() - (retailerTabSeenAt.get(retailer) || 0) < COMPANION_TAB_FRESH_MS;
 }
 
+// The companion only exists inside Chrome, so pages are opened there directly.
+// The OS default browser is a last resort (and is reported so the UI can warn).
+function openPageInChrome(url) {
+  const chromePath = findChrome();
+  if (!chromePath) {
+    return shell.openExternal(url, { activate: true }).then(() => "default-browser");
+  }
+  return new Promise((resolve) => {
+    let settled = false;
+    const fallback = () => {
+      if (settled) return;
+      settled = true;
+      void shell.openExternal(url, { activate: true }).finally(() => resolve("default-browser"));
+    };
+    try {
+      const child = spawn(chromePath, [url], { detached: true, stdio: "ignore" });
+      child.once("error", fallback);
+      child.unref();
+      setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        resolve("chrome");
+      }, 250);
+    } catch {
+      fallback();
+    }
+  });
+}
+
 async function openExternalRetailer(url) {
   const { parsed, retailer } = parseRetailUrl(url);
   const navigationKey = `${retailer}|${parsed.href}`;
@@ -246,8 +279,8 @@ async function openExternalRetailer(url) {
           return { retailer, url: parsed.href, via: "companion-tab" };
         }
       }
-      await shell.openExternal(parsed.href, { activate: true });
-      return { retailer, url: parsed.href, via: "new-window" };
+      const via = await openPageInChrome(parsed.href);
+      return { retailer, url: parsed.href, via };
     });
   } finally {
     pendingNavigationKeys.delete(navigationKey);
@@ -284,6 +317,7 @@ async function openBuyList(retailer = "") {
     count: results.filter((result) => result.via !== "already-queued").length,
     reused: results.filter((result) => result.via === "companion-tab").length,
     deduped: results.filter((result) => result.via === "already-queued").length,
+    defaultBrowser: results.some((result) => result.via === "default-browser"),
     armed: settings.automationEnabled
   };
 }
@@ -499,6 +533,23 @@ function startServerOnPort(port) {
         readJsonRequest(req, res, (body) => {
           const eventResult = handleCompanionEvent(body);
           return { statusCode: eventResult.accepted ? 202 : 200, payload: eventResult };
+        });
+        return;
+      }
+
+      if (req.method === "POST" && requestUrl.pathname === "/companion/hello") {
+        if (req.headers["x-cart-assist-token"] !== settings.companionToken) {
+          writeJson(req, res, 401, { error: "invalid-token" });
+          return;
+        }
+        readJsonRequest(req, res, (body) => {
+          companionHello = {
+            version: String(body?.extensionVersion || "").slice(0, 20),
+            reason: String(body?.reason || "").slice(0, 40),
+            seenAt: new Date().toISOString()
+          };
+          broadcast();
+          return { statusCode: 200, payload: { ok: true } };
         });
         return;
       }

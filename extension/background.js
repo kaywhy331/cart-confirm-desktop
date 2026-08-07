@@ -298,6 +298,29 @@ const RETAILER_TAB_PATTERNS = Object.freeze({
   amazon: ["https://amazon.com/*", "https://*.amazon.com/*"]
 });
 let openRequestsInFlight = false;
+let lastHelloAt = 0;
+
+// Announce this extension to the desktop even when identity checks fail, so
+// the app can show "reload the extension" instead of a blanket waiting state.
+async function sendCompanionHello(baseUrl, token, reason) {
+  if (Date.now() - lastHelloAt < 10_000) return;
+  lastHelloAt = Date.now();
+  try {
+    await fetchWithTimeout(`${baseUrl}/companion/hello`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Cart-Assist-Token": token
+      },
+      body: JSON.stringify({
+        extensionVersion: chrome.runtime.getManifest().version,
+        reason: String(reason || "")
+      })
+    });
+  } catch {
+    // The desktop keeps showing its waiting state when unreachable.
+  }
+}
 
 async function claimOpenRequest(config, id) {
   try {
@@ -370,6 +393,7 @@ async function discoverConfig(force = false) {
       const config = await response.json();
       if (!config.token || !Array.isArray(config.products)) continue;
       const identity = await acceptDesktopIdentity(config);
+      void sendCompanionHello(baseUrl, config.token, identity.ok ? "" : identity.reason);
       if (!identity.ok) {
         connectionProblem ||= identity.reason;
         continue;
