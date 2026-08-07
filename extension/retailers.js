@@ -283,18 +283,31 @@
   }
 
   function readQuantity(container) {
-    const control = query(container, [
+    const hinted = query(container, [
       "select[aria-label*='quantity' i]",
       "select[name*='quantity' i]",
+      "select[data-test*='quantity' i]",
+      "select[data-testid*='quantity' i]",
       "input[aria-label*='quantity' i]",
-      "input[name*='quantity' i]",
-      "select"
+      "input[name*='quantity' i]"
     ]);
-    const raw = control?.value || control?.getAttribute?.("aria-valuenow") || "";
-    const value = Number.parseInt(raw, 10);
-    if (Number.isInteger(value) && value > 0) return value;
+    const hintedRaw = hinted?.value || hinted?.getAttribute?.("aria-valuenow") || "";
+    const hintedValue = Number.parseInt(hintedRaw, 10);
+    if (Number.isInteger(hintedValue) && hintedValue > 0) return hintedValue;
+    // A generic select only counts when its whole value is a small number —
+    // "2-year-plan" style add-on options must not parse as quantity 2.
+    const generic = query(container, ["select"]);
+    const genericRaw = String(generic?.value || "");
+    if (/^\d{1,2}$/.test(genericRaw)) return Number(genericRaw);
     const match = textOf(container).match(/(?:qty|quantity)\s*[: ]\s*(\d{1,2})/i);
-    return match ? Number(match[1]) : null;
+    if (match) return Number(match[1]);
+    const stepper = query(container, [
+      "[role='spinbutton'][aria-valuenow]",
+      "[aria-label*='quantity' i][aria-valuenow]"
+    ]);
+    const stepperValue = Number.parseInt(stepper?.getAttribute?.("aria-valuenow") || "", 10);
+    if (Number.isInteger(stepperValue) && stepperValue > 0) return stepperValue;
+    return null;
   }
 
   function quantityControls(container) {

@@ -131,6 +131,31 @@ test("a single unkeyed JSON-LD product record is accepted as the page's product"
   assert.equal(getAdapter("target").offer(doc, PRODUCT).price, 31.49);
 });
 
+test("cart quantity reads steppers and never parses add-on option values", () => {
+  const doc = new JSDOM(`<body><main>
+    <div data-test="cart-item" data-tcin="95298172">
+      <a href="https://www.target.com/p/restocks/-/A-95298172">Trading Cards Booster Box</a>
+      <span data-test="cart-item-price">$39.99</span>
+      <select><option value="2-year-plan" selected>2-year protection plan</option></select>
+      <div role="spinbutton" aria-valuenow="1" aria-label="quantity"></div>
+      <button aria-label="Remove item">Remove</button>
+    </div>
+  </main></body>`, { url: "https://www.target.com/cart" }).window.document;
+  const line = getAdapter("target").findLine(doc, PRODUCT);
+  assert.equal(line.quantity, 1, "spinbutton value wins; '2-year-plan' must not parse as 2");
+});
+
+test("a cart line without any quantity control reads null instead of a guess", () => {
+  const line = getAdapter("target").findLine(new JSDOM(`<body><main>
+    <div data-test="cart-item" data-tcin="95298172">
+      <a href="https://www.target.com/p/restocks/-/A-95298172">Trading Cards Booster Box</a>
+      <span data-test="cart-item-price">$39.99</span>
+      <button aria-label="Remove item">Remove</button>
+    </div>
+  </main></body>`, { url: "https://www.target.com/cart" }).window.document, PRODUCT);
+  assert.equal(line.quantity, null);
+});
+
 test("walmart still requires an explicit first-party seller label", () => {
   const doc = new JSDOM(`<body><main>
     <div data-automation-id="product-price">$24.50</div>

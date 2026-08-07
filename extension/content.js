@@ -11,6 +11,8 @@
   const PROOF_MAX_AGE_MS = Safety.CART_PROOF_MAX_AGE_MS;
   const seen = new Map();
   const attemptCache = new Map();
+  const quantityRechecks = new Map();
+  const QUANTITY_RECHECK_LIMIT = 8;
   let config = null;
   let configFingerprint = "";
   let scanTimer = null;
@@ -190,6 +192,7 @@
 
   async function completeProduct(product) {
     clearRetry();
+    quantityRechecks.delete(product.id);
     return runtimeMessage({ type: "CART_CONFIRM_COMPLETE_PRODUCT", productId: product.id });
   }
 
@@ -485,6 +488,7 @@
       return;
     }
 
+    quantityRechecks.delete(product.id);
     await send("add-clicked", product, {
       attempt,
       price: offer.price,
@@ -542,7 +546,20 @@
       return;
     }
 
+    // Cart pages hydrate their quantity controls late; an unreadable quantity
+    // gets bounded rechecks before it may block, because the add itself has
+    // already happened by the time this page is examined.
+    if (line.quantity === null || line.quantity === undefined) {
+      const recheckCount = (quantityRechecks.get(product.id) || 0) + 1;
+      if (recheckCount <= QUANTITY_RECHECK_LIMIT) {
+        quantityRechecks.set(product.id, recheckCount);
+        scheduleScan(900);
+        return;
+      }
+    }
+
     const quantity = await ensureQuantity(product, line);
+    if (quantity.ok) quantityRechecks.delete(product.id);
     if (!quantity.ok) {
       if (quantity.blocked) return;
       if (quantity.pending) {
@@ -555,7 +572,7 @@
         firstParty: true,
         eligible: false,
         reason: "quantity-unavailable",
-        message: `The cart cannot verify quantity ${product.quantity}.`
+        message: `The cart has not shown a readable quantity for this line, so quantity ${product.quantity} could not be verified. The item may already be in the cart — review it manually.`
       }, `quantity-blocked:${product.id}:${product.quantity}`, 15_000);
       return;
     }
