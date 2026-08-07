@@ -134,7 +134,7 @@ Verification performs a syntax check and runs the Node test suite, including que
 
 - The desktop server binds only to `127.0.0.1` on ports `32191` through `32195`.
 - The extension and app use a random per-install token. The extension pins the first accepted token and rejects later mismatches; app and extension versions must match exactly.
-- The unpacked extension has a deterministic ID, and the local server accepts browser requests only from that exact extension origin.
+- The unpacked extension has a deterministic ID. The local server requires a loopback `Host` header (defeating DNS rebinding) and accepts a request only when it carries that exact extension origin, or no origin at all together with the pinned extension-ID header — Chrome omits the `Origin` header on host-permitted extension requests, while readable cross-origin web requests always reveal their true origin and are rejected. All state-changing endpoints additionally require the per-install token.
 - Settings are stored under Electron's local user-data directory.
 - Reported page addresses are reduced to origin plus pathname; query strings are discarded.
 - The bounded local ledger contains only milestone names, store/SKU, seller label, observed unit price and final total, quantity/attempt state, query-free paths, and timestamps.

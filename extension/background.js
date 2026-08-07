@@ -24,8 +24,12 @@ let trafficSyncInFlight = false;
 async function fetchWithTimeout(url, options = {}, timeoutMs = REQUEST_TIMEOUT_MS) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
+  // Chrome omits the Origin header on host-permitted GETs, so every request
+  // carries the extension id explicitly; the desktop accepts origin-less
+  // loopback requests only when this header matches its pinned id.
+  const headers = { ...(options.headers || {}), "X-Cart-Assist-Extension": chrome.runtime.id };
   try {
-    return await fetch(url, { ...options, signal: controller.signal, cache: "no-store" });
+    return await fetch(url, { ...options, headers, signal: controller.signal, cache: "no-store" });
   } finally {
     clearTimeout(timer);
   }

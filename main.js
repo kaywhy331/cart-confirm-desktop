@@ -30,7 +30,7 @@ const { migrateStoredSettings } = require("./lib/migrations");
 const { consumeStoreAction } = require("./lib/action-budget");
 const { evaluateSchedule } = require("./lib/schedule");
 const { loadRuntimeState, saveRuntimeState } = require("./lib/runtime-state");
-const { isAllowedExtensionOrigin } = require("./lib/extension-identity");
+const { isAllowedExtensionOrigin, isTrustedCompanionRequest } = require("./lib/extension-identity");
 const { createStoreOpenQueue } = require("./lib/store-open-queue");
 const { createOpenRequestStore } = require("./lib/open-requests");
 const { findChrome } = require("./lib/chrome-launcher");
@@ -471,7 +471,11 @@ function corsOrigin(req) {
 }
 
 function hasAllowedLocalOrigin(req) {
-  return isAllowedExtensionOrigin(req.headers.origin);
+  return isTrustedCompanionRequest(
+    req.headers.origin,
+    req.headers.host,
+    req.headers["x-cart-assist-extension"]
+  );
 }
 
 function writeJson(req, res, statusCode, payload) {
@@ -536,7 +540,7 @@ function startServerOnPort(port) {
         if (origin) {
           res.setHeader("Access-Control-Allow-Origin", origin);
           res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-          res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-Cart-Assist-Token");
+          res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-Cart-Assist-Token, X-Cart-Assist-Extension");
           res.setHeader("Access-Control-Max-Age", "600");
           res.setHeader("Vary", "Origin");
         }
