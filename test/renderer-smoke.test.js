@@ -154,12 +154,28 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   assert.equal(liveCard.querySelector(".state-chip").textContent, "Eligible offer");
   assert.match(liveCard.querySelector(".status-age").textContent, /^\d+s ago$/);
 
-  // A scheduled mission shows in the drop calendar with a countdown.
+  // The drop calendar stays hidden until something is scheduled.
+  assert.equal(doc.getElementById("schedulePanel").hidden, true);
   const scheduled = snapshotFixture();
   scheduled.settings.products[0].openAt = new Date(Date.now() + 3_600_000).toISOString();
   pushUpdate(scheduled);
+  assert.equal(doc.getElementById("schedulePanel").hidden, false);
   assert.ok(doc.querySelector(".schedule-chip"));
   assert.match(doc.getElementById("scheduleNext").textContent, /Next: Booster Box in/);
+
+  // An empty mission list shows a create CTA, and Escape closes the editor.
+  const emptySnapshot = snapshotFixture();
+  emptySnapshot.settings.products = [];
+  pushUpdate(emptySnapshot);
+  assert.equal(doc.getElementById("worstCase").textContent, "");
+  const cta = doc.querySelector(".mission-empty .button");
+  assert.match(cta.textContent, /first mission/);
+  cta.click();
+  const newEditor = doc.querySelector(".mission-edit-card");
+  assert.ok(newEditor, "CTA opens the mission editor");
+  newEditor.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  assert.equal(doc.querySelector(".mission-edit-card"), null);
+  assert.ok(doc.querySelector(".mission-empty"), "empty CTA returns after cancel");
 
   window.close();
 });

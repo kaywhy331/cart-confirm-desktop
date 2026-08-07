@@ -6,8 +6,6 @@ const elements = {
   disarmButton: document.getElementById("disarmButton"),
   connectionPill: document.getElementById("connectionPill"),
   connectionText: document.getElementById("connectionText"),
-  boundaryBanner: document.getElementById("boundaryBanner"),
-  boundaryText: document.getElementById("boundaryText"),
   alarmBar: document.getElementById("alarmBar"),
   alarmText: document.getElementById("alarmText"),
   silenceAlarmButton: document.getElementById("silenceAlarmButton"),
@@ -32,10 +30,9 @@ const elements = {
   storeShortcut: document.getElementById("storeShortcut"),
   openCartButton: document.getElementById("openCartButton"),
   openOrdersButton: document.getElementById("openOrdersButton"),
+  schedulePanel: document.getElementById("schedulePanel"),
   scheduleNext: document.getElementById("scheduleNext"),
   scheduleWeek: document.getElementById("scheduleWeek"),
-  latestMessage: document.getElementById("latestMessage"),
-  latestTime: document.getElementById("latestTime"),
   eventList: document.getElementById("eventList"),
   eventFilterButton: document.getElementById("eventFilterButton"),
   clearEventsButton: document.getElementById("clearEventsButton"),
@@ -83,12 +80,11 @@ let alarmStopTimer = null;
 function setMessage(text, kind = "") {
   clearTimeout(messageTimer);
   elements.message.textContent = text;
-  elements.message.className = `message ${kind}`.trim();
+  elements.message.className = `message ${kind}${text ? " show" : ""}`.trim();
   if (text) {
     messageTimer = setTimeout(() => {
-      elements.message.textContent = "";
-      elements.message.className = "message";
-    }, 9000);
+      elements.message.classList.remove("show");
+    }, 8000);
   }
 }
 
@@ -338,6 +334,7 @@ function buildViewCard(product, status) {
     removeButton.title = "Switch Autopilot off to remove";
   }
 
+
   card.querySelector(".mission-open").addEventListener("click", () => {
     void runAction(
       () => window.cartAssist.openProduct(product.id),
@@ -348,10 +345,6 @@ function buildViewCard(product, status) {
   });
   editButton.addEventListener("click", () => startEdit(product));
   removeButton.addEventListener("click", () => {
-    if (savedProducts().length <= 1) {
-      setMessage("Keep at least one mission in the list.", "error");
-      return;
-    }
     if (!window.confirm(`Remove "${productLabel(product)}"?`)) return;
     void runAction(
       () => saveMissionList(savedProducts().filter((candidate) => candidate.id !== product.id)),
@@ -419,10 +412,20 @@ function buildEditCard(product) {
   });
 
   card.querySelector(".mission-done").addEventListener("click", () => void finishEdit(card));
-  card.querySelector(".mission-cancel").addEventListener("click", () => {
+  const cancel = () => {
     editingId = null;
     editCardNode = null;
     renderMissions();
+  };
+  card.querySelector(".mission-cancel").addEventListener("click", cancel);
+  card.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      cancel();
+    } else if (event.key === "Enter" && event.target instanceof HTMLInputElement) {
+      event.preventDefault();
+      void finishEdit(card);
+    }
   });
   return card;
 }
@@ -509,15 +512,22 @@ function renderMissions() {
   }
   const statuses = currentSnapshot?.productStatuses || {};
   const cards = [];
+  if (editingId === "new" && editCardNode) cards.push(editCardNode);
   for (const product of savedProducts()) {
     if (editingId === product.id && editCardNode) cards.push(editCardNode);
     else cards.push(buildViewCard(product, statuses[product.id] || defaultStatus()));
   }
-  if (editingId === "new" && editCardNode) cards.push(editCardNode);
   if (!cards.length) {
     const empty = document.createElement("div");
-    empty.className = "empty-state";
-    empty.textContent = "No missions yet. Click + New mission, paste a product link, and set your price cap.";
+    empty.className = "empty-state mission-empty";
+    const line = document.createElement("p");
+    line.textContent = "Watch or buy anything on Target, Walmart, or Amazon.";
+    const cta = document.createElement("button");
+    cta.type = "button";
+    cta.className = "button primary";
+    cta.textContent = "+ Create your first mission";
+    cta.addEventListener("click", () => startEdit(null));
+    empty.append(line, cta);
     cards.push(empty);
   }
   elements.missionList.replaceChildren(...cards);
@@ -532,16 +542,30 @@ function updateStatusAges() {
 
 // The hard ceiling: what everything hitting at once could cost.
 function updateWorstCase() {
+  const products = savedProducts();
+  if (!products.length) {
+    elements.worstCase.textContent = "";
+    return;
+  }
   let total = 0;
-  for (const product of savedProducts()) {
-    if (!product.enabled || product.action === "watch") continue;
+  let autoBuyCount = 0;
+  for (const product of products) {
+    if (!product.enabled) continue;
+    if (product.action === "checkout") autoBuyCount += 1;
+    if (product.action === "watch") continue;
     total += ["review", "checkout"].includes(product.action)
       ? Number(product.maxOrderTotal) || 0
       : (Number(product.maxPrice) || 0) * (Number(product.quantity) || 1);
   }
-  elements.worstCase.textContent = total > 0
-    ? `Worst case if every enabled mission hits its cap: $${Math.round(total)}. Automation can never exceed the caps you set.`
+  const exposure = total > 0
+    ? `Worst case if every enabled mission hits its cap: $${Math.round(total)}.`
     : "No spending exposure: only watch-only missions are enabled.";
+  const liveNote = isArmed()
+    ? autoBuyCount > 0
+      ? ` Autopilot is ON — ${autoBuyCount} auto-buy mission${autoBuyCount === 1 ? "" : "s"} can place real orders.`
+      : " Autopilot is ON."
+    : "";
+  elements.worstCase.textContent = `${exposure}${liveNote}`;
 }
 
 // --- Companion connection card ---
@@ -639,6 +663,8 @@ function updateScheduleNext() {
 
 function renderSchedule() {
   const items = scheduledProducts();
+  elements.schedulePanel.hidden = items.length === 0;
+  if (!items.length) return;
   const dayStart = new Date();
   dayStart.setHours(0, 0, 0, 0);
   const weekStart = dayStart.getTime();
@@ -815,18 +841,8 @@ function render(snapshot) {
   const armed = Boolean(settings.automationEnabled);
   elements.autopilotToggle.classList.toggle("on", armed);
   elements.autopilotState.textContent = armed ? "ON" : "OFF";
-  elements.boundaryBanner.classList.toggle("armed", armed);
-  elements.boundaryBanner.querySelector("strong").textContent = armed
-    ? "Autopilot is ON."
-    : "Autopilot is OFF.";
-  const checkoutCount = settings.products.filter((product) => product.enabled && product.action === "checkout").length;
-  elements.boundaryText.textContent = armed
-    ? `${checkoutCount} auto-buy mission${checkoutCount === 1 ? "" : "s"} may place a real order. Missions act whenever their product pages are open in Chrome.`
-    : "Nothing is added to any cart until you switch Autopilot on.";
 
   populateSettingsInputs(settings);
-  elements.latestMessage.textContent = status.lastMessage || "Waiting for the browser companion.";
-  elements.latestTime.textContent = formatDateTime(status.lastEventAt);
   elements.portBadge.textContent = app.companionPort ? `Port ${app.companionPort}` : "Port unavailable";
   elements.versionText.textContent = `${app.name} v${app.version}`;
 

@@ -143,7 +143,11 @@ test("rejects unsafe or ambiguous product settings", () => {
     }),
     /capped item subtotal/
   );
-  assert.throws(() => normalizeSettings({ products: [] }), /at least one product/);
+  assert.equal(normalizeSettings({ products: [] }).products.length, 0);
+  assert.throws(
+    () => normalizeSettings({ products: [], automationEnabled: true }),
+    /at least one product/
+  );
   assert.throws(
     () => normalizeSettings({ products: [{ ...PRODUCTS[0], maxPrice: 0 }], automationEnabled: true }),
     /positive maximum unit price/

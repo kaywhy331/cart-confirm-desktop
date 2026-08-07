@@ -183,7 +183,9 @@ h1 { font-size: 21px; letter-spacing: -0.025em; }
   border-left: 3px solid var(--store-accent);
   border-radius: 11px;
   background: var(--panel-soft);
+  transition: border-color 140ms ease, background 140ms ease;
 }
+.mission-card:hover { border-color: var(--line-strong); border-left-color: var(--store-accent); }
 .mission-card[data-retailer="walmart"] { --store-accent: var(--walmart); }
 .mission-card[data-retailer="amazon"] { --store-accent: var(--amazon); }
 .mission-card.good { border-color: rgba(134, 239, 172, 0.27); border-left-color: var(--store-accent); }
@@ -578,10 +580,33 @@ button:disabled:hover { transform: none; }
 .button.compact { min-height: 32px; padding: 0 11px; font-size: 10.5px; }
 .button:focus-visible { outline: 3px solid rgba(56, 189, 248, 0.22); outline-offset: 2px; }
 
-.message { min-height: 19px; color: var(--muted); font-size: 12px; line-height: 1.5; }
-.message.error { color: var(--danger); }
-.message.success { color: var(--success); }
-.message.warn { color: var(--warning); }
+/* Toast messages */
+.message {
+  position: fixed;
+  right: 22px;
+  bottom: 22px;
+  z-index: 50;
+  max-width: 440px;
+  padding: 12px 16px;
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  background: rgba(15, 23, 42, 0.97);
+  box-shadow: var(--shadow);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.5;
+  opacity: 0;
+  transform: translateY(8px);
+  pointer-events: none;
+  transition: opacity 180ms ease, transform 180ms ease;
+}
+.message.show { opacity: 1; transform: translateY(0); }
+.message.error { border-color: rgba(252, 165, 165, 0.45); color: #fecaca; }
+.message.success { border-color: rgba(134, 239, 172, 0.4); color: var(--success); }
+.message.warn { border-color: rgba(253, 230, 138, 0.4); color: var(--warning); }
+
+.mission-empty { display: grid; justify-items: center; gap: 12px; padding: 36px 12px; }
+.mission-empty p { color: var(--muted); font-size: 13px; }
 
 /* Monitor column */
 .panel-heading {
