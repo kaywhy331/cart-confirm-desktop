@@ -42,8 +42,14 @@
     return state.products[key];
   }
 
-  function lockKey(product) {
-    return `store:${product.retailer}`;
+  // Every product gets its own lock so duplicate tabs cannot double-process
+  // it, and add-only products run in parallel. Checkout and final-review
+  // products additionally take the store lane: only one purchase workflow per
+  // store at a time.
+  function lockKeys(product) {
+    const keys = [`product:${product.id}`];
+    if (product.action !== "cart") keys.push(`store:${product.retailer}`);
+    return keys;
   }
 
   function budgetReason(state, product, now = Date.now()) {
@@ -60,17 +66,25 @@
     if (["intent", "uncertain"].includes(record.submission?.phase)) {
       return { ok: false, reason: "submission-uncertain" };
     }
-    const key = lockKey(product);
-    const lock = state.locks[key];
-    if (lock && lock.ownerId !== ownerId) {
-      return { ok: false, reason: "store-busy", activeProductId: lock.productId };
+    const keys = lockKeys(product);
+    for (const key of keys) {
+      const lock = state.locks[key];
+      if (lock && lock.ownerId !== ownerId) {
+        return {
+          ok: false,
+          reason: key.startsWith("store:") ? "store-busy" : "product-busy",
+          activeProductId: lock.productId
+        };
+      }
     }
-    state.locks[key] = {
-      productId: product.id,
-      ownerId,
-      expiresAt: now + LOCK_MS,
-      hold: false
-    };
+    for (const key of keys) {
+      state.locks[key] = {
+        productId: product.id,
+        ownerId,
+        expiresAt: now + LOCK_MS,
+        hold: false
+      };
+    }
     return { ok: true };
   }
 
@@ -107,10 +121,12 @@
     if (state.completed[product.id]) return { ok: false, reason: "completed" };
     const budget = budgetReason(state, product, now);
     if (budget) return { ok: false, reason: budget };
-    const key = lockKey(product);
-    const lock = state.locks[key];
-    if (!lock || lock.productId !== product.id || lock.ownerId !== ownerId) {
-      return { ok: false, reason: "store-busy" };
+    const keys = lockKeys(product);
+    for (const key of keys) {
+      const lock = state.locks[key];
+      if (!lock || lock.productId !== product.id || lock.ownerId !== ownerId) {
+        return { ok: false, reason: "store-busy" };
+      }
     }
     const record = recordFor(state, product.id);
     if (["intent", "uncertain"].includes(record.submission?.phase)) {
@@ -121,26 +137,36 @@
       updatedAt: now,
       evidenceHash: String(evidenceHash || "").slice(0, 200)
     };
-    state.locks[key] = { ...lock, hold: true, expiresAt: Number.MAX_SAFE_INTEGER };
+    for (const key of keys) {
+      state.locks[key] = { ...state.locks[key], hold: true, expiresAt: Number.MAX_SAFE_INTEGER };
+    }
     return { ok: true, submission: record.submission };
   }
 
   function markSubmission(state, product, ownerId, outcome, now = Date.now()) {
     const record = recordFor(state, product.id);
-    const key = lockKey(product);
-    const lock = state.locks[key];
-    if (lock && (lock.productId !== product.id || lock.ownerId !== ownerId)) {
-      return { ok: false, reason: "store-busy" };
+    const keys = lockKeys(product);
+    for (const key of keys) {
+      const lock = state.locks[key];
+      if (lock && (lock.productId !== product.id || lock.ownerId !== ownerId)) {
+        return { ok: false, reason: "store-busy" };
+      }
     }
     if (outcome === "clicked") {
       if (record.submission?.phase !== "intent") return { ok: false, reason: "submission-uncertain" };
       record.submission = { ...record.submission, phase: "uncertain", updatedAt: now };
-      if (lock) state.locks[key] = { ...lock, hold: true, expiresAt: Number.MAX_SAFE_INTEGER };
+      for (const key of keys) {
+        if (state.locks[key]) {
+          state.locks[key] = { ...state.locks[key], hold: true, expiresAt: Number.MAX_SAFE_INTEGER };
+        }
+      }
       return { ok: true, submission: record.submission };
     }
     if (["canceled", "failed"].includes(outcome)) {
       record.submission = { phase: "idle", updatedAt: now, evidenceHash: "" };
-      if (lock?.productId === product.id) delete state.locks[key];
+      for (const [key, lock] of Object.entries(state.locks)) {
+        if (lock?.productId === product.id) delete state.locks[key];
+      }
       return { ok: true, submission: record.submission };
     }
     return { ok: false, reason: "invalid-outcome" };
@@ -168,7 +194,7 @@
       proof: record.proof,
       submission: record.submission,
       budgetReason: budgetReason(state, product, now),
-      lock: state.locks[lockKey(product)] || null
+      lock: state.locks[`product:${product.id}`] || null
     };
   }
 

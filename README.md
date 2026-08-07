@@ -15,7 +15,7 @@ These rules are enforced in code and cannot be disabled from the UI:
 - Current cart seller and price evidence must be readable; product-page evidence cannot make an ambiguous cart safe.
 - Before checkout, the companion must completely enumerate exactly one cart line, independently reconcile remove controls, and prove that it is the configured SKU. Unknown, duplicate, and extra lines block submission.
 - Checkout requires fresh cart-confirmed proof and a readable final order total at or below that row's final-total cap.
-- Only one automated product workflow per store can run at a time. Duplicate tabs cannot claim the same product.
+- Each product is processed by exactly one tab — duplicate tabs cannot claim the same product — and **Add to cart only** items run in parallel across their own tabs. Final-review and auto-submit workflows remain exclusive per store: only one purchase flow per store at a time.
 - A confirmed product is marked complete for the current automation run and cannot be purchased twice. Disarming and re-arming intentionally starts a new run.
 - Proof, attempts, completion, and submit intent live in extension-owned storage. An uncertain final click holds its run lock until a retailer-specific confirmation or explicit failure appears; starting a new run requires an explicit warning to check retailer order history first.
 - Final auto-submit re-reads the complete evidence immediately before clicking, requires the configured shipping/pickup mode, and blocks selected subscriptions, protection plans, tips, donations, gift wrap, and installment choices.
@@ -98,7 +98,7 @@ need a human pass on the real final-review page first.
 
 ## Traffic overload behavior
 
-The desktop opening queue and extension share the same safety goal: do not create bursts against one retailer. The desktop spaces its scheduled and manual openings per store, while the extension centrally serializes retry navigation across tabs. Main-frame store navigations are observed so a retry cannot immediately follow a newly opened page.
+The desktop opening queue and extension share the same safety goal: do not create bursts against one retailer. Desktop-initiated openings (manual, test, and scheduled — one page load each) use a short fixed three-second stagger per store, while the extension centrally serializes automatic retry navigation across tabs using the configured per-store spacing; a product's fresh retry reservation replaces its own stale one so no product can starve the others. Main-frame store navigations are observed so a retry cannot immediately follow a newly opened page. All openings and retries still consume the same fixed 120-action rolling-hour budget.
 
 Responses with status `429`, `502`, `503`, `504`, or `520`–`524` pause automatic navigation and store mutations for that retailer and propagate the same deadline back to pending openings. Repeated overloads exponentially increase the cooldown, decay after six quiet hours, and remain capped at 24 hours. Recognizable overload pages are reported as `traffic-overload` instead of being treated as out of stock.
 

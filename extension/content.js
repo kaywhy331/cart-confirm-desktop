@@ -292,7 +292,7 @@
     if (!Retailers.isActionable(element)) return false;
     element.scrollIntoView?.({ block: "center", inline: "nearest" });
     element.focus?.({ preventScroll: true });
-    await sleep(180);
+    await sleep(80);
     if (!Retailers.isActionable(element) || adapter.securityChallenge(document)) return false;
     if (beforeClick && !await beforeClick()) return false;
     if (!Retailers.isActionable(element) || adapter.securityChallenge(document)) return false;
@@ -416,10 +416,11 @@
     }
     const offer = adapter.offer(document, product);
     const result = eligibility(product, offer);
-    await send("availability", product, {
+    // Reporting must never delay the add path: these are fire-and-forget.
+    void send("availability", product, {
       availability: offer.available ? "available" : "unavailable"
     }, `availability:${product.id}:${offer.available}`, 10_000);
-    await send("offer-observed", product, {
+    void send("offer-observed", product, {
       availability: offer.available ? "available" : "unavailable",
       price: offer.price === null ? undefined : offer.price,
       seller: offer.seller,
@@ -817,7 +818,7 @@
       if (await handleChallenge(product)) return;
       if (!product) return;
 
-      await send("page-observed", product, {}, `page:${product.id}:${pageAddress()}`, 30_000);
+      void send("page-observed", product, {}, `page:${product.id}:${pageAddress()}`, 30_000);
       const kind = adapter.pageKind(location.href);
       if (kind === "queue" && await handleRetailerQueue(product)) return;
       if (kind === "confirmation" && await handleConfirmation(product)) return;
@@ -836,7 +837,7 @@
     }
   }
 
-  function scheduleScan(delay = 350) {
+  function scheduleScan(delay = 150) {
     clearTimeout(scanTimer);
     scanTimer = setTimeout(() => void scan(), delay);
   }

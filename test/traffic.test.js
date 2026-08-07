@@ -89,3 +89,31 @@ test("repeated overload signals escalate and then decay", () => {
   });
   assert.equal(decayed.cooldownMs, 60_000);
 });
+
+test("a product's fresh reservation replaces its stale one instead of queueing behind it", () => {
+  const first = reserveNavigationSlot({}, {
+    now: 1_000,
+    intervalMs: 20_000,
+    reservationId: "retry-1",
+    ownerId: "tab:1",
+    productId: "target:1"
+  });
+  const second = reserveNavigationSlot(first.state, {
+    now: 2_000,
+    intervalMs: 20_000,
+    reservationId: "retry-2",
+    ownerId: "tab:1",
+    productId: "target:1"
+  });
+  assert.equal(second.allowedAt, 2_000);
+  assert.deepEqual(Object.keys(second.state.reservations), ["retry-2"]);
+
+  const other = reserveNavigationSlot(second.state, {
+    now: 2_500,
+    intervalMs: 20_000,
+    reservationId: "retry-3",
+    ownerId: "tab:2",
+    productId: "target:2"
+  });
+  assert.equal(other.allowedAt, 22_000, "a different product still honors the spacing chain");
+});

@@ -47,6 +47,10 @@ const MAX_EVENTS = 250;
 const NOTIFICATION_COOLDOWN_MS = 15_000;
 const COMPANION_TAB_FRESH_MS = 20_000;
 const COMPANION_CLAIM_TIMEOUT_MS = 7_000;
+// Desktop-initiated openings (manual, test, scheduled) are one page load each,
+// so they use a short fixed stagger; the configured per-store spacing governs
+// the extension's automatic retry navigation.
+const DESKTOP_OPEN_SPACING_MS = 3_000;
 
 let mainWindow = null;
 let companionServer = null;
@@ -278,6 +282,7 @@ async function openExternalRetailer(url) {
   pendingNavigationKeys.add(navigationKey);
   try {
     const result = await storeOpenQueue.enqueue(retailer, async () => {
+
       const taskEpoch = stopEpoch;
       const budget = reserveStoreAction(retailer, "desktop-navigation");
       if (!budget.allowed) {
@@ -294,7 +299,7 @@ async function openExternalRetailer(url) {
       if (taskEpoch !== stopEpoch) return { retailer, url: parsed.href, via: "cancelled" };
       const via = await openPageInChrome(parsed.href);
       return { retailer, url: parsed.href, via };
-    });
+    }, { spacingMs: DESKTOP_OPEN_SPACING_MS });
     return result?.cancelled ? { retailer, url: parsed.href, via: "cancelled" } : result;
   } finally {
     pendingNavigationKeys.delete(navigationKey);

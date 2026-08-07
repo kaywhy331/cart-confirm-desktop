@@ -90,3 +90,22 @@ test("a cooldown arriving during a queued wait extends the opening time", async 
   assert.deepEqual(opened, [1_000, 51_000]);
   assert.deepEqual(waits, [20_000, 30_000]);
 });
+
+test("a per-call spacing override shortens the wait between openings", async () => {
+  let clock = 1_000;
+  const waits = [];
+  const opened = [];
+  const queue = createStoreOpenQueue({
+    now: () => clock,
+    intervalMs: () => 20_000,
+    wait: async (milliseconds) => {
+      waits.push(milliseconds);
+      clock += milliseconds;
+    }
+  });
+
+  await queue.enqueue("target", async () => opened.push(clock), { spacingMs: 3_000 });
+  await queue.enqueue("target", async () => opened.push(clock), { spacingMs: 3_000 });
+  assert.deepEqual(opened, [1_000, 4_000]);
+  assert.deepEqual(waits, [3_000]);
+});
