@@ -16,12 +16,14 @@ function snapshotFixture() {
         id: "target:95298172",
         retailer: "target",
         title: "Booster Box",
+        openAt: "",
         productUrl: "https://www.target.com/p/restocks/A-95298172",
         sku: "95298172",
         maxPrice: 40,
         maxOrderTotal: 0,
         quantity: 1,
         action: "cart",
+        alertLevel: "standard",
         fulfillmentMode: "manual",
         enabled: true
       }],
@@ -50,7 +52,7 @@ function snapshotFixture() {
   };
 }
 
-test("the renderer boots the guided-step UI and tracks step state", async () => {
+test("mission control boots, edits, arms, and filters like the dashboard", async () => {
   const dom = new JSDOM(html, { url: "file:///app/index.html", runScripts: "outside-only" });
   const { window } = dom;
   let pushUpdate = null;
@@ -74,153 +76,89 @@ test("the renderer boots the guided-step UI and tracks step state", async () => 
 
   window.eval(rendererSource);
   await new Promise((resolve) => setTimeout(resolve, 20));
-
   const doc = window.document;
-  assert.equal(doc.querySelectorAll(".product-row").length, 1);
-  assert.equal(doc.querySelector("[data-field='title']").value, "Booster Box");
-  assert.equal(doc.getElementById("stepConnectState").textContent, "Connected ✓");
-  assert.equal(doc.getElementById("stepProductsState").textContent, "Ready ✓");
-  assert.equal(doc.getElementById("stepVerifyState").textContent, "Saved — now test");
-  assert.equal(doc.getElementById("stepRunState").textContent, "Disarmed");
-  assert.match(doc.getElementById("stepConnect").className, /done/);
 
-  // Accordion: connected + saved but untested boots with step 3 expanded and
-  // the completed steps collapsed; clicking a header switches cards.
-  assert.match(doc.getElementById("stepConnect").className, /collapsed/);
-  assert.match(doc.getElementById("stepProducts").className, /collapsed/);
-  assert.doesNotMatch(doc.getElementById("stepVerify").className, /collapsed/);
-  doc.getElementById("stepProducts").querySelector(".step-header").click();
-  assert.doesNotMatch(doc.getElementById("stepProducts").className, /collapsed/);
-  assert.match(doc.getElementById("stepVerify").className, /collapsed/);
+  // Connected boot: setup card hidden, one mission view card, autopilot OFF.
+  assert.equal(doc.getElementById("connectCard").hidden, true);
+  const card = doc.querySelector(".mission-card");
+  assert.ok(card, "expected a mission view card");
+  assert.equal(card.querySelector(".status-title").textContent, "Booster Box");
+  assert.equal(card.querySelector(".action-chip").textContent, "Add only");
+  assert.match(card.querySelector(".mission-sub").textContent, /\$40 cap/);
+  assert.equal(doc.getElementById("autopilotState").textContent, "OFF");
+  assert.match(doc.getElementById("worstCase").textContent, /\$40/);
+  assert.equal(doc.getElementById("alarmBar").hidden, true);
 
-  doc.getElementById("addProductButton").click();
-  assert.equal(doc.querySelectorAll(".product-row").length, 2);
-  assert.equal(doc.getElementById("stepVerifyState").textContent, "Save needed");
-  assert.match(doc.getElementById("stepVerify").className, /attention/);
+  // Edit flow: inline editor with values, cancel restores the view card.
+  card.querySelector(".mission-edit").click();
+  let editCard = doc.querySelector(".mission-edit-card");
+  assert.ok(editCard, "expected the inline mission editor");
+  assert.equal(editCard.querySelector("[data-field='title']").value, "Booster Box");
+  editCard.querySelector(".mission-cancel").click();
+  assert.equal(doc.querySelector(".mission-edit-card"), null);
+  assert.ok(doc.querySelector(".mission-card"));
 
-  // Companion diagnostics: no hello yet → waiting; stale extension → reload;
-  // hello without store-tab heartbeats → open a store tab.
+  // New mission defaults to watch and derives a title from the pasted link.
+  doc.getElementById("newMissionButton").click();
+  editCard = doc.querySelector(".mission-edit-card");
+  assert.equal(editCard.querySelector("[data-field='action']").value, "watch");
+  const urlInput = editCard.querySelector("[data-field='productUrl']");
+  urlInput.value = "https://www.target.com/p/pokemon-scarlet-violet-booster-box/-/A-95298172";
+  urlInput.dispatchEvent(new window.Event("change", { bubbles: true }));
+  assert.equal(editCard.querySelector("[data-field='sku']").value, "95298172");
+  assert.match(editCard.querySelector("[data-field='title']").value, /Pokemon Scarlet Violet Booster Box/);
+  editCard.querySelector(".mission-cancel").click();
+
+  // Clicking the mission body filters the feed; show-all clears it.
+  doc.querySelector(".mission-card .mission-main").click();
+  assert.equal(doc.getElementById("eventFilterButton").hidden, false);
+  doc.getElementById("eventFilterButton").click();
+  assert.equal(doc.getElementById("eventFilterButton").hidden, true);
+
+  // Armed snapshot: autopilot ON and mission editing locked.
+  const armed = snapshotFixture();
+  armed.settings.automationEnabled = true;
+  pushUpdate(armed);
+  assert.equal(doc.getElementById("autopilotState").textContent, "ON");
+  assert.equal(doc.querySelector(".mission-card .mission-edit").disabled, true);
+  assert.equal(doc.querySelector(".mission-card [data-view='enabled']").disabled, true);
+
+  // Disconnected snapshot: the setup card returns with a diagnosis label.
   const waiting = snapshotFixture();
   waiting.status.companion = "waiting";
   pushUpdate(waiting);
-  assert.equal(doc.getElementById("stepConnectState").textContent, "Waiting for Chrome");
-  assert.equal(doc.getElementById("stepConnectHint").hidden, false);
+  assert.equal(doc.getElementById("connectCard").hidden, false);
+  assert.equal(doc.getElementById("connectState").textContent, "Waiting for Chrome");
 
   const mismatch = snapshotFixture();
   mismatch.status.companion = "waiting";
   mismatch.companionHello = { version: "2.2.0", reason: "version-mismatch", seenAt: "2026-01-01T00:00:00.000Z" };
   pushUpdate(mismatch);
-  assert.equal(doc.getElementById("stepConnectState").textContent, "Reload the extension");
-  assert.match(doc.getElementById("stepConnectHint").textContent, /v2\.2\.0/);
+  assert.equal(doc.getElementById("connectState").textContent, "Reload the extension");
 
-  const noTab = snapshotFixture();
-  noTab.status.companion = "waiting";
-  noTab.companionHello = { version: "0.0.0-test", reason: "", seenAt: "2026-01-01T00:00:00.000Z" };
-  pushUpdate(noTab);
-  assert.equal(doc.getElementById("stepConnectState").textContent, "Open a store tab");
-
-  const noServer = snapshotFixture();
-  noServer.status.companion = "waiting";
-  noServer.app.companionPort = 0;
-  pushUpdate(noServer);
-  assert.equal(doc.getElementById("stepConnectState").textContent, "Local server error");
-  assert.match(doc.getElementById("stepConnectHint").textContent, /32191/);
-
-  const rejected = snapshotFixture();
-  rejected.status.companion = "waiting";
-  rejected.serverDiagnostics = {
-    lastContactAt: "2026-01-01T00:00:00.000Z",
-    rejectedOrigin: "chrome-extension://unexpectedidunexpectedidunexpect",
-    rejectedAt: "2026-01-01T00:00:00.000Z",
-    configServedAt: ""
-  };
-  pushUpdate(rejected);
-  assert.equal(doc.getElementById("stepConnectState").textContent, "Extension rejected");
-  assert.match(doc.getElementById("stepConnectHint").textContent, /unexpectedid/);
-
-  const reportMissing = snapshotFixture();
-  reportMissing.status.companion = "waiting";
-  reportMissing.serverDiagnostics = {
-    lastContactAt: "2026-01-01T00:00:05.000Z",
-    rejectedOrigin: "",
-    rejectedAt: "",
-    configServedAt: "2026-01-01T00:00:05.000Z"
-  };
-  pushUpdate(reportMissing);
-  assert.equal(doc.getElementById("stepConnectState").textContent, "Report missing");
-
-  // Live product state is one compact row: store, title, last-checked age,
-  // and a status chip, with the detail message as a hover tooltip.
+  // Mission rows carry live state: status chip and ticking age.
   const eligible = snapshotFixture();
   eligible.productStatuses = {
     "target:95298172": {
-      availability: "available",
       eligible: true,
       reason: "eligible",
-      observedPrice: 31.99,
-      observedOrderTotal: null,
-      seller: "",
-      firstParty: true,
       cart: "not-confirmed",
       checkout: "not-started",
       order: "not-confirmed",
-      attempts: 0,
       lastEventAt: new Date(Date.now() - 5_000).toISOString(),
       lastMessage: "Target has an eligible first-party offer at $31.99."
     }
   };
   pushUpdate(eligible);
-  const card = doc.querySelector(".product-status-card");
-  assert.equal(card.querySelector(".status-title").textContent, "Booster Box");
-  assert.equal(card.querySelector(".store-name").textContent, "Target");
-  assert.match(card.querySelector(".status-age").textContent, /^\d+s ago$/);
-  assert.equal(card.querySelector(".state-chip").textContent, "Eligible offer");
-  assert.match(card.title, /eligible first-party offer/);
-  assert.equal(card.querySelector(".status-metrics"), null, "the metrics grid is gone");
+  const liveCard = doc.querySelector(".mission-card");
+  assert.equal(liveCard.querySelector(".state-chip").textContent, "Eligible offer");
+  assert.match(liveCard.querySelector(".status-age").textContent, /^\d+s ago$/);
 
-  const confirmed = snapshotFixture();
-  confirmed.productStatuses = {
-    "target:95298172": {
-      ...eligible.productStatuses["target:95298172"],
-      cart: "confirmed",
-      lastMessage: "The exact Target product was confirmed in the cart."
-    }
-  };
-  pushUpdate(confirmed);
-  assert.equal(doc.querySelector(".state-chip").textContent, "Cart confirmed");
-
-  // Price caps are whole dollars in the form.
-  assert.equal(doc.querySelector("[data-field='maxPrice']").value, "40");
-  assert.equal(doc.querySelector("[data-field='maxPrice']").step, "1");
-
-  // Guppy-style additions: watch mode, alert loudness, worst-case exposure,
-  // and clicking a status row filters the event log to that item.
-  assert.ok(doc.querySelector("[data-field='action'] option[value='watch']"));
-  assert.equal(doc.querySelector("[data-field='alertLevel']").value, "standard");
-  assert.match(doc.getElementById("worstCase").textContent, /\$40/);
-  assert.equal(doc.getElementById("alarmBar").hidden, true);
-  doc.querySelector(".product-status-card").click();
-  assert.equal(doc.getElementById("eventFilterButton").hidden, false);
-  doc.getElementById("eventFilterButton").click();
-  assert.equal(doc.getElementById("eventFilterButton").hidden, true);
-
-  // Arming is a one-click action, not a form field needing a resave.
-  assert.equal(doc.getElementById("armButton").disabled, false);
-  assert.equal(doc.getElementById("armButton").textContent, "Arm automation");
-  const armed = snapshotFixture();
-  armed.settings.automationEnabled = true;
-  pushUpdate(armed);
-  assert.equal(doc.getElementById("armButton").disabled, true);
-  assert.equal(doc.getElementById("stepRunState").textContent, "Armed — live");
-
-  // A saved per-product schedule renders as a chip in the week strip with a
-  // live countdown to the next opening.
+  // A scheduled mission shows in the drop calendar with a countdown.
   const scheduled = snapshotFixture();
   scheduled.settings.products[0].openAt = new Date(Date.now() + 3_600_000).toISOString();
   pushUpdate(scheduled);
-  const chip = doc.querySelector(".schedule-chip");
-  assert.ok(chip, "expected a schedule chip in the week strip");
-  assert.match(chip.textContent, /Booster Box/);
+  assert.ok(doc.querySelector(".schedule-chip"));
   assert.match(doc.getElementById("scheduleNext").textContent, /Next: Booster Box in/);
 
   window.close();

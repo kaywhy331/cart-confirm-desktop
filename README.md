@@ -28,7 +28,7 @@ Start with **Add to cart only** until you have verified the current store select
 
 ## Features
 
-- A guided four-step layout: connect Chrome, add items, save and test, then arm and run. Cards collapse to one expanded step, advance automatically as each stage completes, and reopen with a click; each shows whether it is done or still needs attention.
+- A mission-control layout: each product is a mission card showing its caps, action, live status, and last-checked age in one row, with inline editing (Done saves immediately) and a per-mission enable switch. A header **Autopilot** toggle arms and disarms everything; the Connect Chrome setup card appears only while the companion is disconnected and names the exact blocker.
 - Up to 50 unique products across Target, Walmart, and Amazon, each with an optional display name.
 - Per-product maximum unit price, maximum final order total, quantity, fulfillment mode, enabled state, and a mission action: **Watch & alert only** (monitors and alerts at or under your cap without ever clicking), add-only, final-review, or auto-submit. Rarely used fields live behind each row's **Advanced** section.
 - Per-product alert loudness: standard ping, **loud alarm** (repeating audible alert with an on-screen Silence bar, throttled to once per five minutes per item), or silent log only.
@@ -67,28 +67,28 @@ The extension badge reads `IDLE` when the desktop app is connected but automatio
 
 ## Configure a buy list
 
-For each row in step 2:
+Click **+ New mission**, then:
 
-1. Paste the product page URL. The store, and the TCIN / Walmart item ID / ASIN, are detected automatically (the ID is visible under **Advanced**).
-2. Optionally name the item so statuses and the event log are easy to read.
-3. Set a maximum **per-unit** price in US dollars and the quantity.
-4. Choose **Add to cart only**, **Prepare checkout, I submit** (stops at the final review), or **Submit order automatically** (advanced).
-5. For the two checkout-involving actions, open **Advanced** and set a positive maximum **final order total** (at least the capped unit price multiplied by quantity). For auto-submit, also explicitly require **Shipping / delivery** or **Store pickup**; if the final page cannot prove that choice, submission is blocked.
-6. Enable the row and save in step 3.
+1. Paste the product page URL. The store, the TCIN / Walmart item ID / ASIN, and a mission name are detected automatically (the ID is visible under **Advanced**; edit the name freely).
+2. Set a maximum **per-unit** price in whole US dollars and the quantity.
+3. Choose the action: **Watch & alert only** (the default — monitors and alerts, never clicks), **Add to cart only**, **Prepare checkout, I submit** (stops at the final review), or **Submit order automatically** (advanced).
+4. For the two checkout-involving actions, open **Advanced** and set a positive maximum **final order total** (at least the capped unit price multiplied by quantity). For auto-submit, also explicitly require **Shipping / delivery** or **Store pickup**; if the final page cannot prove that choice, submission is blocked.
+5. Optionally set **Open at** for a known drop time and pick an alert loudness under **Advanced**.
+6. Click **Done** — the mission saves immediately. Editing and removal are locked while Autopilot is on.
 
 To schedule an item for a known drop, set its **Open at** field to a future local date/time and save. Each product schedules independently. A receipt is persisted before the page opens, the time clears itself after that single attempt, and a time missed by more than two minutes is marked missed instead of running late. **Stop everything** clears all scheduled times.
 
 ## Recommended workflow
 
-1. Leave automation disarmed and save the complete buy list (step 3).
+1. With Autopilot off, create the complete mission list.
 2. Empty unrelated items from any store cart that will use checkout mode.
-3. Use **Test (no buying)** to open the first enabled item, and confirm in "What the companion sees" that the page, SKU, price, and seller are recognized. Nothing is added while disarmed.
+3. Use **Test (no buying)** to open the first enabled mission, and confirm on its row that the page, price, and seller are recognized. Nothing is added while Autopilot is off.
 4. Use add-only mode for an initial low-risk test.
-5. Review every quantity, unit cap, final-total cap, and action again.
-6. Arm automation in step 4 and keep the intended Chrome profile plus Cart Confirm open. The app will require explicit re-arming after every restart.
-7. Use **Open enabled items now** to open each enabled product page; while armed, the companion acts as each page loads.
+5. Review every quantity, unit cap, final-total cap, and action again — the worst-case line shows your total exposure.
+6. Switch **Autopilot** on and keep the intended Chrome profile plus Cart Confirm open. The app always restarts with Autopilot off.
+7. Use **Open all enabled** to open each mission's page; while Autopilot is on, the companion acts as each page loads.
 8. Complete sign-in or security prompts manually if a store presents them.
-9. Watch the per-product status and event log. Disarm immediately if the configuration or store page looks wrong.
+9. Watch the mission rows and the activity feed (click a row to filter it). **Stop everything** is always available.
 
 When an item is out of stock, the companion reserves a per-store navigation slot after the configured minimum delay. If it becomes unavailable in the cart or checkout, the companion returns to the product and resumes. Safety failures such as a third-party seller, unreadable price or total, quantity mismatch, incomplete cart enumeration, extra cart item, or uncertain order submission stop the affected workflow for manual review.
 

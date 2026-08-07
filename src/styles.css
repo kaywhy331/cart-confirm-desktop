@@ -88,6 +88,44 @@ h1 { font-size: 21px; letter-spacing: -0.025em; }
 .connection.connected { color: var(--success); border-color: rgba(134, 239, 172, 0.25); }
 .connection.connected .connection-dot { background: var(--success); box-shadow: 0 0 0 4px rgba(134, 239, 172, 0.08); }
 
+.topbar-controls { display: flex; align-items: center; gap: 10px; }
+.autopilot {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 40px;
+  padding: 0 15px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.65);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+  cursor: pointer;
+  transition: border-color 140ms ease, background 140ms ease;
+}
+.autopilot-state {
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.16);
+  color: var(--text);
+  letter-spacing: 0.06em;
+}
+.autopilot.on {
+  border-color: rgba(252, 165, 165, 0.55);
+  background: rgba(127, 29, 29, 0.3);
+  color: #fecaca;
+}
+.autopilot.on .autopilot-state { background: #ef4444; color: #fff; }
+.autopilot:hover { border-color: rgba(125, 211, 252, 0.5); }
+.autopilot.on:hover { border-color: rgba(252, 165, 165, 0.85); }
+
+.step-state.attention {
+  border-color: rgba(253, 230, 138, 0.35);
+  background: rgba(113, 63, 18, 0.15);
+  color: var(--warning);
+}
+
 .boundary-banner {
   display: flex;
   gap: 7px;
@@ -131,7 +169,54 @@ h1 { font-size: 21px; letter-spacing: -0.025em; }
   gap: 16px;
   align-items: start;
 }
-.steps-column, .monitor-column { display: grid; gap: 14px; }
+.missions-column, .monitor-column { display: grid; gap: 14px; }
+
+/* Mission cards */
+.mission-list { display: grid; gap: 8px; }
+.mission-card {
+  --store-accent: var(--target);
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--store-accent);
+  border-radius: 11px;
+  background: var(--panel-soft);
+}
+.mission-card[data-retailer="walmart"] { --store-accent: var(--walmart); }
+.mission-card[data-retailer="amazon"] { --store-accent: var(--amazon); }
+.mission-card.good { border-color: rgba(134, 239, 172, 0.27); border-left-color: var(--store-accent); }
+.mission-card.bad { border-color: rgba(252, 165, 165, 0.3); border-left-color: var(--store-accent); }
+.mission-card.disabled { opacity: 0.55; }
+.mission-enabled { flex: 0 0 auto; }
+.mission-main { flex: 1 1 auto; min-width: 0; cursor: pointer; }
+.mission-title-row { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.mission-title-row .store-name {
+  flex: 0 0 auto;
+  color: var(--store-accent);
+  font-size: 9px;
+  font-weight: 900;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.mission-sub { margin-top: 2px; overflow: hidden; color: var(--subtle); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.action-chip {
+  flex: 0 0 auto;
+  padding: 3px 8px;
+  border: 1px solid rgba(125, 211, 252, 0.28);
+  border-radius: 999px;
+  background: rgba(125, 211, 252, 0.08);
+  color: var(--accent);
+  font-size: 9px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  white-space: nowrap;
+}
+.action-chip[data-action="checkout"] { border-color: rgba(252, 165, 165, 0.4); background: rgba(127, 29, 29, 0.18); color: var(--danger); }
+.action-chip[data-action="watch"] { border-color: rgba(253, 230, 138, 0.32); background: rgba(113, 63, 18, 0.12); color: var(--warning); }
+.mission-edit-card { background: rgba(5, 11, 22, 0.6); }
 
 .panel {
   border: 1px solid var(--line);
