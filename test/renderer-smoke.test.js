@@ -116,5 +116,28 @@ test("the renderer boots the guided-step UI and tracks step state", async () => 
   assert.equal(doc.getElementById("stepConnectState").textContent, "Local server error");
   assert.match(doc.getElementById("stepConnectHint").textContent, /32191/);
 
+  const rejected = snapshotFixture();
+  rejected.status.companion = "waiting";
+  rejected.serverDiagnostics = {
+    lastContactAt: "2026-01-01T00:00:00.000Z",
+    rejectedOrigin: "chrome-extension://unexpectedidunexpectedidunexpect",
+    rejectedAt: "2026-01-01T00:00:00.000Z",
+    configServedAt: ""
+  };
+  pushUpdate(rejected);
+  assert.equal(doc.getElementById("stepConnectState").textContent, "Extension rejected");
+  assert.match(doc.getElementById("stepConnectHint").textContent, /unexpectedid/);
+
+  const reportMissing = snapshotFixture();
+  reportMissing.status.companion = "waiting";
+  reportMissing.serverDiagnostics = {
+    lastContactAt: "2026-01-01T00:00:05.000Z",
+    rejectedOrigin: "",
+    rejectedAt: "",
+    configServedAt: "2026-01-01T00:00:05.000Z"
+  };
+  pushUpdate(reportMissing);
+  assert.equal(doc.getElementById("stepConnectState").textContent, "Report missing");
+
   window.close();
 });

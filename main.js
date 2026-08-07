@@ -60,6 +60,15 @@ let startupWasDisarmed = false;
 let schedulerTimer = null;
 let configVersion = 1;
 let companionHello = null;
+let serverDiagnostics = {
+  lastContactAt: "",
+  lastOrigin: "",
+  lastPath: "",
+  rejectedOrigin: "",
+  rejectedAt: "",
+  configServedAt: ""
+};
+let lastDiagnosticsBroadcastAt = 0;
 const lastNotificationAt = new Map();
 const storeOverloadUntil = new Map();
 const retailerTabSeenAt = new Map();
@@ -161,6 +170,7 @@ function snapshot() {
     settings: publicSettings(),
     status,
     companionHello,
+    serverDiagnostics,
     productStatuses,
     events,
     retailers: Object.fromEntries(
@@ -436,6 +446,25 @@ function handleCompanionEvent(rawEvent) {
   return { accepted: true };
 }
 
+// Track what actually reaches the local server, so the UI can distinguish
+// "nothing arrives" (blocked loopback, dead extension) from "arrives but is
+// rejected" (wrong extension identity) from "config fetched but no report".
+function noteServerContact(req, requestUrl, rejected) {
+  const origin = String(req.headers.origin || "").slice(0, 120);
+  const now = new Date().toISOString();
+  serverDiagnostics = {
+    ...serverDiagnostics,
+    lastContactAt: now,
+    lastOrigin: origin,
+    lastPath: requestUrl.pathname.slice(0, 80),
+    ...(rejected ? { rejectedOrigin: origin || "(no origin header)", rejectedAt: now } : {})
+  };
+  if (Date.now() - lastDiagnosticsBroadcastAt > 3000) {
+    lastDiagnosticsBroadcastAt = Date.now();
+    broadcast();
+  }
+}
+
 function corsOrigin(req) {
   const origin = String(req.headers.origin || "");
   return isAllowedExtensionOrigin(origin) ? origin : "";
@@ -502,6 +531,7 @@ function startServerOnPort(port) {
 
       if (req.method === "OPTIONS") {
         const origin = corsOrigin(req);
+        noteServerContact(req, requestUrl, !origin);
         res.statusCode = origin ? 204 : 403;
         if (origin) {
           res.setHeader("Access-Control-Allow-Origin", origin);
@@ -515,11 +545,14 @@ function startServerOnPort(port) {
       }
 
       if (!hasAllowedLocalOrigin(req)) {
+        noteServerContact(req, requestUrl, true);
         writeJson(req, res, 403, { error: "extension-origin-required" });
         return;
       }
+      noteServerContact(req, requestUrl, false);
 
       if (req.method === "GET" && requestUrl.pathname === "/config") {
+        serverDiagnostics = { ...serverDiagnostics, configServedAt: new Date().toISOString() };
         writeJson(req, res, 200, extensionConfig());
         return;
       }

@@ -400,10 +400,25 @@ function companionStepState() {
   const hello = currentSnapshot?.companionHello;
   const appVersion = currentSnapshot?.app?.version || "";
   if (!hello) {
+    const diag = currentSnapshot?.serverDiagnostics || {};
+    if (diag.rejectedAt && (!diag.configServedAt || diag.rejectedAt > diag.configServedAt)) {
+      return {
+        done: false,
+        label: "Extension rejected",
+        hint: `Chrome IS reaching this app, but its requests come from “${diag.rejectedOrigin}”, which is not the expected Cart Confirm extension. On chrome://extensions, remove the extension and use Load unpacked again with the exact folder from “Show companion folder” — its ID must be kmpoonjaidgnldeobaaopfhfhlalclhd.`
+      };
+    }
+    if (diag.configServedAt) {
+      return {
+        done: false,
+        label: "Report missing",
+        hint: `The extension contacted this app (last at ${formatTime(diag.configServedAt)}) but its status report never arrived — it is probably running old companion code. On chrome://extensions, click the reload arrow on the Cart Confirm card, check it for a red “Errors” button, and confirm it was loaded from the folder shown by “Show companion folder”. Then click the toolbar icon to retry.`
+      };
+    }
     return {
       done: false,
       label: "Waiting for Chrome",
-      hint: "The extension has not reported in. In chrome://extensions, click the reload arrow on its card, then click the Cart Confirm toolbar icon in Chrome (pin it via the puzzle-piece menu). Its badge tells you why: IDLE/ARM = connected · OFF = Chrome cannot reach this app (firewall/antivirus or the app is not running) · UPD = version mismatch, reload the extension · PAIR = pairing issue."
+      hint: "Nothing from Chrome has reached this app yet. Click the Cart Confirm toolbar icon in Chrome (pin it via the puzzle-piece menu) and read its badge: IDLE/ARM = connected · OFF = Chrome cannot reach this app — close ALL other Cart Confirm/Electron processes (or reboot) and check antivirus/firewall web protection · UPD = reload the extension · PAIR = pairing issue. Also confirm the extension was loaded from the folder shown by “Show companion folder”."
     };
   }
   if (hello.reason === "version-mismatch") {
