@@ -1,7 +1,7 @@
 "use strict";
 
 const elements = {
-  automationEnabled: document.getElementById("automationEnabled"),
+  armButton: document.getElementById("armButton"),
   fastMode: document.getElementById("fastMode"),
   retryIntervalSeconds: document.getElementById("retryIntervalSeconds"),
   storeNavigationIntervalSeconds: document.getElementById("storeNavigationIntervalSeconds"),
@@ -268,7 +268,6 @@ function createProductRow(product = {}) {
 }
 
 function populateForm(settings) {
-  elements.automationEnabled.checked = settings.automationEnabled;
   elements.fastMode.checked = settings.fastMode;
   elements.retryIntervalSeconds.value = settings.retryIntervalSeconds;
   elements.storeNavigationIntervalSeconds.value = settings.storeNavigationIntervalSeconds;
@@ -340,7 +339,8 @@ function formSettings() {
     : "";
   return {
     products: collectProducts(),
-    automationEnabled: elements.automationEnabled.checked,
+    // Armed state is not form data: it only changes through Arm and Stop.
+    automationEnabled: Boolean(currentSnapshot?.settings?.automationEnabled),
     fastMode: elements.fastMode.checked,
     retryIntervalSeconds: Number(elements.retryIntervalSeconds.value),
     storeNavigationIntervalSeconds: Number(elements.storeNavigationIntervalSeconds.value),
@@ -353,24 +353,13 @@ function formSettings() {
 
 async function saveCurrentForm() {
   if (!validateVisibleInputs()) throw new Error("Fix the highlighted settings before saving.");
-  const autoSubmitCount = [...elements.productList.querySelectorAll(".product-row")]
-    .filter((row) => field(row, "enabled").checked && field(row, "action").value === "checkout")
-    .length;
-  if (
-    elements.automationEnabled.checked
-    && !currentSnapshot?.settings?.automationEnabled
-    && autoSubmitCount > 0
-    && !window.confirm(`${autoSubmitCount} enabled item${autoSubmitCount === 1 ? "" : "s"} may submit a real order. Re-arming starts a new run and can retry an item whose prior submission was uncertain. Verify retailer order history first. "Prepare checkout, I submit" is safer. Arm auto-submit anyway?`)
-  ) {
-    throw new Error("Automation was not armed.");
-  }
   const next = await window.cartAssist.saveSettings(formSettings());
   render(next, true);
   return next;
 }
 
 function updateBoundary() {
-  const armed = elements.automationEnabled.checked;
+  const armed = Boolean(currentSnapshot?.settings?.automationEnabled);
   const checkoutCount = [...elements.productList.querySelectorAll(".product-row")]
     .filter((row) => field(row, "enabled").checked && field(row, "action").value === "checkout")
     .length;
@@ -595,7 +584,10 @@ function renderProductStatuses(products, statuses) {
 
     const message = document.createElement("p");
     const armed = Boolean(currentSnapshot?.settings?.automationEnabled);
-    const disarmedEligibleHint = product.enabled && status.eligible && !armed
+    const nothingAddedYet = status.cart === "not-confirmed"
+      && status.checkout === "not-started"
+      && status.order !== "confirmed";
+    const disarmedEligibleHint = product.enabled && status.eligible && !armed && nothingAddedYet
       ? " Automation is disarmed, so nothing was added — arm it in step 4 and reopen the item to add it to the cart."
       : "";
     message.textContent = `${status.lastMessage || "Waiting for this item to be observed."}${disarmedEligibleHint}`;
@@ -687,9 +679,12 @@ function render(snapshot, populate = false) {
   elements.latestTime.textContent = formatDateTime(status.lastEventAt);
   elements.portBadge.textContent = app.companionPort ? `Port ${app.companionPort}` : "Port unavailable";
   elements.versionText.textContent = `${app.name} v${app.version}`;
+  elements.armButton.disabled = Boolean(settings.automationEnabled);
+  elements.armButton.textContent = settings.automationEnabled ? "Armed" : "Arm automation";
   renderProductStatuses(settings.products, productStatuses);
   renderEvents(events);
   updateCountdown();
+  updateBoundary();
   updateSteps();
 }
 
@@ -805,7 +800,22 @@ elements.clearEventsButton.addEventListener("click", () => runAction(async () =>
   render(next);
 }, "Event log cleared."));
 
-elements.automationEnabled.addEventListener("change", updateBoundary);
+elements.armButton.addEventListener("click", () => runAction(async () => {
+  if (!currentSnapshot) throw new Error("Settings have not loaded yet.");
+  if (formDirty) await saveCurrentForm();
+  const saved = currentSnapshot.settings;
+  const autoSubmitCount = saved.products.filter((product) => product.enabled && product.action === "checkout").length;
+  if (
+    autoSubmitCount > 0
+    && !window.confirm(`${autoSubmitCount} enabled item${autoSubmitCount === 1 ? "" : "s"} may submit a real order. Re-arming starts a new run and can retry an item whose prior submission was uncertain. Verify retailer order history first. "Prepare checkout, I submit" is safer. Arm auto-submit anyway?`)
+  ) {
+    throw new Error("Automation was not armed.");
+  }
+  const next = await window.cartAssist.saveSettings({ ...saved, automationEnabled: true });
+  render(next, true);
+  return next;
+}, "Armed. Open enabled items now — the companion acts as each page loads."));
+
 elements.scheduledOpenEnabled.addEventListener("change", updateScheduleControls);
 elements.scheduledRetailer.addEventListener("change", updateCountdown);
 elements.scheduledOpenAt.addEventListener("input", updateCountdown);

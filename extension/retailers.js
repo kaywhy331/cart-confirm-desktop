@@ -337,7 +337,8 @@
     }
     return {
       container,
-      seller,
+      // Fulfillment/radio copy caught by the region scan is not a seller name.
+      seller: /sold|seller/i.test(seller) ? seller : "",
       firstParty,
       price: readPrice(container, configs[retailer].price),
       quantity: readQuantity(container),

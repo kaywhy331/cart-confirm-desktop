@@ -166,5 +166,26 @@ test("the renderer boots the guided-step UI and tracks step state", async () => 
   pushUpdate(unread);
   assert.match(doc.querySelector(".status-metric strong").textContent, /Not observed/);
 
+  // A confirmed cart never carries the "nothing was added" hint.
+  const confirmed = snapshotFixture();
+  confirmed.productStatuses = {
+    "target:95298172": {
+      ...eligible.productStatuses["target:95298172"],
+      cart: "confirmed",
+      lastMessage: "The exact Target product was confirmed in the cart."
+    }
+  };
+  pushUpdate(confirmed);
+  assert.doesNotMatch(doc.querySelector(".product-status-card p").textContent, /nothing was added/);
+
+  // Arming is a one-click action, not a form field needing a resave.
+  assert.equal(doc.getElementById("armButton").disabled, false);
+  assert.equal(doc.getElementById("armButton").textContent, "Arm automation");
+  const armed = snapshotFixture();
+  armed.settings.automationEnabled = true;
+  pushUpdate(armed);
+  assert.equal(doc.getElementById("armButton").disabled, true);
+  assert.equal(doc.getElementById("stepRunState").textContent, "Armed — live");
+
   window.close();
 });

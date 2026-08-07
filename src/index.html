@@ -109,10 +109,10 @@
             <span class="step-state" id="stepRunState">Disarmed</span>
           </header>
           <div class="step-body">
-            <label class="arm-row">
-              <input id="automationEnabled" type="checkbox">
-              <span><strong>Arm automation</strong> — save to apply. “Add to cart only” items stop in the cart; “I submit” items stop at the final review; only “Submit automatically” items can place a real order.</span>
-            </label>
+            <div class="arm-row">
+              <button class="button danger" id="armButton" type="button">Arm automation</button>
+              <span><strong>Arming applies immediately</strong> (unsaved edits are saved first). “Add to cart only” items stop in the cart; “I submit” items stop at the final review; only “Submit automatically” items can place a real order.</span>
+            </div>
             <div class="action-row run-row">
               <button class="button primary" id="openBuyListButton" type="button">Open enabled items now</button>
               <button class="button danger" id="disarmButton" type="button">Stop everything</button>
