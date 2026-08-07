@@ -9,6 +9,9 @@ const elements = {
   alarmBar: document.getElementById("alarmBar"),
   alarmText: document.getElementById("alarmText"),
   silenceAlarmButton: document.getElementById("silenceAlarmButton"),
+  digestBar: document.getElementById("digestBar"),
+  digestText: document.getElementById("digestText"),
+  digestDismissButton: document.getElementById("digestDismissButton"),
   connectCard: document.getElementById("connectCard"),
   connectState: document.getElementById("connectState"),
   connectHint: document.getElementById("connectHint"),
@@ -32,6 +35,8 @@ const elements = {
   openOrdersButton: document.getElementById("openOrdersButton"),
   schedulePanel: document.getElementById("schedulePanel"),
   scheduleNext: document.getElementById("scheduleNext"),
+  scheduleCoverage: document.getElementById("scheduleCoverage"),
+  enableScheduledButton: document.getElementById("enableScheduledButton"),
   scheduleWeek: document.getElementById("scheduleWeek"),
   eventList: document.getElementById("eventList"),
   eventFilterButton: document.getElementById("eventFilterButton"),
@@ -67,6 +72,8 @@ let messageTimer = null;
 let openRunInFlight = false;
 let editingId = null; // null | product id | "new"
 let editCardNode = null;
+let resumeAutopilotAfterEdit = false;
+let awaySince = 0;
 let settingsSaveTimer = null;
 let eventFilterProductId = null;
 let lastAlarmEventStamp = "";
@@ -250,6 +257,41 @@ async function saveMissionList(products) {
   return next;
 }
 
+// --- Pause / resume Autopilot around edits, so armed missions stay editable ---
+
+async function pauseAutopilot() {
+  const next = await window.cartAssist.saveSettings({
+    ...currentSnapshot.settings,
+    automationEnabled: false
+  });
+  render(next);
+}
+
+async function resumeAutopilot() {
+  const saved = currentSnapshot.settings;
+  const autoSubmitCount = saved.products.filter((product) => product.enabled && product.action === "checkout").length;
+  if (
+    autoSubmitCount > 0
+    && !window.confirm(`${autoSubmitCount} enabled mission${autoSubmitCount === 1 ? "" : "s"} may submit a real order. Resuming starts a new run. Switch Autopilot back on?`)
+  ) {
+    setMessage("Autopilot stayed off. Switch it on from the header when ready.", "warn");
+    return;
+  }
+  const next = await window.cartAssist.saveSettings({ ...saved, automationEnabled: true });
+  render(next);
+}
+
+// Apply per-mission enabled changes, transparently pausing and resuming
+// Autopilot when it is on (a resume starts a new run by design).
+async function setMissionsEnabled(updates) {
+  const wasArmed = isArmed();
+  if (wasArmed) await pauseAutopilot();
+  await saveMissionList(savedProducts().map((product) => (
+    updates.has(product.id) ? { ...product, enabled: updates.get(product.id) } : product
+  )));
+  if (wasArmed) await resumeAutopilot();
+}
+
 // --- Mission cards ---
 
 function field(card, name) {
@@ -303,7 +345,6 @@ function buildViewCard(product, status) {
   card.title = `${STORE_LABELS[product.retailer]} ${product.sku} — ${status.lastMessage || "Waiting."}`;
 
   view(card, "enabled").checked = product.enabled !== false;
-  view(card, "enabled").disabled = isArmed();
   view(card, "store").textContent = STORE_LABELS[product.retailer];
   view(card, "title").textContent = productLabel(product);
 
@@ -327,12 +368,23 @@ function buildViewCard(product, status) {
   const armedNow = isArmed();
   const editButton = card.querySelector(".mission-edit");
   const removeButton = card.querySelector(".mission-remove");
-  editButton.disabled = armedNow;
-  removeButton.disabled = armedNow;
   if (armedNow) {
-    editButton.title = "Switch Autopilot off to edit";
-    removeButton.title = "Switch Autopilot off to remove";
+    editButton.title = "Pauses Autopilot while you edit; it resumes on Done";
+    removeButton.title = "Pauses Autopilot to remove, then resumes";
   }
+
+  card.dataset.productId = product.id;
+  card.draggable = true;
+  card.addEventListener("dragstart", (event) => {
+    if (editingId) {
+      event.preventDefault();
+      return;
+    }
+    event.dataTransfer.setData("text/plain", product.id);
+    event.dataTransfer.effectAllowed = "move";
+    card.classList.add("dragging");
+  });
+  card.addEventListener("dragend", () => card.classList.remove("dragging"));
 
 
   card.querySelector(".mission-open").addEventListener("click", () => {
@@ -343,20 +395,20 @@ function buildViewCard(product, status) {
         : `${productLabel(product)} page opened in Chrome.`)
     );
   });
-  editButton.addEventListener("click", () => startEdit(product));
+  editButton.addEventListener("click", () => void startEdit(product));
   removeButton.addEventListener("click", () => {
     if (!window.confirm(`Remove "${productLabel(product)}"?`)) return;
-    void runAction(
-      () => saveMissionList(savedProducts().filter((candidate) => candidate.id !== product.id)),
-      `${productLabel(product)} removed.`
-    );
+    void runAction(async () => {
+      const wasArmed = isArmed();
+      if (wasArmed) await pauseAutopilot();
+      await saveMissionList(savedProducts().filter((candidate) => candidate.id !== product.id));
+      if (wasArmed) await resumeAutopilot();
+    }, `${productLabel(product)} removed.`);
   });
   view(card, "enabled").addEventListener("change", (event) => {
     const enabled = event.target.checked;
     void runAction(
-      () => saveMissionList(savedProducts().map((candidate) => (
-        candidate.id === product.id ? { ...candidate, enabled } : candidate
-      ))),
+      () => setMissionsEnabled(new Map([[product.id, enabled]])),
       `${productLabel(product)} ${enabled ? "enabled" : "disabled"}.`
     );
   });
@@ -416,6 +468,10 @@ function buildEditCard(product) {
     editingId = null;
     editCardNode = null;
     renderMissions();
+    if (resumeAutopilotAfterEdit) {
+      resumeAutopilotAfterEdit = false;
+      void runAction(() => resumeAutopilot(), "Autopilot resumed.");
+    }
   };
   card.querySelector(".mission-cancel").addEventListener("click", cancel);
   card.addEventListener("keydown", (event) => {
@@ -485,17 +541,27 @@ async function finishEdit(card) {
     editingId = null;
     editCardNode = null;
     renderMissions();
+    if (resumeAutopilotAfterEdit) {
+      resumeAutopilotAfterEdit = false;
+      await runAction(() => resumeAutopilot(), "Autopilot resumed.");
+    }
   }
 }
 
-function startEdit(product) {
-  if (isArmed()) {
-    setMessage("Switch Autopilot off before editing missions.", "error");
-    return;
-  }
+async function startEdit(product) {
   if (editingId) {
     setMessage("Finish the open mission editor first (Done or Cancel).", "error");
     return;
+  }
+  if (isArmed()) {
+    try {
+      await pauseAutopilot();
+      resumeAutopilotAfterEdit = true;
+      setMessage("Autopilot paused while you edit — it resumes on Done.", "warn");
+    } catch (error) {
+      setMessage(error.message || "Could not pause Autopilot.", "error");
+      return;
+    }
   }
   editingId = product ? product.id : "new";
   editCardNode = buildEditCard(product);
@@ -627,9 +693,9 @@ function companionStepState() {
 
 // --- Schedule agenda ---
 
-function scheduledProducts() {
+function scheduledProducts(includeDisabled = false) {
   return savedProducts()
-    .filter((product) => product.enabled && product.openAt)
+    .filter((product) => product.openAt && (includeDisabled || product.enabled))
     .map((product) => ({ ...product, openAtMs: new Date(product.openAt).getTime() }))
     .filter((product) => Number.isFinite(product.openAtMs))
     .sort((a, b) => a.openAtMs - b.openAtMs);
@@ -662,9 +728,12 @@ function updateScheduleNext() {
 }
 
 function renderSchedule() {
-  const items = scheduledProducts();
+  const items = scheduledProducts(true);
   elements.schedulePanel.hidden = items.length === 0;
   if (!items.length) return;
+  const enabledCount = items.filter((item) => item.enabled).length;
+  elements.scheduleCoverage.textContent = `${enabledCount}/${items.length} enabled`;
+  elements.enableScheduledButton.hidden = enabledCount === items.length;
   const dayStart = new Date();
   dayStart.setHours(0, 0, 0, 0);
   const weekStart = dayStart.getTime();
@@ -680,10 +749,16 @@ function renderSchedule() {
     cell.append(head);
     for (const item of items.filter((candidate) => candidate.openAtMs >= start && candidate.openAtMs < end)) {
       const chip = document.createElement("span");
-      chip.className = "schedule-chip";
+      chip.className = item.enabled ? "schedule-chip" : "schedule-chip off";
       chip.dataset.retailer = item.retailer;
       chip.textContent = `${new Date(item.openAtMs).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })} · ${productLabel(item)}`;
-      chip.title = `${STORE_LABELS[item.retailer]} · ${productLabel(item)}`;
+      chip.title = `${STORE_LABELS[item.retailer]} · ${productLabel(item)} — click to ${item.enabled ? "disable" : "enable"}`;
+      chip.addEventListener("click", () => {
+        void runAction(
+          () => setMissionsEnabled(new Map([[item.id, !item.enabled]])),
+          `${productLabel(item)} ${item.enabled ? "disabled" : "enabled"}.`
+        );
+      });
       cell.append(chip);
     }
     cells.push(cell);
@@ -882,7 +957,31 @@ elements.disarmButton.addEventListener("click", () => runAction(async () => {
   render(next);
 }, "Stopped. Autopilot off, queued page openings cancelled, and scheduled times cleared."));
 
-elements.newMissionButton.addEventListener("click", () => startEdit(null));
+elements.newMissionButton.addEventListener("click", () => void startEdit(null));
+
+// Drag a mission card to reorder; order is cosmetic and saves immediately.
+elements.missionList.addEventListener("dragover", (event) => {
+  if (!editingId) event.preventDefault();
+});
+elements.missionList.addEventListener("drop", (event) => {
+  event.preventDefault();
+  const sourceId = event.dataTransfer.getData("text/plain");
+  if (!sourceId || editingId) return;
+  const products = [...savedProducts()];
+  const from = products.findIndex((candidate) => candidate.id === sourceId);
+  if (from === -1) return;
+  const targetId = event.target instanceof Element
+    ? event.target.closest(".mission-card")?.dataset.productId
+    : "";
+  const [moved] = products.splice(from, 1);
+  let to = products.length;
+  if (targetId && targetId !== sourceId) {
+    const targetIndex = products.findIndex((candidate) => candidate.id === targetId);
+    if (targetIndex !== -1) to = targetIndex;
+  }
+  products.splice(to, 0, moved);
+  void runAction(() => saveMissionList(products), "Missions reordered.");
+});
 
 elements.testButton.addEventListener("click", () => runAction(async () => {
   if (isArmed()) {
@@ -967,6 +1066,56 @@ elements.clearEventsButton.addEventListener("click", () => runAction(async () =>
   const next = await window.cartAssist.clearEvents();
   render(next);
 }, "Feed cleared."));
+
+elements.enableScheduledButton.addEventListener("click", () => {
+  const updates = new Map(
+    scheduledProducts(true).filter((item) => !item.enabled).map((item) => [item.id, true])
+  );
+  if (!updates.size) return;
+  void runAction(
+    () => setMissionsEnabled(updates),
+    `${updates.size} scheduled mission${updates.size === 1 ? "" : "s"} enabled.`
+  );
+});
+
+// Morning digest: summarize what happened while the window was unfocused.
+const DIGEST_MIN_AWAY_MS = 10 * 60_000;
+
+function showDigest(text) {
+  elements.digestText.textContent = text;
+  elements.digestBar.hidden = false;
+}
+
+elements.digestDismissButton.addEventListener("click", () => {
+  elements.digestBar.hidden = true;
+});
+
+window.addEventListener("blur", () => {
+  awaySince = Date.now();
+});
+
+window.addEventListener("focus", () => {
+  const since = awaySince;
+  awaySince = 0;
+  if (!since || Date.now() - since < DIGEST_MIN_AWAY_MS) return;
+  const sinceIso = new Date(since).toISOString();
+  const recent = (currentSnapshot?.events || []).filter((event) => event.timestamp > sinceIso);
+  if (!recent.length) return;
+  const count = (predicate) => recent.filter(predicate).length;
+  const orders = count((event) => event.eventType === "order-confirmed");
+  const secured = count((event) => event.eventType === "cart-item-confirmed");
+  const reviews = count((event) => event.eventType === "review-ready");
+  const sightings = count((event) => event.eventType === "offer-observed" && event.eligible === true);
+  const blocks = count((event) => ["automation-blocked", "store-error"].includes(event.eventType));
+  const parts = [];
+  if (orders) parts.push(`${orders} order${orders === 1 ? "" : "s"} confirmed`);
+  if (secured) parts.push(`${secured} cart${secured === 1 ? "" : "s"} secured`);
+  if (reviews) parts.push(`${reviews} final review${reviews === 1 ? "" : "s"} ready`);
+  if (sightings) parts.push(`${sightings} eligible sighting${sightings === 1 ? "" : "s"}`);
+  if (blocks) parts.push(`${blocks} block${blocks === 1 ? "" : "s"}`);
+  if (!parts.length) return;
+  showDigest(`While you were away: ${parts.join(" · ")}.`);
+});
 
 elements.silenceAlarmButton.addEventListener("click", silenceAlarm);
 elements.eventFilterButton.addEventListener("click", () => {

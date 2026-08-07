@@ -163,6 +163,29 @@ h1 { font-size: 21px; letter-spacing: -0.025em; }
 
 .worst-case { color: var(--warning); font-weight: 700; }
 
+.digest-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 11px 16px;
+  margin-bottom: 16px;
+  border: 1px solid rgba(125, 211, 252, 0.35);
+  border-radius: 13px;
+  background: rgba(14, 73, 102, 0.25);
+  color: #d8e9f2;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.schedule-coverage { color: var(--subtle); font-size: 10.5px; font-weight: 700; white-space: nowrap; }
+.schedule-next-row { margin-bottom: 10px; }
+.schedule-chip { cursor: pointer; }
+.schedule-chip.off { opacity: 0.45; border-left-style: dashed; }
+.schedule-chip:hover { background: rgba(125, 211, 252, 0.14); }
+
+.mission-card.dragging { opacity: 0.45; }
+
 .layout {
   display: grid;
   grid-template-columns: minmax(0, 1.12fr) minmax(0, 0.88fr);

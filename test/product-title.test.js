@@ -61,3 +61,11 @@ test("watch-only missions and alert levels normalize and arm without purchase ca
   assert.equal(armed.automationEnabled, true);
   assert.equal(armed.products[0].maxOrderTotal, 0);
 });
+
+test("reordering missions is not a purchase-config change while armed", () => {
+  const a = normalizeProduct({ productUrl: "https://www.target.com/p/restocks/A-95298172", maxPrice: 40 });
+  const b = normalizeProduct({ productUrl: "https://www.walmart.com/ip/123456789", maxPrice: 25 });
+  const current = { automationEnabled: true, products: [a, b] };
+  const reordered = { automationEnabled: true, products: [b, a] };
+  assert.doesNotThrow(() => assertSafeArmedUpdate(current, reordered));
+});

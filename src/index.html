@@ -42,6 +42,11 @@
       <button class="button danger compact" id="silenceAlarmButton" type="button">Silence</button>
     </div>
 
+    <div class="digest-bar" id="digestBar" hidden>
+      <span id="digestText">While you were away…</span>
+      <button class="button ghost compact" id="digestDismissButton" type="button">Dismiss</button>
+    </div>
+
     <main class="layout">
       <div class="missions-column">
 
@@ -136,8 +141,12 @@
         <section class="panel" id="schedulePanel" hidden>
           <div class="panel-heading">
             <h2>Drop calendar</h2>
-            <span class="schedule-next" id="scheduleNext"></span>
+            <div class="action-row">
+              <span class="schedule-coverage" id="scheduleCoverage"></span>
+              <button class="button ghost compact" id="enableScheduledButton" type="button" hidden>Enable all scheduled</button>
+            </div>
           </div>
+          <div class="schedule-next-row"><span class="schedule-next" id="scheduleNext"></span></div>
           <div class="schedule-week" id="scheduleWeek"></div>
         </section>
 

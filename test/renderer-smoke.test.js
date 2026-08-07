@@ -115,13 +115,20 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   doc.getElementById("eventFilterButton").click();
   assert.equal(doc.getElementById("eventFilterButton").hidden, true);
 
-  // Armed snapshot: autopilot ON and mission editing locked.
+  // Armed snapshot: autopilot ON, and editing pauses instead of locking.
   const armed = snapshotFixture();
   armed.settings.automationEnabled = true;
   pushUpdate(armed);
   assert.equal(doc.getElementById("autopilotState").textContent, "ON");
-  assert.equal(doc.querySelector(".mission-card .mission-edit").disabled, true);
-  assert.equal(doc.querySelector(".mission-card [data-view='enabled']").disabled, true);
+  assert.equal(doc.querySelector(".mission-card .mission-edit").disabled, false);
+  assert.equal(doc.querySelector(".mission-card [data-view='enabled']").disabled, false);
+  doc.querySelector(".mission-card .mission-edit").click();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  const pausedEditor = doc.querySelector(".mission-edit-card");
+  assert.ok(pausedEditor, "editing while armed pauses Autopilot and opens the editor");
+  pausedEditor.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(doc.querySelector(".mission-edit-card"), null);
 
   // Disconnected snapshot: the setup card returns with a diagnosis label.
   const waiting = snapshotFixture();
@@ -154,7 +161,8 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   assert.equal(liveCard.querySelector(".state-chip").textContent, "Eligible offer");
   assert.match(liveCard.querySelector(".status-age").textContent, /^\d+s ago$/);
 
-  // The drop calendar stays hidden until something is scheduled.
+  // The drop calendar stays hidden until something is scheduled, then acts
+  // as a coverage board with per-chip toggling and batch enabling.
   assert.equal(doc.getElementById("schedulePanel").hidden, true);
   const scheduled = snapshotFixture();
   scheduled.settings.products[0].openAt = new Date(Date.now() + 3_600_000).toISOString();
@@ -162,6 +170,19 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   assert.equal(doc.getElementById("schedulePanel").hidden, false);
   assert.ok(doc.querySelector(".schedule-chip"));
   assert.match(doc.getElementById("scheduleNext").textContent, /Next: Booster Box in/);
+  assert.equal(doc.getElementById("scheduleCoverage").textContent, "1/1 enabled");
+  assert.equal(doc.getElementById("enableScheduledButton").hidden, true);
+
+  const uncovered = snapshotFixture();
+  uncovered.settings.products[0].openAt = new Date(Date.now() + 3_600_000).toISOString();
+  uncovered.settings.products[0].enabled = false;
+  pushUpdate(uncovered);
+  assert.equal(doc.getElementById("scheduleCoverage").textContent, "0/1 enabled");
+  assert.equal(doc.getElementById("enableScheduledButton").hidden, false);
+  assert.match(doc.querySelector(".schedule-chip").className, /off/);
+
+  // The digest bar exists and stays hidden until a real away period ends.
+  assert.equal(doc.getElementById("digestBar").hidden, true);
 
   // An empty mission list shows a create CTA, and Escape closes the editor.
   const emptySnapshot = snapshotFixture();
