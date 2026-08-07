@@ -202,8 +202,8 @@ function createProductRow(product = {}) {
   field(row, "openAt").value = toLocalInputValue(product.openAt);
   field(row, "productUrl").value = product.productUrl || "";
   field(row, "sku").value = product.sku || "";
-  field(row, "maxPrice").value = Number(product.maxPrice || 0).toFixed(2);
-  field(row, "maxOrderTotal").value = Number(product.maxOrderTotal || 0).toFixed(2);
+  field(row, "maxPrice").value = String(Math.round(Number(product.maxPrice || 0)));
+  field(row, "maxOrderTotal").value = String(Math.round(Number(product.maxOrderTotal || 0)));
   field(row, "quantity").value = product.quantity || 1;
   field(row, "action").value = product.action || "cart";
   field(row, "fulfillmentMode").value = product.fulfillmentMode || "manual";
@@ -623,82 +623,55 @@ function stateLabel(product, status) {
   return "Waiting";
 }
 
-function statusMetric(label, value, kind = "") {
-  const item = document.createElement("div");
-  item.className = `status-metric ${kind}`.trim();
-  const title = document.createElement("span");
-  title.textContent = label;
-  const text = document.createElement("strong");
-  text.textContent = value;
-  item.append(title, text);
-  return item;
+function relativeTime(iso) {
+  if (!iso) return "not checked yet";
+  const then = new Date(iso).getTime();
+  if (!Number.isFinite(then)) return "not checked yet";
+  const seconds = Math.max(0, Math.floor((Date.now() - then) / 1000));
+  if (seconds < 60) return `${seconds}s ago`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
+  return new Date(then).toLocaleDateString([], { dateStyle: "medium" });
+}
+
+function updateStatusAges() {
+  for (const age of elements.productStatusList.querySelectorAll(".status-age")) {
+    age.textContent = relativeTime(age.dataset.at || "");
+  }
 }
 
 function renderProductStatuses(products, statuses) {
   const cards = products.map((product) => {
     const status = statuses[product.id] || {
-      availability: "unknown",
       eligible: false,
       reason: "",
-      observedPrice: null,
-      observedOrderTotal: null,
-      seller: "",
-      firstParty: false,
       cart: "not-confirmed",
       checkout: "not-started",
       order: "not-confirmed",
-      attempts: 0,
+      lastEventAt: "",
       lastMessage: "Waiting for this item to be observed."
     };
     const card = document.createElement("article");
     const stateClass = productStateClass(product, status);
     card.className = `product-status-card ${stateClass}`.trim();
     card.dataset.retailer = product.retailer;
+    card.title = `${STORE_LABELS[product.retailer]} ${product.sku} — ${status.lastMessage || "Waiting for this item to be observed."}`;
 
-    const heading = document.createElement("div");
-    heading.className = "product-status-heading";
-    const identity = document.createElement("div");
     const store = document.createElement("span");
     store.className = "store-name";
-    store.textContent = `${STORE_LABELS[product.retailer]} · ${product.sku}`;
+    store.textContent = STORE_LABELS[product.retailer];
     const title = document.createElement("strong");
+    title.className = "status-title";
     title.textContent = product.title || `${STORE_LABELS[product.retailer]} ${product.sku}`;
-    identity.append(store, title);
+    const age = document.createElement("span");
+    age.className = "status-age";
+    age.dataset.at = status.lastEventAt || "";
+    age.textContent = relativeTime(status.lastEventAt || "");
     const state = document.createElement("span");
     state.className = `state-chip ${stateClass}`.trim();
     state.textContent = stateLabel(product, status);
-    heading.append(identity, state);
 
-    const message = document.createElement("p");
-    const armed = Boolean(currentSnapshot?.settings?.automationEnabled);
-    const nothingAddedYet = status.cart === "not-confirmed"
-      && status.checkout === "not-started"
-      && status.order !== "confirmed";
-    const disarmedEligibleHint = product.enabled && status.eligible && !armed && nothingAddedYet
-      ? " Automation is disarmed, so nothing was added — arm it in step 4 and reopen the item to add it to the cart."
-      : "";
-    message.textContent = `${status.lastMessage || "Waiting for this item to be observed."}${disarmedEligibleHint}`;
-
-    const metrics = document.createElement("div");
-    metrics.className = "status-metrics";
-    metrics.append(
-      statusMetric("Observed / cap", `${money(status.observedPrice)} / ${money(product.maxPrice)}`, status.eligible ? "good" : ""),
-      statusMetric("Final total / cap", product.action !== "cart"
-        ? `${money(status.observedOrderTotal)} / ${money(product.maxOrderTotal)}`
-        : "Add only"),
-      statusMetric("Seller", status.firstParty ? `${status.seller || STORE_LABELS[product.retailer]} ✓` : status.seller || "Unverified", status.firstParty ? "good" : ""),
-      statusMetric("Availability", status.availability || "unknown"),
-      statusMetric("Quantity", String(product.quantity)),
-      statusMetric("Action", product.action === "checkout"
-        ? "Auto-submit"
-        : product.action === "review" ? "Final review" : "Add only"),
-      statusMetric("Fulfillment", product.fulfillmentMode === "shipping"
-        ? "Shipping"
-        : product.fulfillmentMode === "pickup" ? "Pickup" : "Manual review"),
-      statusMetric("Attempts", String(status.attempts || 0))
-    );
-
-    card.append(heading, message, metrics);
+    card.append(store, title, age, state);
     return card;
   });
   elements.productStatusList.replaceChildren(...cards);
@@ -902,7 +875,10 @@ elements.armButton.addEventListener("click", () => runAction(async () => {
 }, "Armed. Open enabled items now — the companion acts as each page loads."));
 
 window.cartAssist.onUpdate((snapshot) => render(snapshot));
-setInterval(updateScheduleNext, 1000);
+setInterval(() => {
+  updateScheduleNext();
+  updateStatusAges();
+}, 1000);
 
 window.cartAssist.getSnapshot()
   .then((snapshot) => render(snapshot, true))

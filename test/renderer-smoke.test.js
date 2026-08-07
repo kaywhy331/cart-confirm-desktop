@@ -149,8 +149,8 @@ test("the renderer boots the guided-step UI and tracks step state", async () => 
   pushUpdate(reportMissing);
   assert.equal(doc.getElementById("stepConnectState").textContent, "Report missing");
 
-  // An eligible offer while disarmed points at the arming step, and an unread
-  // price renders as "Not observed", never "$0.00".
+  // Live product state is one compact row: store, title, last-checked age,
+  // and a status chip, with the detail message as a hover tooltip.
   const eligible = snapshotFixture();
   eligible.productStatuses = {
     "target:95298172": {
@@ -165,17 +165,19 @@ test("the renderer boots the guided-step UI and tracks step state", async () => 
       checkout: "not-started",
       order: "not-confirmed",
       attempts: 0,
+      lastEventAt: new Date(Date.now() - 5_000).toISOString(),
       lastMessage: "Target has an eligible first-party offer at $31.99."
     }
   };
   pushUpdate(eligible);
-  assert.match(doc.querySelector(".product-status-card p").textContent, /arm it in step 4/);
+  const card = doc.querySelector(".product-status-card");
+  assert.equal(card.querySelector(".status-title").textContent, "Booster Box");
+  assert.equal(card.querySelector(".store-name").textContent, "Target");
+  assert.match(card.querySelector(".status-age").textContent, /^\d+s ago$/);
+  assert.equal(card.querySelector(".state-chip").textContent, "Eligible offer");
+  assert.match(card.title, /eligible first-party offer/);
+  assert.equal(card.querySelector(".status-metrics"), null, "the metrics grid is gone");
 
-  const unread = snapshotFixture();
-  pushUpdate(unread);
-  assert.match(doc.querySelector(".status-metric strong").textContent, /Not observed/);
-
-  // A confirmed cart never carries the "nothing was added" hint.
   const confirmed = snapshotFixture();
   confirmed.productStatuses = {
     "target:95298172": {
@@ -185,7 +187,11 @@ test("the renderer boots the guided-step UI and tracks step state", async () => 
     }
   };
   pushUpdate(confirmed);
-  assert.doesNotMatch(doc.querySelector(".product-status-card p").textContent, /nothing was added/);
+  assert.equal(doc.querySelector(".state-chip").textContent, "Cart confirmed");
+
+  // Price caps are whole dollars in the form.
+  assert.equal(doc.querySelector("[data-field='maxPrice']").value, "40");
+  assert.equal(doc.querySelector("[data-field='maxPrice']").step, "1");
 
   // Arming is a one-click action, not a form field needing a resave.
   assert.equal(doc.getElementById("armButton").disabled, false);

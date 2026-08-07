@@ -494,23 +494,41 @@ button:disabled:hover { transform: none; }
   text-transform: uppercase;
 }
 
-.product-status-list { display: grid; gap: 10px; }
+.product-status-list { display: grid; gap: 7px; }
 .product-status-card {
   --store-accent: var(--target);
-  padding: 13px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
   border: 1px solid var(--line);
-  border-top: 2px solid var(--store-accent);
-  border-radius: 13px;
+  border-left: 3px solid var(--store-accent);
+  border-radius: 10px;
   background: var(--panel-soft);
+  cursor: default;
 }
 .product-status-card[data-retailer="walmart"] { --store-accent: var(--walmart); }
 .product-status-card[data-retailer="amazon"] { --store-accent: var(--amazon); }
-.product-status-card.good { border-color: rgba(134, 239, 172, 0.27); }
-.product-status-card.bad { border-color: rgba(252, 165, 165, 0.3); }
+.product-status-card.good { border-color: rgba(134, 239, 172, 0.27); border-left-color: var(--store-accent); }
+.product-status-card.bad { border-color: rgba(252, 165, 165, 0.3); border-left-color: var(--store-accent); }
 .product-status-card.disabled { opacity: 0.55; }
-.product-status-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
-.product-status-heading .store-name { display: block; margin-bottom: 4px; color: var(--store-accent); font-size: 9.5px; font-weight: 900; text-transform: uppercase; letter-spacing: 0.1em; }
-.product-status-heading strong { font-size: 13.5px; }
+.product-status-card .store-name {
+  flex: 0 0 auto;
+  color: var(--store-accent);
+  font-size: 9px;
+  font-weight: 900;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.status-title {
+  flex: 1 1 auto;
+  overflow: hidden;
+  min-width: 0;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.status-age { flex: 0 0 auto; color: var(--subtle); font-size: 9.5px; white-space: nowrap; }
 .state-chip {
   display: inline-flex;
   align-items: center;
@@ -529,13 +547,6 @@ button:disabled:hover { transform: none; }
 .state-chip.good { border-color: rgba(134, 239, 172, 0.23); background: rgba(22, 101, 52, 0.11); color: var(--success); }
 .state-chip.bad { border-color: rgba(252, 165, 165, 0.25); background: rgba(127, 29, 29, 0.15); color: var(--danger); }
 .state-chip.waiting { color: var(--warning); }
-.product-status-card > p { min-height: 30px; margin: 10px 0; color: #dce6f3; font-size: 11px; line-height: 1.5; }
-.status-metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
-.status-metric { min-width: 0; padding: 7px 8px; border: 1px solid var(--line); border-radius: 9px; background: rgba(3, 8, 17, 0.32); }
-.status-metric > span { display: block; margin-bottom: 3px; color: var(--subtle); font-size: 8.5px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.06em; }
-.status-metric > strong { display: block; overflow: hidden; color: #dbe5f4; font-size: 10.5px; text-overflow: ellipsis; white-space: nowrap; }
-.status-metric.good > strong { color: var(--success); }
-
 .latest-event {
   margin-top: 12px;
   padding: 13px;
@@ -584,7 +595,7 @@ footer {
   .step-header { flex-wrap: wrap; }
   .product-row-top { flex-wrap: wrap; }
   .title-input { flex-basis: 100%; order: 5; }
-  .product-fields, .automation-grid, .status-metrics { grid-template-columns: 1fr; }
+  .product-fields, .automation-grid { grid-template-columns: 1fr; }
   .schedule-week { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .action-row .button { flex: 1 1 auto; }
 }
