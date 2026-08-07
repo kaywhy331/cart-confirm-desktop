@@ -140,7 +140,7 @@ h1 { font-size: 22px; letter-spacing: -0.025em; }
 
 .automation-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 11px;
   margin-bottom: 11px;
 }
@@ -234,7 +234,7 @@ h1 { font-size: 22px; letter-spacing: -0.025em; }
 .product-url-field { margin-bottom: 12px; }
 .product-fields {
   display: grid;
-  grid-template-columns: minmax(150px, 0.8fr) minmax(160px, 0.8fr) minmax(100px, 0.45fr) minmax(185px, 1fr);
+  grid-template-columns: minmax(125px, 0.7fr) repeat(2, minmax(150px, 0.8fr)) minmax(90px, 0.4fr) minmax(175px, 1fr);
   gap: 11px;
 }
 .product-fields .field { margin-bottom: 0; }
@@ -414,7 +414,7 @@ footer {
 
 @media (max-width: 1050px) {
   .automation-grid { grid-template-columns: 1fr 1fr; }
-  .automation-grid .compact-field { grid-column: 1 / -1; }
+  .automation-grid .compact-field { grid-column: auto; }
   .product-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .product-status-list { grid-template-columns: 1fr; }
 }

@@ -56,7 +56,7 @@
               <input id="automationEnabled" type="checkbox">
               <span>Arm enabled products</span>
             </span>
-            <small>Add-only rows stop in the cart. Checkout rows may submit an order after all checks pass.</small>
+            <small>Add-only rows stop in the cart. Final-review rows stop before submission. Auto-submit rows can place a real order.</small>
           </label>
 
           <label class="control-card">
@@ -76,6 +76,24 @@
             </span>
             <small>Retries use this minimum plus jitter and backoff after store errors.</small>
           </label>
+
+          <label class="control-card field compact-field">
+            <span class="control-title">Store traffic spacing</span>
+            <span class="number-suffix">
+              <input id="storeNavigationIntervalSeconds" type="number" min="10" max="3600" step="1" inputmode="numeric" required>
+              <span>seconds</span>
+            </span>
+            <small>All automatic and queued page openings for one store are serialized by this minimum.</small>
+          </label>
+
+          <label class="control-card field compact-field">
+            <span class="control-title">Overload cooldown</span>
+            <span class="number-suffix">
+              <input id="overloadCooldownSeconds" type="number" min="60" max="86400" step="1" inputmode="numeric" required>
+              <span>seconds</span>
+            </span>
+            <small>429 and temporary gateway failures pause that store; a longer Retry-After value wins.</small>
+          </label>
         </div>
 
         <div class="fixed-rule">
@@ -88,7 +106,7 @@
         <div class="schedule-box">
           <label class="toggle-row schedule-toggle">
             <input id="scheduledOpenEnabled" type="checkbox">
-            <span>Open every enabled product once at a scheduled time</span>
+            <span>Queue every enabled product once at a scheduled time</span>
           </label>
           <div class="schedule-fields">
             <label class="field">
@@ -164,13 +182,13 @@
           <button class="button ghost" id="copyExtensionButton" type="button">Copy folder path</button>
         </div>
 
-        <p class="privacy-note">The companion sends only milestone names, store/SKU, seller label, observed price, a query-free page address, and timestamps to this computer. It never sends cookies, passwords, addresses, payment details, totals, or order numbers. It does not solve CAPTCHAs, bypass queues, or defeat store controls.</p>
+        <p class="privacy-note">The companion sends only milestone names, store/SKU, seller label, observed unit price and final total, a query-free page address, and timestamps to this computer. It never sends cookies, passwords, addresses, payment details, or order numbers. It does not solve CAPTCHAs, bypass queues, or defeat store controls.</p>
       </section>
 
       <section class="panel log-panel">
         <div class="panel-heading">
           <div>
-            <span class="eyebrow">Local session only</span>
+            <span class="eyebrow">Persistent local safety ledger</span>
             <h2>Event log</h2>
           </div>
           <button class="button ghost compact" id="clearEventsButton" type="button">Clear</button>
@@ -219,6 +237,10 @@
           <span class="money-input"><span>$</span><input data-field="maxPrice" type="number" min="0" max="1000000" step="0.01" inputmode="decimal" required></span>
         </label>
         <label class="field">
+          <span>Maximum final order total</span>
+          <span class="money-input"><span>$</span><input data-field="maxOrderTotal" type="number" min="0" max="1000000" step="0.01" inputmode="decimal" required></span>
+        </label>
+        <label class="field">
           <span>Quantity</span>
           <input data-field="quantity" type="number" min="1" max="99" step="1" inputmode="numeric" required>
         </label>
@@ -226,13 +248,22 @@
           <span>Success action</span>
           <select data-field="action">
             <option value="cart">Add to cart only</option>
-            <option value="checkout">Complete checkout</option>
+            <option value="review">Stop at final review (recommended)</option>
+            <option value="checkout">Submit order automatically (advanced)</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>Required fulfillment</span>
+          <select data-field="fulfillmentMode">
+            <option value="manual">Confirm manually</option>
+            <option value="shipping">Shipping / delivery</option>
+            <option value="pickup">Store pickup</option>
           </select>
         </label>
       </div>
 
       <div class="product-row-footer">
-        <small class="row-help">The price cap applies per unit before any automated action.</small>
+        <small class="row-help">The unit cap always applies. Final review and auto-submit also require a positive total cap and a fully verified one-product cart.</small>
         <div class="row-actions">
           <button class="button ghost compact open-product-row" type="button">Open</button>
           <button class="button ghost compact remove-product-row" type="button">Remove</button>

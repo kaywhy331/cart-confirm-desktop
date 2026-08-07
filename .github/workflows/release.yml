@@ -1,0 +1,71 @@
+name: Signed Windows release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    env:
+      CSC_LINK: ${{ secrets.WINDOWS_CERTIFICATE }}
+      CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - name: Require a verified signed tag matching package.json
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $packageVersion = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          if ($env:GITHUB_REF_NAME -ne "v$packageVersion") {
+            throw "Tag $env:GITHUB_REF_NAME does not match package version v$packageVersion."
+          }
+          $tagRef = gh api "repos/$env:GITHUB_REPOSITORY/git/ref/tags/$env:GITHUB_REF_NAME" | ConvertFrom-Json
+          if ($tagRef.object.type -ne "tag") {
+            throw "Release tags must be annotated and cryptographically signed."
+          }
+          $tag = gh api "repos/$env:GITHUB_REPOSITORY/git/tags/$($tagRef.object.sha)" | ConvertFrom-Json
+          if (-not $tag.verification.verified) {
+            throw "GitHub did not verify the release tag signature: $($tag.verification.reason)."
+          }
+      - name: Require the Windows signing certificate
+        shell: pwsh
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:CSC_LINK)) {
+            throw "WINDOWS_CERTIFICATE must contain a base64 PFX or secure certificate URL."
+          }
+      - run: npm ci --no-fund
+      - run: npm run verify
+      - run: npm audit --audit-level=moderate
+      - run: npm run dist:win
+      - name: Verify Windows signatures and checksums
+        shell: pwsh
+        run: |
+          $artifacts = @(Get-ChildItem dist -Filter *.exe)
+          if ($artifacts.Count -ne 2) {
+            throw "Expected exactly two Windows executables, found $($artifacts.Count)."
+          }
+          foreach ($artifact in $artifacts) {
+            $signature = Get-AuthenticodeSignature $artifact.FullName
+            if ($signature.Status -ne "Valid") {
+              throw "$($artifact.Name) has invalid Authenticode status: $($signature.Status)."
+            }
+          }
+          Get-Content dist/SHA256SUMS.txt | ForEach-Object {
+            $parts = $_ -split '\s+', 2
+            $actual = (Get-FileHash (Join-Path dist $parts[1]) -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($actual -ne $parts[0]) { throw "Checksum mismatch for $($parts[1])." }
+          }
+      - name: Create GitHub release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create $env:GITHUB_REF_NAME dist/*.exe dist/SHA256SUMS.txt --verify-tag --generate-notes

@@ -16,6 +16,7 @@ const crypto = require("node:crypto");
 
 const {
   DEFAULT_SETTINGS,
+  assertSafeArmedUpdate,
   createInitialStatus,
   createProductStatus,
   matchingProduct,
@@ -24,6 +25,12 @@ const {
   reduceStatus,
   validateEvent
 } = require("./lib/core");
+const { migrateStoredSettings } = require("./lib/migrations");
+const { consumeStoreAction } = require("./lib/action-budget");
+const { evaluateSchedule } = require("./lib/schedule");
+const { loadRuntimeState, saveRuntimeState } = require("./lib/runtime-state");
+const { isAllowedExtensionOrigin } = require("./lib/extension-identity");
+const { createStoreOpenQueue } = require("./lib/store-open-queue");
 const {
   RETAILERS,
   parseRetailUrl,
@@ -43,13 +50,30 @@ let settings = null;
 let status = createInitialStatus();
 let productStatuses = {};
 let events = [];
-let scheduledOpenKey = "";
+let runtimeState = null;
+let startupWasDisarmed = false;
 let schedulerTimer = null;
 let configVersion = 1;
 const lastNotificationAt = new Map();
+const storeOverloadUntil = new Map();
+const storeOpenQueue = createStoreOpenQueue({
+  intervalMs: () => Number(settings?.storeNavigationIntervalSeconds || 20) * 1000,
+  notBefore: (retailer) => storeOverloadUntil.get(retailer) || 0
+});
 
 function settingsPath() {
   return path.join(app.getPath("userData"), "settings.json");
+}
+
+function runtimeStatePath() {
+  return path.join(app.getPath("userData"), "runtime-state.json");
+}
+
+function persistRuntimeState() {
+  if (!runtimeState) return;
+  runtimeState.events = events;
+  runtimeState.storeOverloadUntil = Object.fromEntries(storeOverloadUntil);
+  runtimeState = saveRuntimeState(runtimeStatePath(), runtimeState);
 }
 
 function resetProductStatuses() {
@@ -67,17 +91,33 @@ function loadSettings() {
   }
 
   try {
-    settings = normalizeSettings(stored, DEFAULT_SETTINGS);
+    settings = normalizeSettings(migrateStoredSettings(stored), DEFAULT_SETTINGS);
   } catch {
     settings = normalizeSettings(DEFAULT_SETTINGS, DEFAULT_SETTINGS);
   }
 
-  if (settings.automationEnabled && !settings.automationRunId) {
-    settings = { ...settings, automationRunId: crypto.randomUUID() };
+  startupWasDisarmed = settings.automationEnabled;
+  if (startupWasDisarmed) {
+    settings = { ...settings, automationEnabled: false };
   }
 
   resetProductStatuses();
   persistSettings();
+}
+
+function loadPersistedRuntimeState() {
+  runtimeState = loadRuntimeState(runtimeStatePath());
+  events = runtimeState.events;
+  storeOverloadUntil.clear();
+  for (const [retailer, deadline] of Object.entries(runtimeState.storeOverloadUntil)) {
+    if (deadline > Date.now()) storeOverloadUntil.set(retailer, deadline);
+  }
+  if (startupWasDisarmed) {
+    status = {
+      ...status,
+      lastMessage: "Automation was disarmed when Cart Confirm started. Review the current run and arm it again explicitly."
+    };
+  }
 }
 
 function persistSettings() {
@@ -98,6 +138,8 @@ function publicSettings() {
     automationRunId: settings.automationRunId,
     fastMode: settings.fastMode,
     retryIntervalSeconds: settings.retryIntervalSeconds,
+    storeNavigationIntervalSeconds: settings.storeNavigationIntervalSeconds,
+    overloadCooldownSeconds: settings.overloadCooldownSeconds,
     scheduledOpenEnabled: settings.scheduledOpenEnabled,
     scheduledOpenAt: settings.scheduledOpenAt,
     scheduledRetailer: settings.scheduledRetailer,
@@ -144,6 +186,7 @@ function addEvent(event) {
     },
     ...events
   ].slice(0, MAX_EVENTS);
+  persistRuntimeState();
 }
 
 function notifyOnce(key, title, body, force = false) {
@@ -154,9 +197,33 @@ function notifyOnce(key, title, body, force = false) {
   new Notification({ title, body, silent: false }).show();
 }
 
+function reserveStoreAction(retailer, kind = "navigation") {
+  if (!["target", "walmart", "amazon"].includes(retailer)) {
+    return { allowed: false, reason: "unsupported-retailer" };
+  }
+  const now = Date.now();
+  const result = consumeStoreAction(
+    runtimeState?.storeActionHistory?.[retailer],
+    now,
+    undefined,
+    storeOverloadUntil.get(retailer) || 0
+  );
+  runtimeState.storeActionHistory[retailer] = result.history;
+  persistRuntimeState();
+  return result.allowed
+    ? { allowed: true, remaining: result.remaining, kind }
+    : { allowed: false, reason: result.reason, retryAt: result.retryAt, kind };
+}
+
 async function openExternalRetailer(url) {
-  const { parsed } = parseRetailUrl(url);
-  await shell.openExternal(parsed.href, { activate: true });
+  const { parsed, retailer } = parseRetailUrl(url);
+  await storeOpenQueue.enqueue(retailer, () => {
+    const budget = reserveStoreAction(retailer, "desktop-navigation");
+    if (!budget.allowed) {
+      throw new Error(`${retailerLabel(retailer)} reached the fixed 120-action hourly safety budget.`);
+    }
+    return shell.openExternal(parsed.href, { activate: true });
+  });
 }
 
 function findProduct(productId) {
@@ -184,12 +251,7 @@ async function openBuyList(retailer = "") {
       : "Enable at least one product first.");
   }
 
-  for (const [index, product] of enabledProducts.entries()) {
-    await openExternalRetailer(product.productUrl);
-    if (index < enabledProducts.length - 1) {
-      await new Promise((resolve) => setTimeout(resolve, 350));
-    }
-  }
+  await Promise.all(enabledProducts.map((product) => openExternalRetailer(product.productUrl)));
   return enabledProducts.length;
 }
 
@@ -202,6 +264,11 @@ async function openStorePage(retailer, type) {
 
 function validateProductEvent(event) {
   if (event.eventType === "heartbeat") return { event, product: null };
+  if (event.eventType === "traffic-overload") {
+    return event.retailer && event.cooldownUntil
+      ? { event, product: null }
+      : { event, product: null, error: "invalid-traffic-signal" };
+  }
 
   const product = matchingProduct(settings.products, event);
   if (!product) return { event, product: null, error: "product-mismatch" };
@@ -236,6 +303,15 @@ function validateProductEvent(event) {
 }
 
 function sendEventNotification(event, product) {
+  if (event.eventType === "traffic-overload") {
+    notifyOnce(
+      `${event.retailer}:traffic-overload`,
+      `${retailerLabel(event.retailer)} traffic cooldown`,
+      "Queued and automatic page openings for this store are paused.",
+      true
+    );
+    return;
+  }
   if (!product) return;
   const store = retailerLabel(product.retailer);
   const key = `${product.id}:${event.eventType}:${event.reason || ""}`;
@@ -254,6 +330,10 @@ function sendEventNotification(event, product) {
     notifyOnce(key, `${store} checkout reached`, "The browser companion is validating the order review before submission.");
   } else if (event.eventType === "order-confirmed") {
     notifyOnce(key, `${store} order confirmed`, `${product.sku} reached an order-confirmation page.`, true);
+  } else if (event.eventType === "review-ready") {
+    notifyOnce(key, `${store} final review ready`, "Review the complete order in the browser and submit it manually.", true);
+  } else if (event.eventType === "queue-waiting") {
+    notifyOnce(key, `${store} purchase queue`, "The companion is waiting for the official retailer queue without refreshing it.");
   }
 }
 
@@ -263,6 +343,15 @@ function handleCompanionEvent(rawEvent) {
   if (result.error) return { accepted: false, reason: result.error };
 
   const { event, product } = result;
+  if (event.eventType === "traffic-overload") {
+    const previousCooldown = storeOverloadUntil.get(event.retailer) || 0;
+    if (event.cooldownUntil <= previousCooldown) return { accepted: true, deduped: true };
+    storeOverloadUntil.set(
+      event.retailer,
+      event.cooldownUntil
+    );
+    if (runtimeState) runtimeState.storeOverloadUntil[event.retailer] = event.cooldownUntil;
+  }
   status = reduceStatus(status, event);
   if (product) {
     const current = productStatuses[product.id] || createProductStatus(product);
@@ -279,12 +368,11 @@ function handleCompanionEvent(rawEvent) {
 
 function corsOrigin(req) {
   const origin = String(req.headers.origin || "");
-  return origin.startsWith("chrome-extension://") ? origin : "";
+  return isAllowedExtensionOrigin(origin) ? origin : "";
 }
 
 function hasAllowedLocalOrigin(req) {
-  const origin = String(req.headers.origin || "");
-  return origin === "" || origin.startsWith("chrome-extension://");
+  return isAllowedExtensionOrigin(req.headers.origin);
 }
 
 function writeJson(req, res, statusCode, payload) {
@@ -299,6 +387,28 @@ function writeJson(req, res, statusCode, payload) {
   res.end(JSON.stringify(payload));
 }
 
+function readJsonRequest(req, res, handler) {
+  let body = "";
+  let finished = false;
+  req.on("data", (chunk) => {
+    if (finished) return;
+    body += chunk;
+    if (Buffer.byteLength(body) > MAX_BODY_BYTES) {
+      finished = true;
+      writeJson(req, res, 413, { error: "payload-too-large" });
+    }
+  });
+  req.on("end", () => {
+    if (finished) return;
+    try {
+      const result = handler(JSON.parse(body));
+      writeJson(req, res, result.statusCode, result.payload);
+    } catch (error) {
+      writeJson(req, res, 400, { error: error.message });
+    }
+  });
+}
+
 function extensionConfig() {
   return {
     products: settings.products,
@@ -306,6 +416,8 @@ function extensionConfig() {
     automationRunId: settings.automationRunId,
     fastMode: settings.fastMode,
     retryIntervalSeconds: settings.retryIntervalSeconds,
+    storeNavigationIntervalSeconds: settings.storeNavigationIntervalSeconds,
+    overloadCooldownSeconds: settings.overloadCooldownSeconds,
     firstPartyOnly: true,
     token: settings.companionToken,
     configVersion,
@@ -348,28 +460,24 @@ function startServerOnPort(port) {
           return;
         }
 
-        let body = "";
-        let tooLarge = false;
-
-        req.on("data", (chunk) => {
-          if (tooLarge) return;
-          body += chunk;
-          if (Buffer.byteLength(body) > MAX_BODY_BYTES) {
-            tooLarge = true;
-            writeJson(req, res, 413, { error: "payload-too-large" });
-          }
+        readJsonRequest(req, res, (body) => {
+          const eventResult = handleCompanionEvent(body);
+          return { statusCode: eventResult.accepted ? 202 : 200, payload: eventResult };
         });
+        return;
+      }
 
-        req.on("end", () => {
-          if (tooLarge) return;
-          try {
-            const eventResult = handleCompanionEvent(JSON.parse(body));
-            writeJson(req, res, eventResult.accepted ? 202 : 200, eventResult);
-          } catch (error) {
-            writeJson(req, res, 400, { error: error.message });
-          }
+      if (req.method === "POST" && requestUrl.pathname === "/traffic/reserve") {
+        if (req.headers["x-cart-assist-token"] !== settings.companionToken) {
+          writeJson(req, res, 401, { error: "invalid-token" });
+          return;
+        }
+        readJsonRequest(req, res, (body) => {
+          const retailer = String(body?.retailer || "");
+          const kind = String(body?.kind || "automatic-action").slice(0, 80);
+          const result = reserveStoreAction(retailer, kind);
+          return { statusCode: result.allowed ? 200 : 429, payload: result };
         });
-
         return;
       }
 
@@ -431,15 +539,19 @@ function registerIpc() {
 
   ipcMain.handle("cart-assist:save-settings", (_event, nextSettings) => {
     const wasArmed = settings.automationEnabled;
-    settings = normalizeSettings(nextSettings, settings);
-    if (settings.automationEnabled && !wasArmed) {
-      settings = { ...settings, automationRunId: crypto.randomUUID() };
+    let normalized = normalizeSettings(nextSettings, settings);
+    assertSafeArmedUpdate(settings, normalized);
+    if (normalized.scheduledOpenEnabled && new Date(normalized.scheduledOpenAt).getTime() <= Date.now()) {
+      throw new Error("Choose a future date and time for the single store schedule.");
     }
+    if (normalized.automationEnabled && !wasArmed) {
+      normalized = { ...normalized, automationRunId: crypto.randomUUID() };
+    }
+    settings = normalized;
     persistSettings();
     configVersion += 1;
-    scheduledOpenKey = "";
     status = createInitialStatus();
-    events = [];
+    persistRuntimeState();
     resetProductStatuses();
     lastNotificationAt.clear();
     broadcast();
@@ -461,6 +573,7 @@ function registerIpc() {
   });
   ipcMain.handle("cart-assist:clear-events", () => {
     events = [];
+    persistRuntimeState();
     broadcast();
     return snapshot();
   });
@@ -480,23 +593,49 @@ function startScheduler() {
       }
     }
 
-    if (!settings.scheduledOpenEnabled || !settings.scheduledOpenAt) return;
-    const targetTime = new Date(settings.scheduledOpenAt).getTime();
-    if (Number.isNaN(targetTime) || Date.now() < targetTime) return;
+    const decision = evaluateSchedule(settings, runtimeState?.scheduleReceipt, Date.now());
+    if (decision.action === "missed") {
+      runtimeState.scheduleReceipt = {
+        key: decision.key,
+        status: "missed",
+        recordedAt: new Date().toISOString()
+      };
+      settings = { ...settings, scheduledOpenEnabled: false };
+      persistSettings();
+      persistRuntimeState();
+      notifyOnce(
+        "scheduled-open-missed",
+        "Scheduled buy list was not opened",
+        "The scheduled time was missed by more than two minutes. Save a new future time.",
+        true
+      );
+      broadcast();
+      return;
+    }
+    if (decision.action !== "fire") return;
 
-    const enabledIds = settings.products
-      .filter((product) => product.enabled && product.retailer === settings.scheduledRetailer)
-      .map((product) => product.id)
-      .join(",");
-    const key = `${settings.scheduledRetailer}:${enabledIds}:${settings.scheduledOpenAt}`;
-    if (scheduledOpenKey === key) return;
+    const scheduledRetailer = settings.scheduledRetailer;
+    runtimeState.scheduleReceipt = {
+      key: decision.key,
+      status: "firing",
+      recordedAt: new Date().toISOString()
+    };
+    settings = { ...settings, scheduledOpenEnabled: false };
+    persistSettings();
+    persistRuntimeState();
+    broadcast();
 
-    scheduledOpenKey = key;
-    void openBuyList(settings.scheduledRetailer)
+    void openBuyList(scheduledRetailer)
       .then(() => {
+        runtimeState.scheduleReceipt = {
+          key: decision.key,
+          status: "fired",
+          recordedAt: new Date().toISOString()
+        };
+        persistRuntimeState();
         notifyOnce(
           "scheduled-open",
-          `${retailerLabel(settings.scheduledRetailer)} buy list opened`,
+          `${retailerLabel(scheduledRetailer)} buy list opened`,
           "The single scheduled time was reached. Enabled products for the selected store are opening.",
           true
         );
@@ -521,6 +660,7 @@ if (!gotLock) {
   app.whenReady().then(async () => {
     app.setAppUserModelId("com.kevinyang.cartconfirm");
     loadSettings();
+    loadPersistedRuntimeState();
     registerIpc();
 
     try {

@@ -4,6 +4,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 
 const {
+  assertSafeArmedUpdate,
   createInitialStatus,
   createProductStatus,
   extractTcin,
@@ -19,6 +20,7 @@ const {
   detectRetailer,
   extractSku,
   normalizeProductUrl,
+  parseWalmartQueue,
   storeUrl
 } = require("../lib/retailers");
 
@@ -27,22 +29,28 @@ const PRODUCTS = [
     productUrl: "https://www.target.com/p/name/-/A-1011960739?ref=tracking",
     sku: "1011960739",
     maxPrice: 49.99,
+    maxOrderTotal: 125,
     quantity: 2,
-    action: "checkout"
+    action: "checkout",
+    fulfillmentMode: "shipping"
   },
   {
     productUrl: "https://www.walmart.com/ip/example/123456789?athbdg=L1100",
     sku: "123456789",
     maxPrice: 25,
+    maxOrderTotal: 0,
     quantity: 3,
-    action: "cart"
+    action: "cart",
+    fulfillmentMode: "manual"
   },
   {
     productUrl: "https://www.amazon.com/Example/dp/B0ABC12345/ref=abc",
     sku: "B0ABC12345",
     maxPrice: 12.5,
+    maxOrderTotal: 25,
     quantity: 1,
-    action: "checkout"
+    action: "checkout",
+    fulfillmentMode: "shipping"
   }
 ];
 
@@ -73,6 +81,8 @@ test("normalizes a multi-store buy list and preserves a private token", () => {
     automationEnabled: true,
     fastMode: false,
     retryIntervalSeconds: 8,
+    storeNavigationIntervalSeconds: 25,
+    overloadCooldownSeconds: 600,
     scheduledRetailer: "amazon"
   }, existing);
 
@@ -83,6 +93,8 @@ test("normalizes a multi-store buy list and preserves a private token", () => {
   assert.equal(result.companionToken, "existing-token");
   assert.equal(result.automationEnabled, true);
   assert.equal(result.fastMode, false);
+  assert.equal(result.storeNavigationIntervalSeconds, 25);
+  assert.equal(result.overloadCooldownSeconds, 600);
   assert.equal(result.scheduledRetailer, "amazon");
 });
 
@@ -104,27 +116,74 @@ test("rejects unsafe or ambiguous product settings", () => {
   assert.throws(() => normalizeProduct({ ...PRODUCTS[0], quantity: 0 }), /Quantity/);
   assert.throws(() => normalizeProduct({ ...PRODUCTS[0], maxPrice: -1 }), /Maximum unit price/);
   assert.throws(() => normalizeProduct({ ...PRODUCTS[0], action: "buy-now" }), /Add to cart/);
+  assert.throws(() => normalizeProduct({ ...PRODUCTS[0], fulfillmentMode: "drone" }), /shipping, pickup/);
   assert.throws(
     () => normalizeSettings({ products: [PRODUCTS[0], PRODUCTS[0]] }),
     /appears more than once/
   );
   assert.throws(() => normalizeSettings({ products: PRODUCTS, retryIntervalSeconds: 1 }), /Retry interval/);
+  assert.throws(() => normalizeSettings({ products: PRODUCTS, storeNavigationIntervalSeconds: 1 }), /navigation interval/);
+  assert.throws(() => normalizeSettings({ products: PRODUCTS, overloadCooldownSeconds: 1 }), /Overload cooldown/);
   assert.throws(() => normalizeSettings({ products: PRODUCTS, scheduledRetailer: "other" }), /single schedule/);
   assert.throws(
     () => normalizeSettings({ products: PRODUCTS, scheduledOpenEnabled: true, scheduledRetailer: "amazon" }),
     /date and time/
+  );
+  assert.throws(
+    () => normalizeSettings({
+      products: [{ ...PRODUCTS[0], maxOrderTotal: 0 }],
+      automationEnabled: true
+    }),
+    /maximum order total/
+  );
+  assert.throws(
+    () => normalizeSettings({
+      products: [{ ...PRODUCTS[0], maxOrderTotal: 50 }],
+      automationEnabled: true
+    }),
+    /capped item subtotal/
   );
   assert.throws(() => normalizeSettings({ products: [] }), /at least one product/);
   assert.throws(
     () => normalizeSettings({ products: [{ ...PRODUCTS[0], maxPrice: 0 }], automationEnabled: true }),
     /positive maximum unit price/
   );
+  assert.throws(
+    () => normalizeSettings({
+      products: [{ ...PRODUCTS[0], fulfillmentMode: "manual" }],
+      automationEnabled: true
+    }),
+    /explicitly require shipping or pickup/
+  );
+});
+
+test("review-only products are supported and armed product edits require disarming", () => {
+  const review = normalizeProduct({ ...PRODUCTS[0], action: "review" });
+  assert.equal(review.action, "review");
+
+  const armed = normalizeSettings({ products: [PRODUCTS[0]], automationEnabled: true });
+  const changed = normalizeSettings({
+    products: [{ ...PRODUCTS[0], maxPrice: PRODUCTS[0].maxPrice + 1 }],
+    automationEnabled: true
+  }, armed);
+  assert.throws(() => assertSafeArmedUpdate(armed, changed), /Disarm automation/);
+  assert.doesNotThrow(() => assertSafeArmedUpdate(armed, { ...changed, automationEnabled: false }));
 });
 
 test("returns store-aware cart and order links", () => {
   assert.equal(storeUrl("target", "cartUrl"), "https://www.target.com/cart");
   assert.equal(storeUrl("walmart", "ordersUrl"), "https://www.walmart.com/orders");
   assert.equal(storeUrl("amazon", "cartUrl"), "https://www.amazon.com/gp/cart/view.html");
+});
+
+test("volatile Walmart queue URLs normalize to the canonical product URL", () => {
+  const qpdata = encodeURIComponent(JSON.stringify({
+    queued: true,
+    customMetadata: { state: "pending", item: { itemID: "123456789" } }
+  }));
+  const queueUrl = `https://www.walmart.com/qp?qpdata=${qpdata}&signature=discard-me`;
+  assert.equal(parseWalmartQueue(queueUrl).itemId, "123456789");
+  assert.equal(normalizeProductUrl(queueUrl), "https://www.walmart.com/ip/123456789");
 });
 
 test("validates and minimizes retailer companion events", () => {
@@ -154,6 +213,8 @@ test("validates and minimizes retailer companion events", () => {
     quantity: undefined,
     attempt: undefined,
     price: 12.5,
+    orderTotal: undefined,
+    cooldownUntil: undefined,
     seller: "Amazon.com",
     firstParty: true,
     eligible: true,
@@ -162,6 +223,19 @@ test("validates and minimizes retailer companion events", () => {
     page: "https://www.amazon.com/dp/B0ABC12345",
     timestamp: "2026-08-04T12:00:00.000Z"
   });
+});
+
+test("validates a global retailer overload signal without product data", () => {
+  const cooldownUntil = Date.now() + 60_000;
+  const event = validateEvent({
+    eventType: "traffic-overload",
+    retailer: "walmart",
+    reason: "traffic-overload",
+    cooldownUntil
+  });
+  assert.equal(event.productId, "");
+  assert.equal(event.retailer, "walmart");
+  assert.equal(event.cooldownUntil, cooldownUntil);
 });
 
 test("status reducers track global and per-product milestones", () => {
@@ -173,7 +247,7 @@ test("status reducers track global and per-product milestones", () => {
     validateEvent({ eventType: "added-confirmed", productId: product.id, retailer: "target", sku: product.sku }),
     validateEvent({ eventType: "cart-item-confirmed", productId: product.id, retailer: "target", sku: product.sku }),
     validateEvent({ eventType: "checkout-reached", productId: product.id, retailer: "target", sku: product.sku }),
-    validateEvent({ eventType: "order-confirmed", productId: product.id, retailer: "target", sku: product.sku })
+    validateEvent({ eventType: "order-confirmed", productId: product.id, retailer: "target", sku: product.sku, orderTotal: 108.42 })
   ];
 
   for (const event of events) {
@@ -187,5 +261,6 @@ test("status reducers track global and per-product milestones", () => {
   assert.equal(productStatus.cart, "confirmed");
   assert.equal(productStatus.checkout, "reached");
   assert.equal(productStatus.order, "confirmed");
+  assert.equal(productStatus.observedOrderTotal, 108.42);
   assert.equal(matchingProduct([product], events[0]), product);
 });

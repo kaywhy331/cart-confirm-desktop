@@ -1,19 +1,24 @@
 {
   "manifest_version": 3,
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAvkHdX7fS35SJCa3qjcQtC5Wvijg/Hm3dzJA611+MKPFjEeyPxOKUA/JxmJ0L6ZidLPnmEQO3S0V2YmkZtXR3A/6ryWtdBtDAqV+a9oIa05fkpLC3Aj8dr8HdDZu0Kbgh+KSoc2lUAks0PajTE7eCgvu6ndjaGdumbEEiPhbthadGQrDxmpB87lBk6uyzL/fEjFdWXzLmdZGlt+shsLNc5Sz7ibnieWjOCp5LlRkTtbYfpgcmXe6tJhz3SaGv+sbES75Qlf6ltDYeg8YjGA0HRgApNt63l9OBkFizcN3FTKeXhpRGJ/8nu2BXXEwazfQaBzk/jOEMd1YfuxTVFXIS5wIDAQAB",
   "name": "Cart Confirm Companion",
-  "version": "2.0.0",
-  "description": "Runs a first-party, price-capped buy list on Target, Walmart, and Amazon with explicit local controls.",
+  "version": "2.2.0",
+  "description": "Runs a traffic-governed, first-party, price-and-total-capped buy list on Target, Walmart, and Amazon.",
   "permissions": [
     "storage",
-    "declarativeNetRequest"
+    "declarativeNetRequest",
+    "webRequest"
   ],
   "host_permissions": [
     "https://target.com/*",
     "https://www.target.com/*",
+    "https://*.target.com/*",
     "https://walmart.com/*",
     "https://www.walmart.com/*",
+    "https://*.walmart.com/*",
     "https://amazon.com/*",
     "https://www.amazon.com/*",
+    "https://*.amazon.com/*",
     "http://127.0.0.1/*"
   ],
   "background": {
@@ -29,7 +34,7 @@
         "https://amazon.com/*",
         "https://www.amazon.com/*"
       ],
-      "js": ["retailers.js", "content.js"],
+      "js": ["retailers.js", "safety.js", "content.js"],
       "run_at": "document_idle"
     }
   ],
