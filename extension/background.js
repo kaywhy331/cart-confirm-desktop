@@ -311,6 +311,17 @@ const RETAILER_TAB_PATTERNS = Object.freeze({
   walmart: ["https://walmart.com/*", "https://*.walmart.com/*"],
   amazon: ["https://amazon.com/*", "https://*.amazon.com/*"]
 });
+const TAB_SKU_PATTERNS = Object.freeze({
+  target: /(?:\/|-)A-(\d{6,12})(?:[/?#]|$)/i,
+  walmart: /\/ip\/(?:[^/?#]+\/)?(\d{5,20})(?:[/?#]|$)/i,
+  amazon: /\/(?:dp|gp\/product|gp\/aw\/d)\/([A-Z0-9]{10})(?:[/?#]|$)/i
+});
+
+function tabSku(retailer, url) {
+  const match = String(url || "").match(TAB_SKU_PATTERNS[retailer] || /$^/);
+  if (!match) return "";
+  return retailer === "amazon" ? match[1].toUpperCase() : match[1];
+}
 let openRequestsInFlight = false;
 const lastHelloAtByPort = new Map();
 
@@ -363,8 +374,26 @@ async function reuseTabForOpenRequest(config, request) {
   if (!patterns || retailerFromUrl(url) !== retailer) return;
   const tabs = await chrome.tabs.query({ url: patterns });
   if (!tabs.length) return; // Unclaimed requests fall back to a desktop-opened page.
-  const tab = tabs.find((candidate) => candidate.active)
-    || [...tabs].sort((a, b) => Number(b.lastAccessed || 0) - Number(a.lastAccessed || 0))[0];
+
+  // Reuse this product's own tab when one exists; otherwise only take a tab
+  // that is NOT parked on another enabled mission's page — each mission must
+  // keep its own tab, or opening ten missions leaves one survivor.
+  const requestedSku = tabSku(retailer, url);
+  const otherMissionSkus = new Set((config.products || [])
+    .filter((product) => product.enabled && product.retailer === retailer && product.sku !== requestedSku)
+    .map((product) => product.sku));
+  let tab = requestedSku
+    ? tabs.find((candidate) => tabSku(retailer, candidate.url || "") === requestedSku)
+    : null;
+  if (!tab) {
+    const free = tabs.filter((candidate) => {
+      const sku = tabSku(retailer, candidate.url || "");
+      return !sku || !otherMissionSkus.has(sku);
+    });
+    if (!free.length) return; // Every tab is another mission's — open a fresh one.
+    tab = free.find((candidate) => candidate.active)
+      || [...free].sort((a, b) => Number(b.lastAccessed || 0) - Number(a.lastAccessed || 0))[0];
+  }
   const claimed = await claimOpenRequest(config, String(request.id || ""));
   if (!claimed) return;
   try {
