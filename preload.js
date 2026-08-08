@@ -10,7 +10,6 @@ contextBridge.exposeInMainWorld("cartAssist", {
   openBuyList: () => ipcRenderer.invoke("cart-assist:open-buy-list"),
   openCart: (retailer) => ipcRenderer.invoke("cart-assist:open-cart", retailer),
   openOrders: (retailer) => ipcRenderer.invoke("cart-assist:open-orders", retailer),
-  resolveHowlLink: (input) => ipcRenderer.invoke("cart-assist:resolve-howl-link", input),
   copyAffiliateLink: (input) => ipcRenderer.invoke("cart-assist:copy-affiliate-link", input),
   connectDiscord: (credentials) => ipcRenderer.invoke("cart-assist:discord-connect", credentials),
   disconnectDiscord: () => ipcRenderer.invoke("cart-assist:discord-disconnect"),

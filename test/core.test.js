@@ -12,9 +12,11 @@ const {
   normalizeProduct,
   normalizeSettings,
   normalizeTargetUrl,
+  preserveAdminCampaignFields,
   reduceProductStatus,
   reduceStatus,
   toAutomationProduct,
+  toRendererProduct,
   validateEvent
 } = require("../lib/core");
 const {
@@ -125,6 +127,28 @@ test("preserves only exact-SKU affiliate links resolved from the current Howl so
   assert.equal("affiliateUrl" in automationProduct, false);
   assert.equal("affiliateResolvedFrom" in automationProduct, false);
   assert.equal("affiliateResolvedAt" in automationProduct, false);
+  const rendererProduct = toRendererProduct(product);
+  assert.equal(rendererProduct.affiliateUrl, affiliateUrl);
+  assert.equal("howlUrl" in rendererProduct, false);
+  assert.equal("affiliateResolvedFrom" in rendererProduct, false);
+  assert.equal("affiliateResolvedAt" in rendererProduct, false);
+
+  const attemptedUserChange = normalizeProduct({
+    ...PRODUCTS[0],
+    howlUrl: "https://howl.me/untrusted-user-change",
+    affiliateUrl: "https://www.target.com/p/example/-/A-1011960739?nrtv_cid=untrusted",
+    affiliateResolvedFrom: "https://howl.me/untrusted-user-change",
+    affiliateResolvedAt: "2026-08-08T19:00:00.000Z"
+  });
+  const preserved = preserveAdminCampaignFields([attemptedUserChange], [product])[0];
+  assert.equal(preserved.howlUrl, howlUrl);
+  assert.equal(preserved.affiliateUrl, affiliateUrl);
+  assert.equal(preserved.affiliateResolvedFrom, howlUrl);
+  assert.equal(preserved.affiliateResolvedAt, resolvedAt);
+
+  const unprovisioned = preserveAdminCampaignFields([attemptedUserChange], [])[0];
+  assert.equal(unprovisioned.howlUrl, "");
+  assert.equal(unprovisioned.affiliateUrl, "");
 
   const stale = normalizeProduct({
     ...PRODUCTS[0],

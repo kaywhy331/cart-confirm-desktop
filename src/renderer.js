@@ -386,7 +386,7 @@ function buildViewCard(product, status) {
     : product.signalEntry && product.signalEntry !== "product"
       ? product.signalEntry.replaceAll("-", " ")
       : "signals open product");
-  if (product.affiliateUrl) subParts.push("Howl share ready");
+  if (product.affiliateUrl) subParts.push("Campaign share ready");
   view(card, "sub").textContent = subParts.join(" · ");
 
   view(card, "action").textContent = ACTION_LABELS[product.action] || product.action;
@@ -476,14 +476,9 @@ function buildEditCard(product) {
   field(card, "fulfillmentMode").value = product?.fulfillmentMode || "manual";
   field(card, "signalEntry").value = product?.signalEntry || "product";
   field(card, "signalAutoOpen").checked = product ? product.signalAutoOpen !== false : true;
-  field(card, "howlUrl").value = product?.howlUrl || "";
-  field(card, "affiliateUrl").value = product?.affiliateUrl || "";
-  field(card, "affiliateResolvedFrom").value = product?.affiliateResolvedFrom || "";
-  field(card, "affiliateResolvedAt").value = product?.affiliateResolvedAt || "";
   field(card, "openAt").value = toLocalInputValue(product?.openAt);
   field(card, "enabled").checked = product ? product.enabled !== false : true;
   updateEditStore(card);
-  updateHowlControls(card);
 
   const advanced = card.querySelector(".advanced-fields");
   advanced.open = Boolean(product && (
@@ -491,13 +486,9 @@ function buildEditCard(product) {
     || Number(product.maxOrderTotal) > 0
     || (product.signalEntry || "product") !== "product"
     || product.signalAutoOpen === false
-    || product.howlUrl
   ));
 
-  field(card, "retailer").addEventListener("change", () => {
-    updateEditStore(card);
-    clearMismatchedAffiliate(card);
-  });
+  field(card, "retailer").addEventListener("change", () => updateEditStore(card));
   field(card, "productUrl").addEventListener("change", () => {
     const url = field(card, "productUrl").value;
     const detected = detectRetailer(url);
@@ -510,27 +501,16 @@ function buildEditCard(product) {
     if (!field(card, "title").value.trim()) {
       field(card, "title").value = deriveTitleFromUrl(url);
     }
-    clearMismatchedAffiliate(card);
   });
   field(card, "sku").addEventListener("change", () => {
     if (field(card, "retailer").value === "amazon") {
       field(card, "sku").value = field(card, "sku").value.trim().toUpperCase();
     }
-    clearMismatchedAffiliate(card);
   });
   field(card, "action").addEventListener("change", () => {
     if (["review", "checkout"].includes(field(card, "action").value)) advanced.open = true;
     updateSignalEntryOptions(card);
   });
-  field(card, "howlUrl").addEventListener("input", () => {
-    if (field(card, "howlUrl").value.trim() !== field(card, "affiliateResolvedFrom").value) {
-      clearAffiliateResolution(card);
-    }
-    updateHowlControls(card);
-  });
-  card.querySelector(".howl-resolve").addEventListener("click", () => void resolveHowlForCard(card));
-  card.querySelector(".howl-copy").addEventListener("click", () => void copyHowlFromCard(card));
-
   card.querySelector(".mission-done").addEventListener("click", () => void finishEdit(card));
   const cancel = () => {
     editingId = null;
@@ -579,94 +559,6 @@ function updateSignalEntryOptions(card) {
   if (!allowed.has(select.value)) select.value = "product";
 }
 
-function clearAffiliateResolution(card) {
-  field(card, "affiliateUrl").value = "";
-  field(card, "affiliateResolvedFrom").value = "";
-  field(card, "affiliateResolvedAt").value = "";
-  updateHowlControls(card);
-}
-
-function clearMismatchedAffiliate(card) {
-  const affiliateUrl = field(card, "affiliateUrl").value;
-  if (!affiliateUrl) return;
-  const retailer = field(card, "retailer").value;
-  const sku = field(card, "sku").value.trim().toUpperCase();
-  if (detectRetailer(affiliateUrl) !== retailer || extractSku(retailer, affiliateUrl) !== sku) {
-    clearAffiliateResolution(card);
-  }
-}
-
-function updateHowlControls(card) {
-  const howlUrl = field(card, "howlUrl").value.trim();
-  const affiliateUrl = field(card, "affiliateUrl").value;
-  const resolvedAt = field(card, "affiliateResolvedAt").value;
-  const resolveButton = card.querySelector(".howl-resolve");
-  const copyButton = card.querySelector(".howl-copy");
-  const status = view(card, "howlStatus");
-  resolveButton.disabled = !howlUrl;
-  resolveButton.textContent = affiliateUrl ? "Resolve again" : "Resolve once";
-  copyButton.disabled = !affiliateUrl;
-  if (affiliateUrl) {
-    let host = "retailer";
-    try {
-      host = new URL(affiliateUrl).hostname;
-    } catch {
-      // Stored values are normalized in the main process; keep a safe label.
-    }
-    status.textContent = `Resolved to ${host}${resolvedAt ? ` · ${relativeTime(resolvedAt)}` : ""}. Tracking parameters are preserved; resolving again registers another click.`;
-  } else if (howlUrl) {
-    status.textContent = "Ready to resolve once. This explicit action registers the confirmed Howl click.";
-  } else {
-    status.textContent = "No retailer link resolved.";
-  }
-}
-
-async function resolveHowlForCard(card) {
-  const sourceInput = field(card, "howlUrl");
-  if (!sourceInput.checkValidity()) {
-    reportInvalid(sourceInput);
-    return;
-  }
-  const retailer = field(card, "retailer").value;
-  const sku = field(card, "sku").value.trim() || extractSku(retailer, field(card, "productUrl").value);
-  if (!sku) {
-    setMessage("Enter the mission item ID before resolving its Howl link.", "error");
-    reportInvalid(field(card, "sku"));
-    return;
-  }
-
-  const resolveButton = card.querySelector(".howl-resolve");
-  resolveButton.disabled = true;
-  resolveButton.textContent = "Resolving…";
-  const result = await runAction(
-    () => window.cartAssist.resolveHowlLink({
-      howlUrl: sourceInput.value.trim(),
-      retailer,
-      sku
-    }),
-    "Howl click registered; the exact retailer-domain campaign link is ready."
-  );
-  if (result) {
-    field(card, "howlUrl").value = result.howlUrl;
-    field(card, "affiliateUrl").value = result.affiliateUrl;
-    field(card, "affiliateResolvedFrom").value = result.howlUrl;
-    field(card, "affiliateResolvedAt").value = result.resolvedAt;
-  }
-  resolveButton.textContent = "Resolve once";
-  updateHowlControls(card);
-}
-
-async function copyHowlFromCard(card) {
-  const result = await runAction(
-    () => window.cartAssist.copyAffiliateLink(affiliateClipboardInput({
-      retailer: field(card, "retailer").value,
-      sku: field(card, "sku").value.trim()
-    }, field(card, "affiliateUrl").value)),
-    "Retailer-domain campaign link copied."
-  );
-  return result;
-}
-
 function reportInvalid(input) {
   const details = input.closest("details");
   if (details && !details.open) details.open = true;
@@ -691,10 +583,6 @@ function collectMission(card) {
     fulfillmentMode: field(card, "fulfillmentMode").value,
     signalAutoOpen: field(card, "signalAutoOpen").checked,
     signalEntry: field(card, "signalEntry").value,
-    howlUrl: field(card, "howlUrl").value.trim(),
-    affiliateUrl: field(card, "affiliateUrl").value,
-    affiliateResolvedFrom: field(card, "affiliateResolvedFrom").value,
-    affiliateResolvedAt: field(card, "affiliateResolvedAt").value,
     enabled: field(card, "enabled").checked
   };
 }
@@ -1159,7 +1047,7 @@ function buildSignalCard(signal) {
   const desiredProduct = savedProducts().find((product) => product.id === signal.productId);
   if (desiredProduct?.affiliateUrl) {
     const shareButton = signalActionButton("Copy campaign link", "secondary");
-    shareButton.title = "Copies the resolved retailer-domain Howl campaign link for this exact product.";
+    shareButton.title = "Copies the admin-provisioned retailer-domain campaign link for this exact product.";
     shareButton.addEventListener("click", () => void runAction(
       () => copyAffiliateProduct(desiredProduct),
       `${productLabel(desiredProduct)} retailer-domain campaign link copied.`

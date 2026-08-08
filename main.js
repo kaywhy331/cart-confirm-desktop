@@ -23,9 +23,11 @@ const {
   createProductStatus,
   matchingProduct,
   normalizeSettings,
+  preserveAdminCampaignFields,
   reduceProductStatus,
   reduceStatus,
   toAutomationProduct,
+  toRendererProduct,
   validateEvent
 } = require("./lib/core");
 const { migrateStoredSettings } = require("./lib/migrations");
@@ -53,7 +55,7 @@ const {
 const { processDiscordMessageBatch } = require("./lib/discord-ingestion");
 const { upsertSignal } = require("./lib/signal-inbox");
 const { planSignalRoute } = require("./lib/signal-routing");
-const { resolveHowlLink, validateRetailerShareUrl } = require("./lib/howl-link");
+const { validateRetailerShareUrl } = require("./lib/howl-link");
 const {
   RETAILERS,
   extractSku,
@@ -214,7 +216,9 @@ function extensionPath() {
 
 function publicSettings() {
   return {
-    products: settings.products,
+    // The renderer may copy a provisioned retailer link, but it never receives
+    // the admin's Howl source URL or resolution metadata.
+    products: settings.products.map(toRendererProduct),
     automationEnabled: settings.automationEnabled,
     monitoringPaused: settings.monitoringPaused,
     automationRunId: settings.automationRunId,
@@ -1116,7 +1120,19 @@ function registerIpc() {
   ipcMain.handle("cart-assist:save-settings", (_event, nextSettings) => {
     const wasArmed = settings.automationEnabled;
     const previousDiscordChannelId = settings.discordChannelId;
-    let normalized = normalizeSettings(nextSettings, settings);
+    const userSettings = nextSettings && typeof nextSettings === "object"
+      ? {
+          ...nextSettings,
+          products: Array.isArray(nextSettings.products)
+            ? nextSettings.products.map(toAutomationProduct)
+            : nextSettings.products
+        }
+      : nextSettings;
+    let normalized = normalizeSettings(userSettings, settings);
+    normalized = {
+      ...normalized,
+      products: preserveAdminCampaignFields(normalized.products, settings.products)
+    };
     assertSafeArmedUpdate(settings, normalized);
     if (normalized.scheduledOpenEnabled && new Date(normalized.scheduledOpenAt).getTime() <= Date.now()) {
       throw new Error("Choose a future date and time for the single store schedule.");
@@ -1170,16 +1186,6 @@ function registerIpc() {
   ipcMain.handle("cart-assist:open-buy-list", () => openBuyList());
   ipcMain.handle("cart-assist:open-cart", (_event, retailer) => openStorePage(retailer, "cartUrl"));
   ipcMain.handle("cart-assist:open-orders", (_event, retailer) => openStorePage(retailer, "ordersUrl"));
-
-  // Resolving is deliberately user-triggered: the GET registers the confirmed
-  // Howl click once, then stops as soon as an exact retailer/SKU destination is
-  // returned. The resulting URL is not used by the purchasing pipeline.
-  ipcMain.handle("cart-assist:resolve-howl-link", async (_event, input) => (
-    resolveHowlLink(input?.howlUrl, {
-      retailer: input?.retailer,
-      sku: input?.sku
-    })
-  ));
 
   ipcMain.handle("cart-assist:copy-affiliate-link", (_event, input) => {
     const destination = validateRetailerShareUrl(input?.affiliateUrl, {
