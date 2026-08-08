@@ -35,6 +35,7 @@ const { createStoreOpenQueue } = require("./lib/store-open-queue");
 const { createOpenRequestStore } = require("./lib/open-requests");
 const { findChrome } = require("./lib/chrome-launcher");
 const { checkProductPage } = require("./lib/quiet-monitor");
+const { QUEUE_FANOUT_SPACING_MS, planQueueFanout } = require("./lib/queue-fanout");
 const {
   RETAILERS,
   parseRetailUrl,
@@ -276,8 +277,13 @@ function openPageInChrome(url) {
   });
 }
 
-async function openExternalRetailer(url) {
+async function openExternalRetailer(url, options = {}) {
   const { parsed, retailer } = parseRetailUrl(url);
+  const requestedSpacing = Number(options.spacingMs);
+  const spacingMs = Number.isFinite(requestedSpacing) && requestedSpacing >= QUEUE_FANOUT_SPACING_MS
+    ? requestedSpacing
+    : DESKTOP_OPEN_SPACING_MS;
+  const actionKind = String(options.actionKind || "desktop-navigation").slice(0, 80);
   const navigationKey = `${retailer}|${parsed.href}`;
   if (pendingNavigationKeys.has(navigationKey)) {
     return { retailer, url: parsed.href, via: "already-queued" };
@@ -287,7 +293,7 @@ async function openExternalRetailer(url) {
     const result = await storeOpenQueue.enqueue(retailer, async () => {
 
       const taskEpoch = stopEpoch;
-      const budget = reserveStoreAction(retailer, "desktop-navigation");
+      const budget = reserveStoreAction(retailer, actionKind);
       if (!budget.allowed) {
         throw new Error(`${retailerLabel(retailer)} reached the fixed 120-action hourly safety budget.`);
       }
@@ -302,7 +308,7 @@ async function openExternalRetailer(url) {
       if (taskEpoch !== stopEpoch) return { retailer, url: parsed.href, via: "cancelled" };
       const via = await openPageInChrome(parsed.href);
       return { retailer, url: parsed.href, via };
-    }, { spacingMs: DESKTOP_OPEN_SPACING_MS });
+    }, { spacingMs });
     return result?.cancelled ? { retailer, url: parsed.href, via: "cancelled" } : result;
   } finally {
     pendingNavigationKeys.delete(navigationKey);
@@ -324,17 +330,17 @@ function resumeMonitoring() {
   broadcast();
 }
 
-async function openProduct(productId) {
+async function openProduct(productId, options = {}) {
   const product = productId
     ? findProduct(productId)
     : settings.products.find((candidate) => candidate.enabled);
   if (!product) throw new Error("Enable at least one product first.");
   resumeMonitoring();
-  const opened = await openExternalRetailer(product.productUrl);
+  const opened = await openExternalRetailer(product.productUrl, options);
   return { productId: product.id, via: opened.via };
 }
 
-async function openBuyList(retailer = "") {
+async function openBuyList(retailer = "", options = {}) {
   const enabledProducts = settings.products.filter((product) => (
     product.enabled && (!retailer || product.retailer === retailer)
   ));
@@ -345,7 +351,9 @@ async function openBuyList(retailer = "") {
   }
 
   resumeMonitoring();
-  const results = await Promise.all(enabledProducts.map((product) => openExternalRetailer(product.productUrl)));
+  const results = await Promise.all(enabledProducts.map((product) => (
+    openExternalRetailer(product.productUrl, options)
+  )));
   return {
     count: results.filter((result) => !["already-queued", "cancelled"].includes(result.via)).length,
     reused: results.filter((result) => result.via === "companion-tab").length,
@@ -402,7 +410,7 @@ function validateProductEvent(event) {
   return { event: checkedEvent, product };
 }
 
-function sendEventNotification(event, product) {
+function sendEventNotification(event, product, queueFanout = null) {
   if (event.eventType === "traffic-overload") {
     notifyOnce(
       `${event.retailer}:traffic-overload`,
@@ -436,8 +444,66 @@ function sendEventNotification(event, product) {
   } else if (event.eventType === "review-ready") {
     notifyOnce(key, `${store} final review ready`, "Review the complete order in the browser and submit it manually.", true);
   } else if (event.eventType === "queue-waiting") {
-    notifyOnce(key, `${store} purchase queue`, "The companion is waiting for the official retailer queue without refreshing it.");
+    notifyOnce(
+      key,
+      `${store} purchase queue`,
+      queueFanout
+        ? `Official queue active. Entering ${queueFanout.productIds.length} other enabled mission${queueFanout.productIds.length === 1 ? "" : "s"} one second apart, then waiting without refreshes.`
+        : "The companion is waiting for the official retailer queue without refreshing it."
+    );
   }
+}
+
+function triggerQueueFanout(event) {
+  if (!runtimeState) return null;
+  const queuedProductIds = Object.entries(productStatuses)
+    .filter(([, productStatus]) => productStatus?.reason === "retailer-queue")
+    .map(([productId]) => productId);
+  const decision = planQueueFanout({
+    settings,
+    event,
+    receipts: runtimeState.queueFanoutReceipts,
+    queuedProductIds
+  });
+  if (!decision) return null;
+
+  const recordedAt = new Date().toISOString();
+  runtimeState.queueFanoutReceipts[decision.key] = { status: "firing", recordedAt };
+  persistRuntimeState();
+  status = {
+    ...status,
+    lastMessage: `Official ${retailerLabel(decision.retailer)} queue detected. Entering ${decision.productIds.length} other enabled mission${decision.productIds.length === 1 ? "" : "s"} one second apart; queued tabs will not refresh.`
+  };
+
+  const runId = settings.automationRunId;
+  void Promise.allSettled(decision.productIds.map((productId) => openProduct(productId, {
+    spacingMs: decision.spacingMs,
+    actionKind: "official-queue-fanout"
+  }))).then((results) => {
+    const unsuccessful = results.filter((result) => (
+      result.status === "rejected"
+      || result.value?.via === "cancelled"
+    )).length;
+    runtimeState.queueFanoutReceipts[decision.key] = {
+      status: unsuccessful ? "partial" : "fired",
+      recordedAt: new Date().toISOString()
+    };
+    persistRuntimeState();
+    if (unsuccessful && settings.automationEnabled && settings.automationRunId === runId) {
+      status = {
+        ...status,
+        lastMessage: `${retailerLabel(decision.retailer)} queue fan-out finished, but ${unsuccessful} mission${unsuccessful === 1 ? "" : "s"} could not open because a safety budget, Stop, or browser action blocked it.`
+      };
+      notifyOnce(
+        `queue-fanout-partial:${decision.key}`,
+        `${retailerLabel(decision.retailer)} queue fan-out incomplete`,
+        `${unsuccessful} mission${unsuccessful === 1 ? "" : "s"} did not open. Cart Confirm will not repeat the burst automatically.`,
+        true
+      );
+      broadcast();
+    }
+  });
+  return decision;
 }
 
 function handleCompanionEvent(rawEvent) {
@@ -468,9 +534,15 @@ function handleCompanionEvent(rawEvent) {
     };
   }
   addEvent(event);
-  sendEventNotification(event, product);
+  const queueFanout = event.eventType === "queue-waiting" && product
+    ? triggerQueueFanout(event)
+    : null;
+  sendEventNotification(event, product, queueFanout);
   broadcast();
-  return { accepted: true };
+  return {
+    accepted: true,
+    openRequestDrainMs: queueFanout?.openRequestDrainMs || 0
+  };
 }
 
 // Track what actually reaches the local server, so the UI can distinguish
@@ -953,7 +1025,10 @@ function handleProductSchedule(decision) {
 
   status = { ...status, lastMessage: `Scheduled opening: ${label} is opening now.` };
   broadcast();
-  void openProduct(decision.productId)
+  void openProduct(decision.productId, {
+    spacingMs: QUEUE_FANOUT_SPACING_MS,
+    actionKind: "scheduled-drop"
+  })
     .then(() => {
       runtimeState.productScheduleReceipts[decision.key] = {
         status: "fired",
@@ -1024,7 +1099,10 @@ function startScheduler() {
     persistRuntimeState();
     broadcast();
 
-    void openBuyList(scheduledRetailer)
+    void openBuyList(scheduledRetailer, {
+      spacingMs: QUEUE_FANOUT_SPACING_MS,
+      actionKind: "scheduled-drop"
+    })
       .then(() => {
         runtimeState.scheduleReceipt = {
           key: decision.key,

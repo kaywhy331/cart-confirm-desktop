@@ -91,7 +91,7 @@ test("a cooldown arriving during a queued wait extends the opening time", async 
   assert.deepEqual(waits, [20_000, 30_000]);
 });
 
-test("a per-call spacing override shortens the wait between openings", async () => {
+test("a one-second drop fan-out override opens each page exactly once in order", async () => {
   let clock = 1_000;
   const waits = [];
   const opened = [];
@@ -104,8 +104,11 @@ test("a per-call spacing override shortens the wait between openings", async () 
     }
   });
 
-  await queue.enqueue("target", async () => opened.push(clock), { spacingMs: 3_000 });
-  await queue.enqueue("target", async () => opened.push(clock), { spacingMs: 3_000 });
-  assert.deepEqual(opened, [1_000, 4_000]);
-  assert.deepEqual(waits, [3_000]);
+  await Promise.all([
+    queue.enqueue("target", async () => opened.push(clock), { spacingMs: 1_000 }),
+    queue.enqueue("target", async () => opened.push(clock), { spacingMs: 1_000 }),
+    queue.enqueue("target", async () => opened.push(clock), { spacingMs: 1_000 })
+  ]);
+  assert.deepEqual(opened, [1_000, 2_000, 3_000]);
+  assert.deepEqual(waits, [1_000, 1_000]);
 });
