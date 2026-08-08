@@ -142,6 +142,14 @@ for one supervised run) and manually walk the checkout to the final review page:
 
 ## 5. Ongoing
 
+- [ ] Before a high-stakes multi-drop window, give two or three harmless
+      same-store test missions the same near-future **Open at** time and confirm
+      each page opens exactly once, one second apart. Press **Stop everything**
+      during a second supervised test and confirm the remaining pages do not
+      open. Do not try to manufacture or repeatedly refresh a retailer queue.
+- [ ] When Walmart naturally serves `/qp`, confirm the first queued mission
+      produces only one fan-out for that Autopilot run and that every queued tab
+      then stays still until Walmart admits it.
 - [ ] Re-run section 2 and 4 whenever you change a saved address, payment
       method, or default pickup store on any automated account.
 - [ ] Re-run section 3 whenever a retailer visibly redesigns its product,

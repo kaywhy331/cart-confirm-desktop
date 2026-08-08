@@ -20,7 +20,7 @@ These rules are enforced in code and cannot be disabled from the UI:
 - Proof, attempts, completion, and submit intent live in extension-owned storage. An uncertain final click holds its run lock until a retailer-specific confirmation or explicit failure appears; starting a new run requires an explicit warning to check retailer order history first.
 - Final auto-submit re-reads the complete evidence immediately before clicking, requires the configured shipping/pickup mode, and blocks selected subscriptions, protection plans, tips, donations, gift wrap, and installment choices.
 - Automation always starts disarmed after the desktop app launches. Editing purchase settings while armed is rejected.
-- CAPTCHAs, queues, sign-in prompts, and security challenges are never bypassed. Walmart `/qp` pages are matched by their embedded item ID, but ticket endpoints and signatures are never stored, called, replayed, or refreshed by Cart Confirm.
+- CAPTCHAs, queues, sign-in prompts, and security challenges are never bypassed. When Walmart places one mission on an official `/qp` queue page, Cart Confirm makes one exactly-once pass through the other enabled Walmart missions at a one-second stagger so they can enter through their normal product pages too. A tab already in queue is frozen: ticket endpoints and signatures are never stored, called, replayed, or refreshed.
 - All desktop and extension store actions share a fixed 120-action rolling-hour budget. Each product is limited to 100 attempts in a four-hour run and requires manual re-arming after exhaustion.
 - Tool-controlled navigations are serialized per store. HTTP `429`, `502`, `503`, `504`, and `520`–`524` responses open an escalating store-specific cooldown circuit, and a bounded `Retry-After` header is honored.
 
@@ -36,7 +36,8 @@ Start with **Add to cart only** until you have verified the current store select
 - Click any live-status row to filter the event log to that item's timeline.
 - A **Test (no buying)** button in the header that opens the first enabled mission while Autopilot is off so the companion can report price, seller, and stock without touching the cart.
 - Quiet background stock checks for tab-less missions on Target and Walmart (read-only page fetches, rotated per store within the traffic budget) that open Chrome automatically the moment a mission verifies in stock.
-- Per-product scheduled openings for known drop times: give any item an **Open at** date/time, save, and arm in advance. At that moment its page opens in Chrome (reusing an existing tab when possible) and the armed companion takes over. Step 4 shows a seven-day calendar strip of upcoming openings with a live countdown; times fire exactly once, are marked missed instead of running more than two minutes late, and an old single global schedule migrates onto its store's enabled products automatically.
+- Per-product scheduled openings for known drop times: give any item an **Open at** date/time, save, and arm in advance. At that moment its page opens in Chrome (reusing an existing tab when possible) and the armed companion takes over. Same-store drops due together open one second apart, exactly once per mission. Step 4 shows a seven-day calendar strip of upcoming openings with a live countdown; times are marked missed instead of running more than two minutes late, and an old single global schedule migrates onto its store's enabled products automatically.
+- Official-queue fan-out for simultaneous Walmart drops: the first enabled mission that reports a live `/qp` queue causes every other enabled, not-yet-queued Walmart mission to navigate once, one second apart. A durable per-run receipt prevents a second burst, Stop cancels pending pages, and every navigation still consumes the shared traffic budget.
 - Manual **Open enabled items now** action for all enabled stores, with each store's pages queued independently. When the companion is connected, an existing Chrome tab for that store is navigated instead of opening a new window, and identical pending opens are deduplicated.
 - Configurable retry interval from 5 to 3,600 seconds, with jitter and increasing backoff after repeated store errors.
 - Configurable per-store navigation spacing from 10 to 3,600 seconds and overload cooldown from 60 to 86,400 seconds.
@@ -79,7 +80,7 @@ Click **+ New mission**, then:
 5. Optionally set **Open at** for a known drop time and pick an alert loudness under **Advanced**.
 6. Click **Done** — the mission saves immediately. Editing and removal are locked while Autopilot is on.
 
-To schedule an item for a known drop, set its **Open at** field to a future local date/time and save. Each product schedules independently. A receipt is persisted before the page opens, the time clears itself after that single attempt, and a time missed by more than two minutes is marked missed instead of running late. **Stop everything** clears all scheduled times.
+To schedule an item for a known drop, set its **Open at** field to a future local date/time and save. Each product schedules independently. A receipt is persisted before the page opens, the time clears itself after that single attempt, and a time missed by more than two minutes is marked missed instead of running late. Missions for the same retailer and time use the one-second drop lane; ordinary monitoring retries do not. **Stop everything** clears all scheduled times.
 
 ## Recommended workflow
 
@@ -104,7 +105,7 @@ need a human pass on the real final-review page first.
 
 ## Traffic overload behavior
 
-The desktop opening queue and extension share the same safety goal: do not create bursts against one retailer. Desktop-initiated openings (manual, test, and scheduled — one page load each) use a short fixed three-second stagger per store, while the extension centrally serializes automatic retry navigation across tabs using the configured per-store spacing; a product's fresh retry reservation replaces its own stale one so no product can starve the others. Main-frame store navigations are observed so a retry cannot immediately follow a newly opened page. All openings and retries still consume the same fixed 120-action rolling-hour budget.
+The desktop opening queue and extension share the same safety goal: enter known drops promptly without turning normal monitoring into a reload storm. Manual and test openings use a fixed three-second stagger per store. Scheduled drop openings and the one exactly-once official-queue fan-out use a one-second stagger, one page load per mission. Once a tab reports that it is queued, Cart Confirm stops refreshing it. All later automatic retry navigation remains centrally serialized using the configured per-store spacing; a product's fresh retry reservation replaces its own stale one so no product can starve the others. Main-frame store navigations are observed so a retry cannot immediately follow a newly opened page. Every opening and retry still consumes the same fixed 120-action rolling-hour budget.
 
 Responses with status `429`, `502`, `503`, `504`, or `520`–`524` pause automatic navigation and store mutations for that retailer and propagate the same deadline back to pending openings. Repeated overloads exponentially increase the cooldown, decay after six quiet hours, and remain capped at 24 hours. Recognizable overload pages are reported as `traffic-overload` instead of being treated as out of stock.
 
@@ -172,11 +173,13 @@ Leave the tab open and wait for the displayed workflow to cool down. Do not repe
 
 ### Walmart shows `/qp`
 
-This is Walmart's official purchase queue. Leave the tab open. Cart Confirm reads only the embedded Walmart item ID and safe wait state so it can associate the page with the configured product. It deliberately does not call the embedded ticket URL, replay signatures, force refreshes, or skip the queue. Automation resumes only after Walmart redirects the admitted tab to the product flow.
+This is Walmart's official purchase queue. Leave the tab open. The first live queue signal in an Autopilot run sends one initial navigation to every other enabled Walmart mission, one second apart; already queued tabs are skipped, and a durable receipt prevents another fan-out during that run. Cart Confirm reads only the embedded Walmart item ID and safe wait state. It deliberately does not call the embedded ticket URL, replay signatures, force refreshes, or skip the queue. Automation resumes only after Walmart redirects an admitted tab to its product flow.
 
 ### Badge shows `UPD` or `PAIR`
 
-`UPD` means the desktop app and unpacked extension versions differ; reload the extension from the folder shown by the current app. `PAIR` means the locally pinned companion token changed. Verify that only the intended Cart Confirm process is running, then remove and load the unpacked extension again to establish a new first-use pairing.
+`UPD` means the desktop app and unpacked extension versions differ. Version 2.9 adds a one-shot automatic reload: after newer Cart Confirm files replace the files in the same unpacked-extension folder, the installed companion reloads those files by itself and records the transition so it cannot loop. Upgrading from 2.8 or older still needs one final manual reload because those versions do not contain the updater yet. This does not download code from the internet; obtaining a new release still happens through the normal app/package or Git update. Chrome Web Store or managed distribution would be required for unattended remote delivery.
+
+`PAIR` means the locally pinned companion token changed. Verify that only the intended Cart Confirm process is running, then remove and load the unpacked extension again to establish a new first-use pairing.
 
 ### Store page changed
 

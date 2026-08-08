@@ -1,9 +1,17 @@
 "use strict";
 
-importScripts("traffic.js", "automation-state.js");
+importScripts(
+  "traffic.js",
+  "automation-state.js",
+  "retailers.js",
+  "open-request-tabs.js",
+  "update-state.js"
+);
 
 const Traffic = globalThis.CartConfirmTraffic;
 const AutomationState = globalThis.CartConfirmAutomationState;
+const OpenRequestTabs = globalThis.CartConfirmOpenRequestTabs;
+const UpdateState = globalThis.CartConfirmUpdateState;
 
 const PORTS = [32191, 32192, 32193, 32194, 32195];
 const CONFIG_TTL_MS = 5_000;
@@ -13,6 +21,7 @@ const AUTOMATION_STATE_KEY = "cartConfirmAutomationStateV3";
 const TRAFFIC_STATE_KEY = "cartConfirmTrafficStateV1";
 const FAST_MODE_PAUSE_KEY = "cartConfirmFastModePausedUntil";
 const PAIRED_TOKEN_KEY = "cartConfirmPairedDesktopTokenV1";
+const VERSION_RELOAD_STATE_KEY = "cartConfirmVersionReloadStateV1";
 const OVERLOAD_DEDUPE_MS = 5_000;
 let cached = null;
 let appliedFastMode = null;
@@ -67,11 +76,34 @@ async function setDisconnectedBadge() {
 async function acceptDesktopIdentity(config) {
   const extensionVersion = chrome.runtime.getManifest().version;
   if (String(config.appVersion || "") !== extensionVersion) return { ok: false, reason: "version-mismatch" };
-  const stored = await chrome.storage.local.get(PAIRED_TOKEN_KEY);
+  const stored = await chrome.storage.local.get([PAIRED_TOKEN_KEY, VERSION_RELOAD_STATE_KEY]);
   const pairedToken = String(stored[PAIRED_TOKEN_KEY] || "");
   if (pairedToken && pairedToken !== config.token) return { ok: false, reason: "pairing-mismatch" };
   if (!pairedToken) await chrome.storage.local.set({ [PAIRED_TOKEN_KEY]: config.token });
+  // Clear a completed transition once, rather than issuing a storage write on
+  // every five-second config refresh. This also permits a future retry if the
+  // desktop was temporarily rolled back after an unsuccessful file update.
+  if (stored[VERSION_RELOAD_STATE_KEY]) await chrome.storage.local.remove(VERSION_RELOAD_STATE_KEY);
   return { ok: true };
+}
+
+async function attemptBundledVersionReload(appVersion) {
+  const extensionVersion = chrome.runtime.getManifest().version;
+  const stored = await chrome.storage.local.get(VERSION_RELOAD_STATE_KEY);
+  const plan = UpdateState.planVersionReload(
+    stored[VERSION_RELOAD_STATE_KEY],
+    appVersion,
+    extensionVersion,
+    Date.now()
+  );
+  if (!plan.reload) return false;
+  await chrome.storage.local.set({ [VERSION_RELOAD_STATE_KEY]: plan.state });
+  await setConnectionProblemBadge(
+    "UPD",
+    `Updating Cart Confirm Companion from v${extensionVersion} to v${String(appVersion || "").slice(0, 20)}`
+  );
+  setTimeout(() => chrome.runtime.reload(), 250);
+  return true;
 }
 
 async function applyFastMode(enabled) {
@@ -100,6 +132,7 @@ function publicConfig(config) {
   return {
     products: Array.isArray(config.products) ? config.products : [],
     automationEnabled: Boolean(config.automationEnabled),
+    monitoringPaused: Boolean(config.monitoringPaused),
     automationRunId: String(config.automationRunId || ""),
     fastMode: Boolean(config.fastMode),
     retryIntervalSeconds: Number(config.retryIntervalSeconds || 15),
@@ -311,18 +344,9 @@ const RETAILER_TAB_PATTERNS = Object.freeze({
   walmart: ["https://walmart.com/*", "https://*.walmart.com/*"],
   amazon: ["https://amazon.com/*", "https://*.amazon.com/*"]
 });
-const TAB_SKU_PATTERNS = Object.freeze({
-  target: /(?:\/|-)A-(\d{6,12})(?:[/?#]|$)/i,
-  walmart: /\/ip\/(?:[^/?#]+\/)?(\d{5,20})(?:[/?#]|$)/i,
-  amazon: /\/(?:dp|gp\/product|gp\/aw\/d)\/([A-Z0-9]{10})(?:[/?#]|$)/i
-});
-
-function tabSku(retailer, url) {
-  const match = String(url || "").match(TAB_SKU_PATTERNS[retailer] || /$^/);
-  if (!match) return "";
-  return retailer === "amazon" ? match[1].toUpperCase() : match[1];
-}
 let openRequestsInFlight = false;
+let openRequestDrainUntil = 0;
+let openRequestDrainTask = null;
 const lastHelloAtByPort = new Map();
 
 // Announce this extension to the desktop even when identity checks fail, so
@@ -373,32 +397,22 @@ async function reuseTabForOpenRequest(config, request) {
   const patterns = RETAILER_TAB_PATTERNS[retailer];
   if (!patterns || retailerFromUrl(url) !== retailer) return;
   const tabs = await chrome.tabs.query({ url: patterns });
-  if (!tabs.length) return; // Unclaimed requests fall back to a desktop-opened page.
-
-  // Reuse this product's own tab when one exists; otherwise only take a tab
-  // that is NOT parked on another enabled mission's page — each mission must
-  // keep its own tab, or opening ten missions leaves one survivor.
-  const requestedSku = tabSku(retailer, url);
-  const otherMissionSkus = new Set((config.products || [])
-    .filter((product) => product.enabled && product.retailer === retailer && product.sku !== requestedSku)
-    .map((product) => product.sku));
-  let tab = requestedSku
-    ? tabs.find((candidate) => tabSku(retailer, candidate.url || "") === requestedSku)
-    : null;
-  if (!tab) {
-    const free = tabs.filter((candidate) => {
-      const sku = tabSku(retailer, candidate.url || "");
-      return !sku || !otherMissionSkus.has(sku);
-    });
-    if (!free.length) return; // Every tab is another mission's — open a fresh one.
-    tab = free.find((candidate) => candidate.active)
-      || [...free].sort((a, b) => Number(b.lastAccessed || 0) - Number(a.lastAccessed || 0))[0];
-  }
+  // Queue URLs are resolved through the same safe embedded-item parser used
+  // by the content script, so a live /qp tab is recognized as its mission and
+  // can never be mistaken for a free tab during fan-out.
+  const tab = OpenRequestTabs.chooseReusableTab(config, request, tabs);
   const claimed = await claimOpenRequest(config, String(request.id || ""));
   if (!claimed) return;
   try {
-    await chrome.tabs.update(tab.id, { url, active: true });
-    await chrome.windows.update(tab.windowId, { focused: true }).catch(() => {});
+    if (tab) {
+      await chrome.tabs.update(tab.id, { url, active: true });
+      await chrome.windows.update(tab.windowId, { focused: true }).catch(() => {});
+    } else {
+      // Every existing tab belongs to another enabled mission. Claim the
+      // request and create a tab immediately instead of making the desktop
+      // wait through its fallback timeout.
+      await chrome.tabs.create({ url, active: true });
+    }
   } catch {
     // The tab closed between query and navigation; the claim already stopped
     // the desktop fallback, so open the page in a fresh tab instead.
@@ -426,6 +440,25 @@ async function processOpenRequests(config) {
   }
 }
 
+function wakeOpenRequestDrain(config, durationMs) {
+  const boundedDuration = Math.min(60_000, Math.max(0, Number(durationMs) || 0));
+  if (!boundedDuration) return;
+  openRequestDrainUntil = Math.max(openRequestDrainUntil, Date.now() + boundedDuration);
+  if (openRequestDrainTask) return;
+
+  // This is only local loopback polling. It creates no retailer requests; it
+  // lets the browser claim each desktop-scheduled tab as soon as its one-second
+  // lane releases it.
+  openRequestDrainTask = (async () => {
+    while (Date.now() < openRequestDrainUntil) {
+      await processOpenRequests(config).catch(() => {});
+      await new Promise((resolve) => setTimeout(resolve, 150));
+    }
+  })().finally(() => {
+    openRequestDrainTask = null;
+  });
+}
+
 async function discoverConfig(force = false) {
   if (!force && cached && Date.now() - cached.fetchedAt < CONFIG_TTL_MS) return cached;
 
@@ -438,11 +471,15 @@ async function discoverConfig(force = false) {
       const config = await response.json();
       if (!config.token || !Array.isArray(config.products)) continue;
       const identity = await acceptDesktopIdentity(config);
-      void sendCompanionHello(baseUrl, config.token, identity.ok ? "" : identity.reason);
       if (!identity.ok) {
+        await sendCompanionHello(baseUrl, config.token, identity.reason);
+        if (identity.reason === "version-mismatch" && await attemptBundledVersionReload(config.appVersion)) {
+          return null;
+        }
         connectionProblem ||= identity.reason;
         continue;
       }
+      void sendCompanionHello(baseUrl, config.token, "");
       cached = { ...config, baseUrl, fetchedAt: Date.now() };
       await setBadge(cached);
       await applyFastMode(cached.fastMode).catch(() => {});
@@ -492,6 +529,7 @@ async function postEvent(payload) {
     } catch {
       result = {};
     }
+    if (response.ok) wakeOpenRequestDrain(config, result.openRequestDrainMs);
     return { ok: response.ok, ...result };
   } catch {
     cached = null;

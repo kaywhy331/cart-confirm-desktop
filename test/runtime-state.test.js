@@ -13,12 +13,16 @@ test("runtime receipts and overload deadlines survive a process restart", () => 
   try {
     saveRuntimeState(filePath, {
       scheduleReceipt: { key: "walmart|time|item", status: "fired", recordedAt: "2026-08-05T12:00:00.000Z" },
+      queueFanoutReceipts: {
+        "run-1|walmart": { status: "fired", recordedAt: "2026-08-05T12:00:01.000Z" }
+      },
       storeOverloadUntil: { walmart: 123456 },
       storeActionHistory: { walmart: [1000, 2000] },
       events: [{ eventType: "queue-waiting" }]
     });
     const loaded = loadRuntimeState(filePath);
     assert.equal(loaded.scheduleReceipt.status, "fired");
+    assert.equal(loaded.queueFanoutReceipts["run-1|walmart"].status, "fired");
     assert.equal(loaded.storeOverloadUntil.walmart, 123456);
     assert.deepEqual(loaded.storeActionHistory.walmart, [1000, 2000]);
     assert.equal(loaded.events[0].eventType, "queue-waiting");

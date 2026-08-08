@@ -21,4 +21,6 @@ test("the Manifest V3 companion declares every safety script and required permis
   for (const script of scripts) {
     assert.equal(fs.existsSync(path.join(__dirname, "..", "extension", script)), true, `${script} must exist`);
   }
+  const background = fs.readFileSync(path.join(__dirname, "..", "extension", manifest.background.service_worker), "utf8");
+  assert.match(background, /importScripts\([^)]*retailers\.js[^)]*open-request-tabs\.js[^)]*update-state\.js/);
 });
