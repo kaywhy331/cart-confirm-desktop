@@ -230,6 +230,7 @@
       <span class="state-chip" data-view="state"></span>
       <div class="row-actions">
         <button class="button ghost compact mission-open" type="button">Open</button>
+        <button class="button secondary compact mission-copy-affiliate" type="button" hidden>Copy share link</button>
         <button class="button ghost compact mission-edit" type="button">Edit</button>
         <button class="button ghost compact mission-remove" type="button" aria-label="Remove mission">✕</button>
       </div>
@@ -327,8 +328,24 @@
               <span>Open automatically</span>
             </span>
           </label>
+          <label class="field howl-link-field">
+            <span>Howl campaign link (optional)</span>
+            <input data-field="howlUrl" type="url" maxlength="16384" autocomplete="off" spellcheck="false" placeholder="https://howl.me/…">
+            <small>Click Resolve once to register the Howl click and capture the retailer-domain URL.</small>
+          </label>
+          <div class="field affiliate-link-field">
+            <span>Customer-facing retailer link</span>
+            <div class="inline-field-actions">
+              <input data-field="affiliateUrl" type="url" readonly tabindex="-1" placeholder="Resolve the Howl link to create this">
+              <button class="button secondary compact howl-resolve" type="button">Resolve once</button>
+              <button class="button ghost compact howl-copy" type="button" disabled>Copy</button>
+            </div>
+            <small data-view="howlStatus">No retailer link resolved.</small>
+            <input data-field="affiliateResolvedFrom" type="hidden">
+            <input data-field="affiliateResolvedAt" type="hidden">
+          </div>
         </div>
-        <small class="row-help">Direct links are accepted only for the mission’s exact SKU and still require fresh in-browser seller, price, quantity, cart, fulfillment, and final-total verification. The item ID fills in automatically from the product link.</small>
+        <small class="row-help">Howl share links stay separate from buying. Direct purchase entries are accepted only for the mission’s exact SKU and still require fresh in-browser seller, price, quantity, cart, fulfillment, and final-total verification. The item ID fills in automatically from the product link.</small>
       </details>
     </article>
   </template>

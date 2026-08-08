@@ -14,6 +14,7 @@ const {
   normalizeTargetUrl,
   reduceProductStatus,
   reduceStatus,
+  toAutomationProduct,
   validateEvent
 } = require("../lib/core");
 const {
@@ -100,6 +101,48 @@ test("normalizes a multi-store buy list and preserves a private token", () => {
   assert.equal(result.discordAutoOpen, true);
   assert.equal(result.products[2].signalEntry, "product");
   assert.equal(result.products[2].signalAutoOpen, true);
+});
+
+test("preserves only exact-SKU affiliate links resolved from the current Howl source", () => {
+  const howlUrl = "https://howl.me/campaign123";
+  const affiliateUrl = "https://www.target.com/p/example/-/A-1011960739?nrtv_cid=abc&clkid=123";
+  const resolvedAt = "2026-08-08T18:00:00.000Z";
+  const product = normalizeProduct({
+    ...PRODUCTS[0],
+    howlUrl,
+    affiliateUrl,
+    affiliateResolvedFrom: howlUrl,
+    affiliateResolvedAt: resolvedAt
+  });
+
+  assert.equal(product.howlUrl, howlUrl);
+  assert.equal(product.affiliateUrl, affiliateUrl);
+  assert.equal(product.affiliateResolvedFrom, howlUrl);
+  assert.equal(product.affiliateResolvedAt, resolvedAt);
+  const automationProduct = toAutomationProduct(product);
+  assert.equal(automationProduct.productUrl, product.productUrl);
+  assert.equal("howlUrl" in automationProduct, false);
+  assert.equal("affiliateUrl" in automationProduct, false);
+  assert.equal("affiliateResolvedFrom" in automationProduct, false);
+  assert.equal("affiliateResolvedAt" in automationProduct, false);
+
+  const stale = normalizeProduct({
+    ...PRODUCTS[0],
+    howlUrl: "https://howl.me/new-campaign",
+    affiliateUrl,
+    affiliateResolvedFrom: howlUrl,
+    affiliateResolvedAt: resolvedAt
+  });
+  assert.equal(stale.affiliateUrl, "");
+  assert.equal(stale.affiliateResolvedFrom, "");
+  assert.equal(stale.affiliateResolvedAt, "");
+
+  assert.throws(() => normalizeProduct({
+    ...PRODUCTS[0],
+    howlUrl,
+    affiliateUrl: "https://www.target.com/p/-/A-95298172?nrtv_cid=wrong",
+    affiliateResolvedFrom: howlUrl
+  }), /does not match this mission's item ID/);
 });
 
 test("migrates the original Target-only settings", () => {

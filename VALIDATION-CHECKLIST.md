@@ -186,6 +186,30 @@ Run these supervised before relying on signal-triggered purchasing:
       mission is not navigated away. Do not manufacture retailer queues or spam
       live product pages to perform this test.
 
+## 7. Howl sharing-link checks
+
+Use a test campaign for a product already configured as a mission. The first
+item below intentionally registers a real Howl click, so perform it only when
+that campaign is ready to receive one.
+
+- [ ] Paste the generated `howl.me`, `howl.link`, or `shop-links.co` campaign
+      link and select **Resolve once** exactly once. Confirm the Howl account
+      records the expected click and the app does not resolve again on save,
+      restart, Discord polling, or Autopilot activity.
+- [ ] Confirm the captured link visibly uses the expected `target.com`,
+      `walmart.com`, or `amazon.com` host, identifies the mission's exact item
+      ID, and retains the campaign query parameters shown by Howl.
+- [ ] Use **Copy share link** on the saved mission and **Copy campaign link** on
+      a matching signal. Confirm both clipboard values are byte-for-byte the
+      same resolved retailer URL. Cart Confirm does not post either link.
+- [ ] Resolve a test link whose destination is for a different item or store and
+      confirm it fails closed without saving or exposing that destination.
+- [ ] Change the source Howl link and confirm the previous resolved URL clears.
+      If you select **Resolve again**, confirm you understand that it starts a
+      new redirect chain and can register another click.
+- [ ] Open or test the mission and confirm Chrome receives its clean canonical
+      product URL, not the affiliate URL or any of its tracking parameters.
+
 This checklist does not change or gate any code path — it is the manual
 verification referenced in the README's "Start with Add to cart only..." note
 and in PR #1's validation notes, made concrete and repeatable.

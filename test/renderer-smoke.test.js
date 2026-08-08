@@ -72,6 +72,7 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   const dom = new JSDOM(html, { url: "file:///app/index.html", runScripts: "outside-only" });
   const { window } = dom;
   let pushUpdate = null;
+  const copiedAffiliateUrls = [];
   window.cartAssist = {
     getSnapshot: async () => snapshotFixture(),
     saveSettings: async () => snapshotFixture(),
@@ -79,6 +80,18 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
     openBuyList: async () => ({ count: 1, reused: 1, deduped: 0, armed: false }),
     openCart: async () => "",
     openOrders: async () => "",
+    resolveHowlLink: async (input) => ({
+      howlUrl: input.howlUrl,
+      affiliateUrl: "https://www.target.com/p/booster/-/A-95298172?nrtv_cid=test&clkid=123",
+      retailer: input.retailer,
+      sku: input.sku,
+      redirectCount: 2,
+      resolvedAt: "2026-08-08T18:00:00.000Z"
+    }),
+    copyAffiliateLink: async (input) => {
+      copiedAffiliateUrls.push(input.affiliateUrl);
+      return input;
+    },
     connectDiscord: async () => snapshotFixture(),
     disconnectDiscord: async () => snapshotFixture(),
     forgetDiscord: async () => snapshotFixture(),
@@ -119,7 +132,54 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   let editCard = doc.querySelector(".mission-edit-card");
   assert.ok(editCard, "expected the inline mission editor");
   assert.equal(editCard.querySelector("[data-field='title']").value, "Booster Box");
+  const howlInput = editCard.querySelector("[data-field='howlUrl']");
+  howlInput.value = "https://howl.me/campaign123";
+  howlInput.dispatchEvent(new window.Event("input", { bubbles: true }));
+  editCard.querySelector(".howl-resolve").click();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.match(editCard.querySelector("[data-field='affiliateUrl']").value, /^https:\/\/www\.target\.com\//);
+  assert.equal(editCard.querySelector(".howl-resolve").textContent, "Resolve again");
+  assert.equal(editCard.querySelector(".howl-copy").disabled, false);
+  editCard.querySelector(".howl-copy").click();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(copiedAffiliateUrls.length, 1);
   editCard.querySelector(".mission-cancel").click();
+
+  // Saved campaign links expose a one-click copy action on the mission card.
+  const affiliateReady = snapshotFixture();
+  affiliateReady.settings.products[0].howlUrl = "https://howl.me/campaign123";
+  affiliateReady.settings.products[0].affiliateUrl = "https://www.target.com/p/booster/-/A-95298172?nrtv_cid=test&clkid=123";
+  affiliateReady.settings.products[0].affiliateResolvedFrom = "https://howl.me/campaign123";
+  affiliateReady.settings.products[0].affiliateResolvedAt = "2026-08-08T18:00:00.000Z";
+  pushUpdate(affiliateReady);
+  const shareButton = doc.querySelector(".mission-copy-affiliate");
+  assert.equal(shareButton.hidden, false);
+  assert.match(doc.querySelector(".mission-sub").textContent, /Howl share ready/);
+  shareButton.click();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(copiedAffiliateUrls.length, 2);
+
+  const affiliateSignal = structuredClone(affiliateReady);
+  affiliateSignal.signals = [{
+    id: "discord:affiliate-ready",
+    productId: "target:95298172",
+    retailer: "target",
+    sku: "95298172",
+    title: "Booster Box",
+    productUrl: "https://www.target.com/p/-/A-95298172",
+    price: 31.99,
+    observedAt: new Date().toISOString(),
+    autoOpenState: "historical",
+    note: "Signal recorded",
+    desired: true
+  }];
+  pushUpdate(affiliateSignal);
+  const signalShareButton = [...doc.querySelectorAll(".signal-card button")]
+    .find((button) => button.textContent === "Copy campaign link");
+  assert.ok(signalShareButton, "matching Discord signals expose the saved retailer-domain campaign link");
+  signalShareButton.click();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(copiedAffiliateUrls.length, 3);
 
   // A Discord inbox signal is identified as new and prefills a safe watch mission.
   const signaled = snapshotFixture();
