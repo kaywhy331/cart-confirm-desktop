@@ -125,6 +125,11 @@ h1 { font-size: 21px; letter-spacing: -0.025em; }
   background: rgba(113, 63, 18, 0.15);
   color: var(--warning);
 }
+.step-state.ready {
+  border-color: rgba(134, 239, 172, 0.3);
+  background: rgba(22, 101, 52, 0.12);
+  color: var(--success);
+}
 
 .boundary-banner {
   display: flex;
@@ -437,6 +442,7 @@ h1 { font-size: 21px; letter-spacing: -0.025em; }
 
 input[type="url"],
 input[type="text"],
+input[type="password"],
 input[type="number"],
 input[type="datetime-local"],
 select {
@@ -465,6 +471,88 @@ button:disabled:hover { transform: none; }
 .number-suffix > span { position: absolute; right: 11px; color: var(--subtle); font-size: 10px; pointer-events: none; }
 .money-input > span { position: absolute; left: 11px; z-index: 1; color: var(--subtle); }
 .money-input input { padding-left: 25px; }
+.inline-toggle {
+  min-height: 38px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(5, 11, 22, 0.45);
+}
+
+/* Discord signal setup and inbox */
+.discord-setup {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(170px, 0.8fr);
+  gap: 10px;
+  margin-top: 13px;
+}
+.discord-setup .field { margin-bottom: 0; }
+.signal-connection-actions { margin-top: 10px; }
+.discord-auto-open {
+  margin-top: 13px;
+  padding: 10px 11px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(3, 8, 17, 0.3);
+}
+.signal-inbox-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 17px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+.signal-inbox-heading > div { display: flex; align-items: baseline; gap: 8px; }
+.signal-inbox-heading strong { font-size: 12px; }
+.signal-inbox-heading span { color: var(--subtle); font-size: 9.5px; }
+.signal-list {
+  display: grid;
+  gap: 8px;
+  max-height: 520px;
+  margin-top: 10px;
+  overflow: auto;
+  padding-right: 4px;
+}
+.signal-card {
+  --store-accent: var(--target);
+  padding: 11px;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--store-accent);
+  border-radius: 11px;
+  background: var(--panel-soft);
+}
+.signal-card[data-retailer="walmart"] { --store-accent: var(--walmart); }
+.signal-card[data-retailer="amazon"] { --store-accent: var(--amazon); }
+.signal-card .store-name {
+  margin-right: 7px;
+  color: var(--store-accent);
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.signal-card-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.signal-card-top > div { min-width: 0; }
+.signal-card-top strong { display: block; margin-top: 3px; font-size: 11.5px; line-height: 1.35; }
+.signal-match {
+  flex: 0 0 auto;
+  padding: 3px 7px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 8.5px;
+  font-weight: 900;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+.signal-match.desired { border-color: rgba(134, 239, 172, 0.28); color: var(--success); }
+.signal-match.new { border-color: rgba(253, 230, 138, 0.3); color: var(--warning); }
+.signal-meta { display: block; margin-top: 7px; color: var(--subtle); font-size: 9.5px; line-height: 1.45; }
+.signal-note { margin-top: 6px; color: var(--muted); font-size: 10px; line-height: 1.45; }
+.signal-actions { margin-top: 9px; gap: 6px; }
+.signal-actions .button { min-height: 29px; padding: 0 8px; font-size: 9px; }
 
 /* Arm and run */
 .arm-row {
@@ -750,7 +838,7 @@ footer {
   .step-header { flex-wrap: wrap; }
   .product-row-top { flex-wrap: wrap; }
   .title-input { flex-basis: 100%; order: 5; }
-  .product-fields, .automation-grid { grid-template-columns: 1fr; }
+  .product-fields, .automation-grid, .discord-setup { grid-template-columns: 1fr; }
   .schedule-week { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .action-row .button { flex: 1 1 auto; }
 }

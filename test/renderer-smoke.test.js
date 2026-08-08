@@ -25,6 +25,8 @@ function snapshotFixture() {
         action: "cart",
         alertLevel: "standard",
         fulfillmentMode: "manual",
+        signalAutoOpen: true,
+        signalEntry: "product",
         enabled: true
       }],
       automationEnabled: false,
@@ -36,6 +38,9 @@ function snapshotFixture() {
       scheduledOpenEnabled: false,
       scheduledOpenAt: "",
       scheduledRetailer: "target",
+      discordEnabled: false,
+      discordChannelId: "",
+      discordAutoOpen: true,
       firstPartyOnly: true
     },
     status: {
@@ -47,6 +52,17 @@ function snapshotFixture() {
     },
     productStatuses: {},
     events: [],
+    signals: [],
+    discord: {
+      enabled: false,
+      configured: false,
+      connected: false,
+      channelId: "",
+      channelName: "",
+      lastPollAt: "",
+      lastSignalAt: "",
+      lastError: ""
+    },
     retailers: {},
     app: { name: "Cart Confirm", version: "0.0.0-test", companionPort: 32191, extensionPath: "/tmp" }
   };
@@ -63,6 +79,11 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
     openBuyList: async () => ({ count: 1, reused: 1, deduped: 0, armed: false }),
     openCart: async () => "",
     openOrders: async () => "",
+    connectDiscord: async () => snapshotFixture(),
+    disconnectDiscord: async () => snapshotFixture(),
+    forgetDiscord: async () => snapshotFixture(),
+    clearSignals: async () => snapshotFixture(),
+    openSignal: async () => ({ productId: "", via: "companion-tab" }),
     showExtension: async () => "",
     copyExtensionPath: async () => "",
     clearEvents: async () => snapshotFixture(),
@@ -84,7 +105,7 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   assert.ok(card, "expected a mission view card");
   assert.equal(card.querySelector(".status-title").textContent, "Booster Box");
   assert.equal(card.querySelector(".action-chip").textContent, "Add only");
-  assert.match(card.querySelector(".mission-sub").textContent, /\$40 cap/);
+  assert.match(card.querySelector(".mission-sub").textContent, /\$40\.00 cap/);
   assert.equal(doc.getElementById("autopilotState").textContent, "OFF");
   assert.match(doc.getElementById("worstCase").textContent, /\$40/);
   assert.equal(doc.getElementById("alarmBar").hidden, true);
@@ -98,6 +119,32 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   let editCard = doc.querySelector(".mission-edit-card");
   assert.ok(editCard, "expected the inline mission editor");
   assert.equal(editCard.querySelector("[data-field='title']").value, "Booster Box");
+  editCard.querySelector(".mission-cancel").click();
+
+  // A Discord inbox signal is identified as new and prefills a safe watch mission.
+  const signaled = snapshotFixture();
+  signaled.signals = [{
+    id: "discord:123",
+    productId: "walmart:19952559023",
+    retailer: "walmart",
+    sku: "19952559023",
+    title: "Pitch Black booster bundle",
+    productUrl: "https://www.walmart.com/ip/19952559023",
+    price: 31.97,
+    stock: 10,
+    orderLimit: 2,
+    observedAt: new Date().toISOString(),
+    autoOpenState: "new-product",
+    note: "New product",
+    desired: false
+  }];
+  pushUpdate(signaled);
+  assert.equal(doc.querySelector(".signal-match").textContent, "New");
+  doc.querySelector(".signal-card .button.primary").click();
+  editCard = doc.querySelector(".mission-edit-card");
+  assert.equal(editCard.querySelector("[data-field='retailer']").value, "walmart");
+  assert.equal(editCard.querySelector("[data-field='maxPrice']").value, "31.97");
+  assert.equal(editCard.querySelector("[data-field='action']").value, "watch");
   editCard.querySelector(".mission-cancel").click();
   assert.equal(doc.querySelector(".mission-edit-card"), null);
   assert.ok(doc.querySelector(".mission-card"));

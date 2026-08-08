@@ -138,6 +138,48 @@
       </div>
 
       <div class="monitor-column">
+        <section class="panel signal-panel" id="signalPanel">
+          <div class="panel-heading">
+            <div>
+              <span class="eyebrow">Official bot connection</span>
+              <h2>Discord restock signals</h2>
+            </div>
+            <span class="step-state" id="discordState">Not connected</span>
+          </div>
+          <p class="step-hint" id="discordHint">Connect a bot that can view the signal channel and read its message history. Discord user tokens and self-bots are never accepted.</p>
+          <div class="discord-setup">
+            <label class="field">
+              <span>Bot token</span>
+              <input id="discordBotToken" type="password" maxlength="200" autocomplete="off" spellcheck="false" placeholder="Paste an official bot token">
+            </label>
+            <label class="field">
+              <span>Channel ID</span>
+              <input id="discordChannelId" type="text" minlength="15" maxlength="25" pattern="[0-9]{15,25}" inputmode="numeric" autocomplete="off" spellcheck="false" placeholder="123456789012345678" required>
+            </label>
+          </div>
+          <div class="action-row signal-connection-actions">
+            <button class="button primary compact" id="discordConnectButton" type="button">Connect &amp; import</button>
+            <button class="button ghost compact" id="discordDisconnectButton" type="button" hidden>Disconnect</button>
+            <button class="button ghost compact" id="discordForgetButton" type="button" hidden>Remove saved token</button>
+          </div>
+          <label class="toggle-row discord-auto-open">
+            <input id="discordAutoOpen" type="checkbox">
+            <span>Automatically open fresh desired signals</span>
+          </label>
+          <small class="row-help">The first connection imports up to 50 recent messages as history without opening pages. After that, only signals under two minutes old can auto-open. The token is encrypted by your operating system and never saved in settings or shown again.</small>
+
+          <div class="signal-inbox-heading">
+            <div>
+              <strong>Signal inbox</strong>
+              <span id="signalCount">0 signals</span>
+            </div>
+            <button class="button ghost compact" id="clearSignalsButton" type="button">Clear</button>
+          </div>
+          <div class="signal-list" id="signalList">
+            <div class="empty-state">No restock signals yet.</div>
+          </div>
+        </section>
+
         <section class="panel" id="schedulePanel" hidden>
           <div class="panel-heading">
             <h2>Drop calendar</h2>
@@ -221,7 +263,7 @@
       <div class="product-fields">
         <label class="field">
           <span>Max price per item</span>
-          <span class="money-input"><span>$</span><input data-field="maxPrice" type="number" min="0" max="1000000" step="1" inputmode="numeric" placeholder="35" required></span>
+          <span class="money-input"><span>$</span><input data-field="maxPrice" type="number" min="0" max="1000000" step="0.01" inputmode="decimal" placeholder="35.00" required></span>
         </label>
         <label class="field">
           <span>Quantity</span>
@@ -243,7 +285,7 @@
       </div>
 
       <details class="advanced-fields">
-        <summary>Advanced: item ID, order total cap, fulfillment, alerts</summary>
+        <summary>Advanced: item ID, order total cap, fulfillment, alerts, signals</summary>
         <div class="product-fields">
           <label class="field">
             <span class="sku-label">Item ID</span>
@@ -251,7 +293,7 @@
           </label>
           <label class="field">
             <span>Max final order total</span>
-            <span class="money-input"><span>$</span><input data-field="maxOrderTotal" type="number" min="0" max="1000000" step="1" inputmode="numeric" required></span>
+            <span class="money-input"><span>$</span><input data-field="maxOrderTotal" type="number" min="0" max="1000000" step="0.01" inputmode="decimal" required></span>
           </label>
           <label class="field">
             <span>Required fulfillment</span>
@@ -269,8 +311,24 @@
               <option value="silent">Silent log only</option>
             </select>
           </label>
+          <label class="field signal-entry-field">
+            <span>Discord signal entry</span>
+            <select data-field="signalEntry">
+              <option value="product">Product page (recommended)</option>
+              <option value="walmart-buy-now">Walmart Buy Now</option>
+              <option value="amazon-atc">Amazon Add to Cart</option>
+              <option value="amazon-buy-now">Amazon Buy Now</option>
+            </select>
+          </label>
+          <label class="field signal-auto-field">
+            <span>Fresh matched signals</span>
+            <span class="toggle-row inline-toggle">
+              <input data-field="signalAutoOpen" type="checkbox">
+              <span>Open automatically</span>
+            </span>
+          </label>
         </div>
-        <small class="row-help">The order total cap and fulfillment are required only when checkout is involved. The item ID fills in automatically from the product link.</small>
+        <small class="row-help">Direct links are accepted only for the mission’s exact SKU and still require fresh in-browser seller, price, quantity, cart, fulfillment, and final-total verification. The item ID fills in automatically from the product link.</small>
       </details>
     </article>
   </template>
