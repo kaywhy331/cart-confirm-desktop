@@ -414,6 +414,10 @@ h1 { font-size: 21px; letter-spacing: -0.025em; }
 }
 .advanced-fields .product-fields { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .product-fields .field { margin-bottom: 0; }
+.howl-link-field, .affiliate-link-field { grid-column: 1 / -1; }
+.inline-field-actions { display: flex; align-items: center; gap: 7px; }
+.inline-field-actions input { flex: 1 1 auto; min-width: 0; }
+.inline-field-actions .button { flex: 0 0 auto; white-space: nowrap; }
 
 .advanced-fields {
   margin-top: 10px;
@@ -462,6 +466,7 @@ input:focus, select:focus {
   box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.1);
 }
 input:disabled, select:disabled, button:disabled { opacity: 0.42; cursor: not-allowed; }
+input[readonly] { color: var(--muted); }
 button:disabled:hover { transform: none; }
 
 .toggle-row { display: flex; align-items: center; gap: 9px; color: var(--muted); font-size: 12px; }

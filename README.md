@@ -42,6 +42,7 @@ Start with **Add to cart only** until you have verified the current store select
 - Per-product scheduled openings for known drop times: give any item an **Open at** date/time, save, and arm in advance. At that moment its page opens in Chrome (reusing an existing tab when possible) and the armed companion takes over. Same-store drops due together open one second apart, exactly once per mission. Step 4 shows a seven-day calendar strip of upcoming openings with a live countdown; times are marked missed instead of running more than two minutes late, and an old single global schedule migrates onto its store's enabled products automatically.
 - Official-queue fan-out for simultaneous Walmart drops: the first enabled mission that reports a live `/qp` queue causes every other enabled, not-yet-queued Walmart mission to navigate once, one second apart. A durable per-run receipt prevents a second burst, Stop cancels pending pages, and every navigation still consumes the shared traffic budget.
 - Official Discord bot ingestion with a local Desired/New signal inbox, stable store+SKU matching, encrypted credentials, silent history import, and per-mission auto-open controls. Fresh same-store signals enter the one-second drop lane while different retailers proceed independently.
+- Optional per-mission Howl campaign-link resolution. Paste a generated `howl.me`, `howl.link`, or `shop-links.co` link and explicitly select **Resolve once**: that click registers one Howl redirect-chain visit, captures the exact-SKU retailer destination, and preserves its affiliate parameters for copying from the mission or a matching Discord signal. These links are sharing-only and never enter the purchasing configuration sent to Chrome.
 - Sanitized direct signal entries for Amazon Add to Cart / Buy Now and Walmart Buy Now. Amazon requires a fresh under-cap price, `Amazon.com` seller, exact ASIN and whitelisted offer parameters. Walmart constructs only `https://www.walmart.com/affil/cart/buynow?items=<exact item ID>` from the normalized signal SKU (or reduces a supplied button to that form). Tracking parameters are stripped, durable tab context follows redirects, and missing browser context falls back to the canonical product page.
 - Manual **Open enabled items now** action for all enabled stores, with each store's pages queued independently. When the companion is connected, an existing Chrome tab for that store is navigated instead of opening a new window, and identical pending opens are deduplicated.
 - Configurable retry interval from 5 to 3,600 seconds, with jitter and increasing backoff after repeated store errors.
@@ -83,9 +84,19 @@ Click **+ New mission**, then:
 3. Choose the action: **Watch & alert only** (the default — monitors and alerts, never clicks), **Add to cart only**, **Prepare checkout, I submit** (stops at the final review), or **Submit order automatically** (advanced).
 4. For the two checkout-involving actions, open **Advanced** and set a positive maximum **final order total** (at least the capped unit price multiplied by quantity). For auto-submit, also explicitly require **Shipping / delivery** or **Store pickup**; if the final page cannot prove that choice, submission is blocked.
 5. Optionally set **Open at** for a known drop time, pick an alert loudness, and choose how a matched Discord signal enters the store under **Advanced**. The product page is the recommended default. Direct Buy Now entries are available only for checkout-review or auto-submit missions; Amazon Add to Cart is available for cart or checkout missions.
-6. Click **Done** — the mission saves immediately. Starting an edit while Autopilot is on pauses it first and offers to resume after saving.
+6. Optionally paste a generated Howl campaign link under **Advanced** and select **Resolve once**. The explicit click registers with Howl and captures a retailer-domain sharing URL only after its store and item ID match this mission exactly.
+7. Click **Done** — the mission saves immediately. Starting an edit while Autopilot is on pauses it first and offers to resume after saving.
 
 To schedule an item for a known drop, set its **Open at** field to a future local date/time and save. Each product schedules independently. A receipt is persisted before the page opens, the time clears itself after that single attempt, and a time missed by more than two minutes is marked missed instead of running late. Missions for the same retailer and time use the one-second drop lane; ordinary monitoring retries do not. **Stop everything** clears all scheduled times.
+
+## Resolve and share a Howl campaign link
+
+1. Create the campaign link in your Howl account. Cart Confirm resolves an existing generated link; it does not sign in to Howl or create campaigns.
+2. Edit the matching mission, open **Advanced**, paste the link, and select **Resolve once**. That user action deliberately sends the GET requests that Howl uses to register the click. Resolution is never automatic. Selecting **Resolve again** later starts another chain and can register another click.
+3. Cart Confirm follows HTTPS redirects through public hosts, then stops as soon as a supported retailer URL identifies the mission's exact TCIN, Walmart item ID, or ASIN. It does not request the retailer page during resolution. A wrong store, wrong item, unsafe destination, redirect loop, or non-redirect response fails without saving or exposing that destination.
+4. Select **Done**, then use **Copy share link** on the mission or **Copy campaign link** on a matching Discord signal. The copied address visibly remains on `target.com`, `walmart.com`, or `amazon.com`, with Howl tracking parameters such as `nrtv_cid`, `clkid`, and `TCID` intact.
+
+The resolved URL is for customer sharing only. Monitoring, product opening, cart work, checkout, and auto-submit continue to use the clean canonical mission product URL. Changing the source Howl link clears its old resolved destination. Cart Confirm copies links to the clipboard but does not post them to Discord or any other service.
 
 ## Connect Discord restock signals
 
@@ -151,7 +162,7 @@ Or:
 npm run verify
 ```
 
-Verification performs a syntax check and runs the Node test suite, including Discord parsing/history/live routing, encrypted credential refusal paths, strict Amazon/Walmart direct-link sanitization, durable tab context, queue URL reduction, exactly-once schedule receipts, durable submission transitions, action/run budgets, overload escalation, safety migration, first-party seller classification (including Target's labeled-marketplace/absence rule), companion tab-reuse open requests, a jsdom boot of the mission/signal UI, and jsdom cart/order-review fixtures for all three retailers. GitHub CI also builds both unsigned Windows artifacts. Tests do not place live orders, contact Discord, or guarantee that current retailer selectors are unchanged.
+Verification performs a syntax check and runs the Node test suite, including Discord parsing/history/live routing, encrypted credential refusal paths, strict Amazon/Walmart direct-link sanitization, safe Howl redirect resolution and exact-SKU isolation, durable tab context, queue URL reduction, exactly-once schedule receipts, durable submission transitions, action/run budgets, overload escalation, safety migration, first-party seller classification (including Target's labeled-marketplace/absence rule), companion tab-reuse open requests, a jsdom boot of the mission/signal UI, and jsdom cart/order-review fixtures for all three retailers. GitHub CI also builds both unsigned Windows artifacts. Tests do not place live orders, resolve a live Howl link, contact Discord, or guarantee that current retailer selectors are unchanged.
 
 ## Privacy and local security
 
@@ -161,6 +172,7 @@ Verification performs a syntax check and runs the Node test suite, including Dis
 - Settings are stored under Electron's local user-data directory.
 - The Discord bot token is not part of settings or runtime JSON. It is written to a separate file only after operating-system encryption succeeds; removing the saved token deletes that encrypted file.
 - Reported page addresses are reduced to origin plus pathname; query strings are discarded.
+- Howl source links and their resolved retailer sharing URLs are an intentional exception to query-string removal: they remain in local settings with affiliate parameters intact. They are excluded from the Chrome purchasing configuration; resolving sends the source through its redirect chain, and copying places the validated retailer URL on the system clipboard.
 - The bounded local ledger contains only milestone names, store/SKU, seller label, observed unit price and final total, quantity/attempt state, query-free paths, and timestamps.
 - The app does not copy or store cookies, passwords, shipping addresses, payment details, CVV values, or order numbers.
 
