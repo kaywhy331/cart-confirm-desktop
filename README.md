@@ -34,7 +34,8 @@ Start with **Add to cart only** until you have verified the current store select
 - Per-product alert loudness: standard ping, **loud alarm** (repeating audible alert with an on-screen Silence bar, throttled to once per five minutes per item), or silent log only.
 - A worst-case exposure line in step 4: the total if every enabled item hits its cap — automation can never exceed the caps you set.
 - Click any live-status row to filter the event log to that item's timeline.
-- A **Test (no buying)** button that opens the first enabled item while disarmed so the companion can report price, seller, and stock without touching the cart.
+- A **Test (no buying)** button in the header that opens the first enabled mission while Autopilot is off so the companion can report price, seller, and stock without touching the cart.
+- Quiet background stock checks for tab-less missions on Target and Walmart (read-only page fetches, rotated per store within the traffic budget) that open Chrome automatically the moment a mission verifies in stock.
 - Per-product scheduled openings for known drop times: give any item an **Open at** date/time, save, and arm in advance. At that moment its page opens in Chrome (reusing an existing tab when possible) and the armed companion takes over. Step 4 shows a seven-day calendar strip of upcoming openings with a live countdown; times fire exactly once, are marked missed instead of running more than two minutes late, and an old single global schedule migrates onto its store's enabled products automatically.
 - Manual **Open enabled items now** action for all enabled stores, with each store's pages queued independently. When the companion is connected, an existing Chrome tab for that store is navigated instead of opening a new window, and identical pending opens are deduplicated.
 - Configurable retry interval from 5 to 3,600 seconds, with jitter and increasing backoff after repeated store errors.
@@ -45,9 +46,11 @@ Start with **Add to cart only** until you have verified the current store select
 - Windows desktop notifications and a bounded persistent local safety ledger.
 - Legacy migration from the original single-product Target settings.
 
-## Why it does not use raw HTML requests
+## Background stock checks vs. browser-only purchasing
 
-Authenticated carts and checkout flows depend on browser JavaScript, cookies, CSRF protections, inventory checks, and store security controls. Replaying private requests or treating checkout as a plain HTML form would be fragile and could submit stale or unsafe data.
+While Autopilot is on, missions without a live Chrome tab get **quiet background checks**: the desktop fetches the public product page (no cookies, no sign-in, no cart actions), reads the embedded schema.org availability and price, and rotates round-robin through each store's missions inside the same per-store spacing and 120-action hourly budget. When a mission verifies in stock, the real page opens in Chrome and the in-tab pipeline re-verifies seller, price, and quantity before acting. If a store blocks or obscures these plain fetches, quiet checks for that store shut off after a few failures and the app tells you to keep a tab open instead. Amazon is tab-only. **Stop everything** pauses all monitoring — quiet checks and tab observation — until you arm, test, or open something again.
+
+Purchasing, by contrast, is browser-only, and deliberately so: authenticated carts and checkout flows depend on browser JavaScript, cookies, CSRF protections, inventory checks, and store security controls. Replaying private requests or treating checkout as a plain HTML form would be fragile and could submit stale or unsafe data.
 
 Fast-load mode keeps the authenticated browser workflow but removes nonessential image, font, and media downloads. If a security challenge appears, resource blocking is paused for ten minutes so the challenge can be completed manually. The blocking rule is removed whenever the desktop companion is unavailable or fails its version/pairing checks.
 

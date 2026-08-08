@@ -34,6 +34,7 @@ const { isAllowedExtensionOrigin, isTrustedCompanionRequest } = require("./lib/e
 const { createStoreOpenQueue } = require("./lib/store-open-queue");
 const { createOpenRequestStore } = require("./lib/open-requests");
 const { findChrome } = require("./lib/chrome-launcher");
+const { checkProductPage } = require("./lib/quiet-monitor");
 const {
   RETAILERS,
   parseRetailUrl,
@@ -77,6 +78,7 @@ let stopEpoch = 0;
 const lastNotificationAt = new Map();
 const storeOverloadUntil = new Map();
 const retailerTabSeenAt = new Map();
+const productTabSeenAt = new Map();
 const pendingNavigationKeys = new Set();
 const openRequests = createOpenRequestStore();
 const storeOpenQueue = createStoreOpenQueue({
@@ -158,6 +160,7 @@ function publicSettings() {
   return {
     products: settings.products,
     automationEnabled: settings.automationEnabled,
+    monitoringPaused: settings.monitoringPaused,
     automationRunId: settings.automationRunId,
     fastMode: settings.fastMode,
     retryIntervalSeconds: settings.retryIntervalSeconds,
@@ -312,11 +315,21 @@ function findProduct(productId) {
   return product;
 }
 
+// Any explicit "go" action lifts a Stop's monitoring pause.
+function resumeMonitoring() {
+  if (!settings.monitoringPaused) return;
+  settings = { ...settings, monitoringPaused: false };
+  persistSettings();
+  configVersion += 1;
+  broadcast();
+}
+
 async function openProduct(productId) {
   const product = productId
     ? findProduct(productId)
     : settings.products.find((candidate) => candidate.enabled);
   if (!product) throw new Error("Enable at least one product first.");
+  resumeMonitoring();
   const opened = await openExternalRetailer(product.productUrl);
   return { productId: product.id, via: opened.via };
 }
@@ -331,6 +344,7 @@ async function openBuyList(retailer = "") {
       : "Enable at least one product first.");
   }
 
+  resumeMonitoring();
   const results = await Promise.all(enabledProducts.map((product) => openExternalRetailer(product.productUrl)));
   return {
     count: results.filter((result) => !["already-queued", "cancelled"].includes(result.via)).length,
@@ -435,6 +449,7 @@ function handleCompanionEvent(rawEvent) {
   if (event.retailer && RETAILERS[event.retailer]) {
     retailerTabSeenAt.set(event.retailer, Date.now());
   }
+  if (product) productTabSeenAt.set(product.id, Date.now());
   if (event.eventType === "traffic-overload") {
     const previousCooldown = storeOverloadUntil.get(event.retailer) || 0;
     if (event.cooldownUntil <= previousCooldown) return { accepted: true, deduped: true };
@@ -528,6 +543,7 @@ function extensionConfig() {
   return {
     products: settings.products,
     automationEnabled: settings.automationEnabled,
+    monitoringPaused: settings.monitoringPaused,
     automationRunId: settings.automationRunId,
     fastMode: settings.fastMode,
     retryIntervalSeconds: settings.retryIntervalSeconds,
@@ -708,7 +724,7 @@ function registerIpc() {
       }
     }
     if (normalized.automationEnabled && !wasArmed) {
-      normalized = { ...normalized, automationRunId: crypto.randomUUID() };
+      normalized = { ...normalized, automationRunId: crypto.randomUUID(), monitoringPaused: false };
     }
     settings = normalized;
     persistSettings();
@@ -728,6 +744,7 @@ function registerIpc() {
     settings = {
       ...settings,
       automationEnabled: false,
+      monitoringPaused: true,
       scheduledOpenEnabled: false,
       products: settings.products.map((product) => (
         product.openAt ? { ...product, openAt: "" } : product
@@ -737,7 +754,7 @@ function registerIpc() {
     configVersion += 1;
     status = {
       ...status,
-      lastMessage: "Stopped. Automation disarmed, queued page openings cancelled, and the schedule cleared."
+      lastMessage: "Stopped. Autopilot off, monitoring paused, queued openings cancelled, scheduled times cleared."
     };
     broadcast();
     return snapshot();
@@ -764,8 +781,142 @@ function registerIpc() {
   });
   ipcMain.handle("cart-assist:test-event", () => {
     if (!companionPort) throw new Error("The local companion server is not running.");
+    resumeMonitoring();
     return { ok: true, companionPort };
   });
+}
+
+// --- Quiet monitor: rotating read-only background stock checks ---
+// While Autopilot is on, missions without a live tab get their product pages
+// fetched (no cookies, no cart actions) round-robin per store, inside the
+// same per-store spacing and 120-action hourly budget. A verified stock flip
+// opens the real page in Chrome, where the in-tab pipeline re-verifies
+// everything before acting. Amazon pages rarely expose structured data to
+// plain fetches, so quiet checks cover Target and Walmart.
+const QUIET_STORES = ["target", "walmart"];
+const QUIET_MIN_SPACING_MS = 30_000;
+const QUIET_TAB_FRESH_MS = 90_000;
+const QUIET_FETCH_TIMEOUT_MS = 8_000;
+const QUIET_FAILURE_LIMIT = 4;
+const QUIET_AUTO_OPEN_COOLDOWN_MS = 5 * 60_000;
+const QUIET_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36";
+const quietState = {
+  lastCheckAt: new Map(),
+  rotation: new Map(),
+  lastAvailability: new Map(),
+  failures: new Map(),
+  lastAutoOpenAt: new Map(),
+  disabledStores: new Set()
+};
+
+function recordQuietEvent(rawEvent) {
+  try {
+    const event = validateEvent(rawEvent);
+    const product = settings.products.find((candidate) => candidate.id === event.productId);
+    if (!product) return;
+    const current = productStatuses[product.id] || createProductStatus(product);
+    productStatuses = {
+      ...productStatuses,
+      [product.id]: reduceProductStatus(current, event)
+    };
+    addEvent(event);
+    broadcast();
+  } catch {
+    // A malformed synthetic event is dropped rather than crashing the tick.
+  }
+}
+
+async function quietCheck(product) {
+  const retailer = product.retailer;
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), QUIET_FETCH_TIMEOUT_MS);
+    let response;
+    try {
+      response = await fetch(product.productUrl, {
+        signal: controller.signal,
+        redirect: "follow",
+        headers: {
+          "User-Agent": QUIET_USER_AGENT,
+          Accept: "text/html,application/xhtml+xml"
+        }
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+    if (!response.ok) {
+      if ([429, 502, 503, 504].includes(response.status)) {
+        storeOverloadUntil.set(retailer, Date.now() + settings.overloadCooldownSeconds * 1000);
+        persistRuntimeState();
+      }
+      throw new Error(`status ${response.status}`);
+    }
+    const outcome = checkProductPage(await response.text(), retailer, product.sku);
+    if (outcome.availability === "unknown") throw new Error("unreadable");
+
+    quietState.failures.set(retailer, 0);
+    const previous = quietState.lastAvailability.get(product.id);
+    quietState.lastAvailability.set(product.id, outcome.availability);
+    if (previous !== outcome.availability) {
+      recordQuietEvent({
+        eventType: "availability",
+        productId: product.id,
+        retailer,
+        sku: product.sku,
+        availability: outcome.availability,
+        price: outcome.price === null ? undefined : outcome.price,
+        page: product.productUrl,
+        timestamp: new Date().toISOString()
+      });
+    }
+    if (outcome.availability === "available" && previous !== "available") {
+      if (Date.now() - (quietState.lastAutoOpenAt.get(product.id) || 0) > QUIET_AUTO_OPEN_COOLDOWN_MS) {
+        quietState.lastAutoOpenAt.set(product.id, Date.now());
+        notifyOnce(
+          `quiet-stock:${product.id}`,
+          `${retailerLabel(retailer)} stock detected`,
+          `${product.title || product.sku} looks in stock — opening it in Chrome now.`,
+          true
+        );
+        void openProduct(product.id).catch(() => {});
+      }
+    }
+  } catch {
+    const failures = (quietState.failures.get(retailer) || 0) + 1;
+    quietState.failures.set(retailer, failures);
+    if (failures === QUIET_FAILURE_LIMIT) {
+      quietState.disabledStores.add(retailer);
+      status = {
+        ...status,
+        lastMessage: `${retailerLabel(retailer)} background checks are unavailable (blocked or unreadable). Keep a ${retailerLabel(retailer)} tab open in Chrome instead.`
+      };
+      broadcast();
+    }
+  }
+}
+
+function quietMonitorTick() {
+  if (!settings.automationEnabled || settings.monitoringPaused) return;
+  const now = Date.now();
+  for (const retailer of QUIET_STORES) {
+    if (quietState.disabledStores.has(retailer)) continue;
+    if ((storeOverloadUntil.get(retailer) || 0) > now) continue;
+    const spacing = Math.max(QUIET_MIN_SPACING_MS, Number(settings.storeNavigationIntervalSeconds || 20) * 1000);
+    if (now - (quietState.lastCheckAt.get(retailer) || 0) < spacing) continue;
+    const missions = settings.products.filter((product) => (
+      product.enabled
+      && product.retailer === retailer
+      && now - (productTabSeenAt.get(product.id) || 0) > QUIET_TAB_FRESH_MS
+    ));
+    if (!missions.length) continue;
+    const rotation = (quietState.rotation.get(retailer) ?? -1) + 1;
+    quietState.rotation.set(retailer, rotation);
+    const mission = missions[rotation % missions.length];
+    const budget = reserveStoreAction(retailer, "background-check");
+    if (!budget.allowed) continue;
+    quietState.lastCheckAt.set(retailer, now);
+    void quietCheck(mission);
+  }
 }
 
 function clearProductOpenAt(productId) {
@@ -830,6 +981,8 @@ function startScheduler() {
         broadcast();
       }
     }
+
+    quietMonitorTick();
 
     for (const productDecision of evaluateProductSchedules(
       settings.products,
