@@ -159,6 +159,33 @@ for one supervised run) and manually walk the checkout to the final review page:
 - [ ] Keep new products in **Add to cart only** or **Stop at final review**
       until sections 3 and 4 have both been completed for that product.
 
+## 6. Discord and direct-entry checks
+
+Run these supervised before relying on signal-triggered purchasing:
+
+- [ ] Connect with an official bot token and confirm the initial signal import is
+      marked **History** without opening any store pages.
+- [ ] Post or wait for one new signal for a known mission and confirm the inbox
+      marks it **Desired** by the exact retailer + SKU. A different SKU with a
+      similar title must remain **New**.
+- [ ] With **Stop everything** active, confirm new signals are recorded but do
+      not open pages. Then use the manual **Product** button and confirm it lifts
+      the pause only because you explicitly opened it.
+- [ ] For Walmart Buy Now, confirm the retained link is exactly
+      `https://www.walmart.com/affil/cart/buynow?items=<configured item ID>` and
+      that affiliate/tracking parameters disappeared. Verify the resulting cart
+      contains only that item before proceeding.
+- [ ] For Amazon ATC or Buy Now, confirm the signal shows `Amazon.com` as seller,
+      the ASIN matches the mission, and the resulting cart/review page reports
+      the same first-party seller and under-cap price.
+- [ ] Temporarily disable or reload the Chrome companion, trigger a direct entry,
+      and confirm Cart Confirm falls back to the canonical product page instead
+      of following a redirect without mission context.
+- [ ] During a supervised same-store multi-signal test, confirm each mission gets
+      its own tab one second apart and a tab already assigned to another enabled
+      mission is not navigated away. Do not manufacture retailer queues or spam
+      live product pages to perform this test.
+
 This checklist does not change or gate any code path — it is the manual
 verification referenced in the README's "Start with Add to cart only..." note
 and in PR #1's validation notes, made concrete and repeatable.

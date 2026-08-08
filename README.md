@@ -1,6 +1,6 @@
 # Cart Confirm Desktop
 
-Cart Confirm is a local Windows desktop app and unpacked Chrome companion for a multi-product buy list on Target, Walmart, and Amazon. Every enabled product has its own store, SKU, maximum unit price, maximum final order total, quantity, and success action.
+Cart Confirm is a local Windows desktop app and unpacked Chrome companion for a multi-product buy list on Target, Walmart, and Amazon. Every enabled product has its own store, SKU, maximum unit price, maximum final order total, quantity, and success action. An optional official Discord bot connection can ingest restock alerts into a local Desired/New signal inbox.
 
 The companion uses the normal signed-in store pages. It can keep checking an unavailable item, add an eligible offer to the cart, set the configured quantity, and proceed to a capped final review. **Stop at final review** is recommended. **Submit order automatically** is an advanced opt-in that additionally requires an explicit shipping/pickup mode and can select the final order control.
 
@@ -20,6 +20,9 @@ These rules are enforced in code and cannot be disabled from the UI:
 - Proof, attempts, completion, and submit intent live in extension-owned storage. An uncertain final click holds its run lock until a retailer-specific confirmation or explicit failure appears; starting a new run requires an explicit warning to check retailer order history first.
 - Final auto-submit re-reads the complete evidence immediately before clicking, requires the configured shipping/pickup mode, and blocks selected subscriptions, protection plans, tips, donations, gift wrap, and installment choices.
 - Automation always starts disarmed after the desktop app launches. Editing purchase settings while armed is rejected.
+- Discord messages are untrusted hints, never purchase proof. Signals match missions only by normalized `retailer:SKU`; their price, seller, stock, offer ID, and action links are re-validated before use, and the signed-in browser remains authoritative.
+- Only official Discord bot tokens are accepted. The token is stored separately through Electron's operating-system encryption; plaintext and Linux `basic_text` fallbacks are refused. Discord user tokens and self-bots are not supported.
+- A first Discord connection imports recent messages as history without opening pages. Later signals must be under two minutes old to auto-open, and **Stop everything** continues recording signals while preventing every automatic opening.
 - CAPTCHAs, queues, sign-in prompts, and security challenges are never bypassed. When Walmart places one mission on an official `/qp` queue page, Cart Confirm makes one exactly-once pass through the other enabled Walmart missions at a one-second stagger so they can enter through their normal product pages too. A tab already in queue is frozen: ticket endpoints and signatures are never stored, called, replayed, or refreshed.
 - All desktop and extension store actions share a fixed 120-action rolling-hour budget. Each product is limited to 100 attempts in a four-hour run and requires manual re-arming after exhaustion.
 - Tool-controlled navigations are serialized per store. HTTP `429`, `502`, `503`, `504`, and `520`–`524` responses open an escalating store-specific cooldown circuit, and a bounded `Retry-After` header is honored.
@@ -38,6 +41,8 @@ Start with **Add to cart only** until you have verified the current store select
 - Quiet background stock checks for tab-less missions on Target and Walmart (read-only page fetches, rotated per store within the traffic budget) that open Chrome automatically the moment a mission verifies in stock.
 - Per-product scheduled openings for known drop times: give any item an **Open at** date/time, save, and arm in advance. At that moment its page opens in Chrome (reusing an existing tab when possible) and the armed companion takes over. Same-store drops due together open one second apart, exactly once per mission. Step 4 shows a seven-day calendar strip of upcoming openings with a live countdown; times are marked missed instead of running more than two minutes late, and an old single global schedule migrates onto its store's enabled products automatically.
 - Official-queue fan-out for simultaneous Walmart drops: the first enabled mission that reports a live `/qp` queue causes every other enabled, not-yet-queued Walmart mission to navigate once, one second apart. A durable per-run receipt prevents a second burst, Stop cancels pending pages, and every navigation still consumes the shared traffic budget.
+- Official Discord bot ingestion with a local Desired/New signal inbox, stable store+SKU matching, encrypted credentials, silent history import, and per-mission auto-open controls. Fresh same-store signals enter the one-second drop lane while different retailers proceed independently.
+- Sanitized direct signal entries for Amazon Add to Cart / Buy Now and Walmart Buy Now. Amazon requires a fresh under-cap price, `Amazon.com` seller, exact ASIN and whitelisted offer parameters. Walmart constructs only `https://www.walmart.com/affil/cart/buynow?items=<exact item ID>` from the normalized signal SKU (or reduces a supplied button to that form). Tracking parameters are stripped, durable tab context follows redirects, and missing browser context falls back to the canonical product page.
 - Manual **Open enabled items now** action for all enabled stores, with each store's pages queued independently. When the companion is connected, an existing Chrome tab for that store is navigated instead of opening a new window, and identical pending opens are deduplicated.
 - Configurable retry interval from 5 to 3,600 seconds, with jitter and increasing backoff after repeated store errors.
 - Configurable per-store navigation spacing from 10 to 3,600 seconds and overload cooldown from 60 to 86,400 seconds.
@@ -74,13 +79,24 @@ The extension badge reads `IDLE` when the desktop app is connected but automatio
 Click **+ New mission**, then:
 
 1. Paste the product page URL. The store, the TCIN / Walmart item ID / ASIN, and a mission name are detected automatically (the ID is visible under **Advanced**; edit the name freely).
-2. Set a maximum **per-unit** price in whole US dollars and the quantity.
+2. Set a maximum **per-unit** price in US dollars (cents are supported) and the quantity.
 3. Choose the action: **Watch & alert only** (the default — monitors and alerts, never clicks), **Add to cart only**, **Prepare checkout, I submit** (stops at the final review), or **Submit order automatically** (advanced).
 4. For the two checkout-involving actions, open **Advanced** and set a positive maximum **final order total** (at least the capped unit price multiplied by quantity). For auto-submit, also explicitly require **Shipping / delivery** or **Store pickup**; if the final page cannot prove that choice, submission is blocked.
-5. Optionally set **Open at** for a known drop time and pick an alert loudness under **Advanced**.
-6. Click **Done** — the mission saves immediately. Editing and removal are locked while Autopilot is on.
+5. Optionally set **Open at** for a known drop time, pick an alert loudness, and choose how a matched Discord signal enters the store under **Advanced**. The product page is the recommended default. Direct Buy Now entries are available only for checkout-review or auto-submit missions; Amazon Add to Cart is available for cart or checkout missions.
+6. Click **Done** — the mission saves immediately. Starting an edit while Autopilot is on pauses it first and offers to resume after saving.
 
 To schedule an item for a known drop, set its **Open at** field to a future local date/time and save. Each product schedules independently. A receipt is persisted before the page opens, the time clears itself after that single attempt, and a time missed by more than two minutes is marked missed instead of running late. Missions for the same retailer and time use the one-second drop lane; ordinary monitoring retries do not. **Stop everything** clears all scheduled times.
+
+## Connect Discord restock signals
+
+1. In the Discord Developer Portal, create an application and bot. Enable Message Content access for the bot. Never paste a Discord account/user token into Cart Confirm.
+2. Invite the bot to the server with only the permissions it needs: **View Channel** and **Read Message History** for the signal channel. It does not need to send messages or manage anything.
+3. In Discord, enable Developer Mode, right-click the restock channel, and copy its channel ID.
+4. In **Discord restock signals**, paste the official bot token and channel ID, then select **Connect & import**. The latest 50 messages are classified as history and cannot open a store page.
+5. Inbox cards say **Desired** when `retailer:SKU` already exists in Missions and **New** otherwise. **+ Add as desired** prefills a safe watch-only mission with the signal's title, canonical product URL, SKU, and observed price; review its cap and action before saving.
+6. Turn on **Automatically open fresh desired signals**, enable the intended mission's signal control, and arm Autopilot. A live matched signal under two minutes old opens the configured entry. Multiple same-store signals are serialized one second apart; Target, Walmart, and Amazon lanes run independently.
+
+The signal card's **Product** button is always the safest manual entry. Direct buttons are enabled only for a desired, enabled, under-cap mission while Autopilot is on and the signal is fresh. Every direct link is reduced to a strict allowlist, bound to the exact mission in extension-owned session storage before navigation, and rechecked in the normal cart/checkout pipeline. If that association cannot be established, Cart Confirm opens the canonical product page instead.
 
 ## Recommended workflow
 
@@ -135,7 +151,7 @@ Or:
 npm run verify
 ```
 
-Verification performs a syntax check and runs the Node test suite, including queue URL reduction, exactly-once schedule receipts, durable submission transitions, action/run budgets, overload escalation, safety migration, first-party seller classification (including Target's labeled-marketplace/absence rule), companion tab-reuse open requests, a jsdom boot of the guided-step UI, and jsdom cart/order-review fixtures for all three retailers. GitHub CI also builds both unsigned Windows artifacts. Tests do not place live orders or guarantee that current retailer selectors are unchanged.
+Verification performs a syntax check and runs the Node test suite, including Discord parsing/history/live routing, encrypted credential refusal paths, strict Amazon/Walmart direct-link sanitization, durable tab context, queue URL reduction, exactly-once schedule receipts, durable submission transitions, action/run budgets, overload escalation, safety migration, first-party seller classification (including Target's labeled-marketplace/absence rule), companion tab-reuse open requests, a jsdom boot of the mission/signal UI, and jsdom cart/order-review fixtures for all three retailers. GitHub CI also builds both unsigned Windows artifacts. Tests do not place live orders, contact Discord, or guarantee that current retailer selectors are unchanged.
 
 ## Privacy and local security
 
@@ -143,6 +159,7 @@ Verification performs a syntax check and runs the Node test suite, including que
 - The extension and app use a random per-install token. The extension pins the first accepted token and rejects later mismatches; app and extension versions must match exactly.
 - The unpacked extension has a deterministic ID. The local server requires a loopback `Host` header (defeating DNS rebinding) and accepts a request only when it carries that exact extension origin, or no origin at all together with the pinned extension-ID header — Chrome omits the `Origin` header on host-permitted extension requests, while readable cross-origin web requests always reveal their true origin and are rejected. All state-changing endpoints additionally require the per-install token.
 - Settings are stored under Electron's local user-data directory.
+- The Discord bot token is not part of settings or runtime JSON. It is written to a separate file only after operating-system encryption succeeds; removing the saved token deletes that encrypted file.
 - Reported page addresses are reduced to origin plus pathname; query strings are discarded.
 - The bounded local ledger contains only milestone names, store/SKU, seller label, observed unit price and final total, quantity/attempt state, query-free paths, and timestamps.
 - The app does not copy or store cookies, passwords, shipping addresses, payment details, CVV values, or order numbers.
@@ -171,13 +188,17 @@ Read the product status reason. Common causes are a third-party seller, seller t
 
 Leave the tab open and wait for the displayed workflow to cool down. Do not repeatedly reload it manually. A retailer-provided `Retry-After` can extend the configured cooldown, and each retailer has an independent circuit.
 
+### Discord signals show `Needs attention`
+
+Check the exact message in the Discord panel. `401` means the bot token was rejected; `403` means the bot cannot view the channel or read history; `404` usually means the copied channel ID is wrong or the bot is not in that server. Confirm Message Content access is enabled in the Developer Portal. A Discord rate limit is honored automatically. Changing channel IDs starts a new history baseline so old messages cannot auto-open.
+
 ### Walmart shows `/qp`
 
 This is Walmart's official purchase queue. Leave the tab open. The first live queue signal in an Autopilot run sends one initial navigation to every other enabled Walmart mission, one second apart; already queued tabs are skipped, and a durable receipt prevents another fan-out during that run. Cart Confirm reads only the embedded Walmart item ID and safe wait state. It deliberately does not call the embedded ticket URL, replay signatures, force refreshes, or skip the queue. Automation resumes only after Walmart redirects an admitted tab to its product flow.
 
 ### Badge shows `UPD` or `PAIR`
 
-`UPD` means the desktop app and unpacked extension versions differ. Version 2.9 adds a one-shot automatic reload: after newer Cart Confirm files replace the files in the same unpacked-extension folder, the installed companion reloads those files by itself and records the transition so it cannot loop. Upgrading from 2.8 or older still needs one final manual reload because those versions do not contain the updater yet. This does not download code from the internet; obtaining a new release still happens through the normal app/package or Git update. Chrome Web Store or managed distribution would be required for unattended remote delivery.
+`UPD` means the desktop app and unpacked extension versions differ. Version 2.9 and later include a one-shot automatic reload: after newer Cart Confirm files replace the files in the same unpacked-extension folder, the installed companion reloads those files by itself and records the transition so it cannot loop. Upgrading from 2.8 or older still needs one final manual reload because those versions do not contain the updater yet. This does not download code from the internet; obtaining a new release still happens through the normal app/package or Git update. Chrome Web Store or managed distribution would be required for unattended remote delivery.
 
 `PAIR` means the locally pinned companion token changed. Verify that only the intended Cart Confirm process is running, then remove and load the unpacked extension again to establish a new first-use pairing.
 

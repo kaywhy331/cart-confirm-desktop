@@ -7,6 +7,7 @@ const {
   dialog,
   ipcMain,
   Notification,
+  safeStorage,
   shell
 } = require("electron");
 const fs = require("node:fs");
@@ -37,7 +38,23 @@ const { findChrome } = require("./lib/chrome-launcher");
 const { checkProductPage } = require("./lib/quiet-monitor");
 const { QUEUE_FANOUT_SPACING_MS, planQueueFanout } = require("./lib/queue-fanout");
 const {
+  DiscordApiError,
+  getDiscordChannelSetup,
+  getDiscordMessages,
+  normalizeSnowflake
+} = require("./lib/discord-client");
+const {
+  clearDiscordToken,
+  hasDiscordToken,
+  loadDiscordToken,
+  saveDiscordToken
+} = require("./lib/discord-credentials");
+const { processDiscordMessageBatch } = require("./lib/discord-ingestion");
+const { upsertSignal } = require("./lib/signal-inbox");
+const { planSignalRoute } = require("./lib/signal-routing");
+const {
   RETAILERS,
+  extractSku,
   parseRetailUrl,
   retailerLabel,
   storeUrl
@@ -53,6 +70,8 @@ const COMPANION_CLAIM_TIMEOUT_MS = 7_000;
 // so they use a short fixed stagger; the configured per-store spacing governs
 // the extension's automatic retry navigation.
 const DESKTOP_OPEN_SPACING_MS = 3_000;
+const DISCORD_POLL_INTERVAL_MS = 2_500;
+const DISCORD_ERROR_RETRY_MS = 10_000;
 
 let mainWindow = null;
 let companionServer = null;
@@ -64,6 +83,13 @@ let events = [];
 let runtimeState = null;
 let startupWasDisarmed = false;
 let schedulerTimer = null;
+let discordPollTimer = null;
+let discordPollInFlight = false;
+let discordToken = "";
+let discordRoleNames = {};
+let discordChannelReady = false;
+let discordNextPollAt = 0;
+let discordConnectionEpoch = 0;
 let configVersion = 1;
 let companionHello = null;
 let serverDiagnostics = {
@@ -93,6 +119,30 @@ function settingsPath() {
 
 function runtimeStatePath() {
   return path.join(app.getPath("userData"), "runtime-state.json");
+}
+
+function discordTokenPath() {
+  return path.join(app.getPath("userData"), "discord-bot-token.bin");
+}
+
+function emptyDiscordRuntime(channelId = "") {
+  return {
+    channelId: String(channelId || "").slice(0, 40),
+    channelName: "",
+    lastMessageId: "",
+    baselineAt: "",
+    lastPollAt: "",
+    lastSignalAt: "",
+    lastError: ""
+  };
+}
+
+function resetDiscordChannel(channelId) {
+  discordConnectionEpoch += 1;
+  discordChannelReady = false;
+  discordRoleNames = {};
+  discordNextPollAt = 0;
+  runtimeState.discord = emptyDiscordRuntime(channelId);
 }
 
 function persistRuntimeState() {
@@ -134,6 +184,9 @@ function loadSettings() {
 function loadPersistedRuntimeState() {
   runtimeState = loadRuntimeState(runtimeStatePath());
   events = runtimeState.events;
+  if (runtimeState.discord.channelId !== settings.discordChannelId) {
+    runtimeState.discord = emptyDiscordRuntime(settings.discordChannelId);
+  }
   storeOverloadUntil.clear();
   for (const [retailer, deadline] of Object.entries(runtimeState.storeOverloadUntil)) {
     if (deadline > Date.now()) storeOverloadUntil.set(retailer, deadline);
@@ -170,6 +223,9 @@ function publicSettings() {
     scheduledOpenEnabled: settings.scheduledOpenEnabled,
     scheduledOpenAt: settings.scheduledOpenAt,
     scheduledRetailer: settings.scheduledRetailer,
+    discordEnabled: settings.discordEnabled,
+    discordChannelId: settings.discordChannelId,
+    discordAutoOpen: settings.discordAutoOpen,
     firstPartyOnly: true
   };
 }
@@ -182,6 +238,26 @@ function snapshot() {
     serverDiagnostics,
     productStatuses,
     events,
+    signals: (runtimeState?.signals || []).map((signal) => ({
+      ...signal,
+      desired: settings.products.some((product) => product.id === signal.productId)
+    })),
+    discord: {
+      enabled: settings.discordEnabled,
+      configured: hasDiscordToken(discordTokenPath()),
+      credentialUsable: Boolean(discordToken),
+      connected: Boolean(
+        settings.discordEnabled
+        && discordToken
+        && runtimeState?.discord?.lastPollAt
+        && !runtimeState?.discord?.lastError
+      ),
+      channelId: settings.discordChannelId,
+      channelName: runtimeState?.discord?.channelName || "",
+      lastPollAt: runtimeState?.discord?.lastPollAt || "",
+      lastSignalAt: runtimeState?.discord?.lastSignalAt || "",
+      lastError: runtimeState?.discord?.lastError || ""
+    },
     retailers: Object.fromEntries(
       Object.values(RETAILERS).map((retailer) => [retailer.id, {
         id: retailer.id,
@@ -279,6 +355,16 @@ function openPageInChrome(url) {
 
 async function openExternalRetailer(url, options = {}) {
   const { parsed, retailer } = parseRetailUrl(url);
+  const productId = String(options.productId || "").slice(0, 80);
+  const contextRequired = options.requireCompanionContext === true;
+  let fallbackUrl = parsed.href;
+  if (contextRequired) {
+    const fallback = parseRetailUrl(options.fallbackUrl);
+    if (fallback.retailer !== retailer) {
+      throw new Error("A direct store entry requires a same-store product-page fallback.");
+    }
+    fallbackUrl = fallback.parsed.href;
+  }
   const requestedSpacing = Number(options.spacingMs);
   const spacingMs = Number.isFinite(requestedSpacing) && requestedSpacing >= QUEUE_FANOUT_SPACING_MS
     ? requestedSpacing
@@ -300,14 +386,30 @@ async function openExternalRetailer(url, options = {}) {
       // Ask a connected companion to reuse an existing store tab first; a
       // request nobody claims falls back to opening a fresh page.
       if (companionTabLikely(retailer)) {
-        const request = openRequests.add(retailer, parsed.href);
+        const request = openRequests.add(retailer, parsed.href, { productId, contextRequired });
         if (await openRequests.waitForClaim(request.id, COMPANION_CLAIM_TIMEOUT_MS)) {
-          return { retailer, url: parsed.href, via: "companion-tab" };
+          return {
+            retailer,
+            url: parsed.href,
+            via: "companion-tab",
+            contextAttached: Boolean(productId),
+            directFallback: false
+          };
         }
       }
       if (taskEpoch !== stopEpoch) return { retailer, url: parsed.href, via: "cancelled" };
-      const via = await openPageInChrome(parsed.href);
-      return { retailer, url: parsed.href, via };
+      // Direct Amazon and Walmart action URLs can redirect before a content script has a chance
+      // to identify the mission. Without a companion claim, open the canonical
+      // product page so browser verification remains tied to the right ASIN.
+      const launchUrl = contextRequired ? fallbackUrl : parsed.href;
+      const via = await openPageInChrome(launchUrl);
+      return {
+        retailer,
+        url: launchUrl,
+        via,
+        contextAttached: false,
+        directFallback: contextRequired && launchUrl !== parsed.href
+      };
     }, { spacingMs });
     return result?.cancelled ? { retailer, url: parsed.href, via: "cancelled" } : result;
   } finally {
@@ -335,9 +437,26 @@ async function openProduct(productId, options = {}) {
     ? findProduct(productId)
     : settings.products.find((candidate) => candidate.enabled);
   if (!product) throw new Error("Enable at least one product first.");
+  const requestedUrl = String(options.urlOverride || product.productUrl);
+  const requested = parseRetailUrl(requestedUrl);
+  const requestedSku = extractSku(requested.retailer, requested.parsed.href);
+  if (requested.retailer !== product.retailer || requestedSku !== product.sku) {
+    throw new Error("The requested signal entry does not match this mission's store and product ID.");
+  }
   resumeMonitoring();
-  const opened = await openExternalRetailer(product.productUrl, options);
-  return { productId: product.id, via: opened.via };
+  const directEntry = requested.parsed.href !== product.productUrl;
+  const opened = await openExternalRetailer(requested.parsed.href, {
+    ...options,
+    productId: product.id,
+    requireCompanionContext: directEntry,
+    fallbackUrl: product.productUrl
+  });
+  return {
+    productId: product.id,
+    via: opened.via,
+    entry: opened.directFallback ? "product" : directEntry ? "direct" : "product",
+    directFallback: opened.directFallback === true
+  };
 }
 
 async function openBuyList(retailer = "", options = {}) {
@@ -352,7 +471,7 @@ async function openBuyList(retailer = "", options = {}) {
 
   resumeMonitoring();
   const results = await Promise.all(enabledProducts.map((product) => (
-    openExternalRetailer(product.productUrl, options)
+    openExternalRetailer(product.productUrl, { ...options, productId: product.id })
   )));
   return {
     count: results.filter((result) => !["already-queued", "cancelled"].includes(result.via)).length,
@@ -504,6 +623,213 @@ function triggerQueueFanout(event) {
     }
   });
   return decision;
+}
+
+function updateSignalRecord(signalId, changes) {
+  const current = runtimeState?.signals?.find((signal) => signal.id === signalId);
+  if (!current) return;
+  runtimeState.signals = upsertSignal(runtimeState.signals, { ...current, ...changes });
+  persistRuntimeState();
+  broadcast();
+}
+
+function signalSummary(signal) {
+  const details = [];
+  if (Number.isFinite(signal.price)) details.push(`$${signal.price.toFixed(2)}`);
+  if (Number.isInteger(signal.stock)) details.push(`stock ${signal.stock}`);
+  if (Number.isInteger(signal.orderLimit)) details.push(`limit ${signal.orderLimit}`);
+  return details.length ? details.join(" · ") : "restock signal";
+}
+
+function handleDiscordSignal(signal, historical) {
+  if (runtimeState.signals.some((candidate) => candidate.id === signal.id)) return;
+  const route = planSignalRoute({ signal, settings, historical, now: Date.now() });
+  const record = {
+    ...signal,
+    autoOpenState: route.state,
+    note: route.note
+  };
+  runtimeState.signals = upsertSignal(runtimeState.signals, record);
+  runtimeState.discord.lastSignalAt = signal.observedAt;
+  persistRuntimeState();
+  broadcast();
+
+  if (historical || settings.monitoringPaused) return;
+  const label = signal.title || `${retailerLabel(signal.retailer)} ${signal.sku}`;
+  if (route.state === "new-product") {
+    notifyOnce(
+      `discord-new:${signal.id}`,
+      `${retailerLabel(signal.retailer)} signal: new product`,
+      `${label} (${signalSummary(signal)}). Add it as desired to react automatically next time.`,
+      true
+    );
+    return;
+  }
+  if (route.state !== "pending") {
+    notifyOnce(
+      `discord-recorded:${signal.id}`,
+      `${retailerLabel(signal.retailer)} signal recorded`,
+      `${label} matched, but no page was opened: ${route.note}`,
+      true
+    );
+    return;
+  }
+
+  notifyOnce(
+    `discord-match:${signal.id}`,
+    `${retailerLabel(signal.retailer)} desired restock`,
+    `${label} matched (${signalSummary(signal)}). Opening ${route.entry === "product"
+      ? "the product page"
+      : route.entry === "amazon-atc"
+        ? "Amazon Add to Cart"
+        : route.entry === "amazon-buy-now"
+          ? "Amazon Buy Now"
+          : "Walmart Buy Now"}.`,
+    true
+  );
+  void openProduct(route.product.id, {
+    urlOverride: route.url,
+    spacingMs: QUEUE_FANOUT_SPACING_MS,
+    actionKind: `discord-signal-${route.entry}`
+  }).then((result) => {
+    if (result.via === "cancelled") {
+      updateSignalRecord(signal.id, {
+        autoOpenState: "disabled",
+        note: "Stop cancelled this signal opening before a store page was opened."
+      });
+      return;
+    }
+    updateSignalRecord(signal.id, {
+      autoOpenState: "opened",
+      autoOpenedAt: new Date().toISOString(),
+      note: result.directFallback
+        ? "The direct store entry needed browser context that was not available, so the canonical product page opened for full in-tab verification."
+        : `${route.note} Opened via ${result.via}.`
+    });
+  }).catch((error) => {
+    updateSignalRecord(signal.id, {
+      autoOpenState: "failed",
+      note: String(error?.message || "The browser entry failed.").slice(0, 180)
+    });
+  });
+}
+
+async function ensureDiscordChannelSetup(epoch, token, channelId) {
+  if (discordChannelReady) return;
+  const setup = await getDiscordChannelSetup(token, channelId);
+  if (
+    epoch !== discordConnectionEpoch
+    || token !== discordToken
+    || channelId !== settings.discordChannelId
+  ) return;
+  discordRoleNames = setup.roleNames;
+  discordChannelReady = true;
+  runtimeState.discord.channelId = setup.channelId;
+  runtimeState.discord.channelName = setup.channelName;
+}
+
+async function pollDiscordSignals(options = {}) {
+  if (
+    discordPollInFlight
+    || !settings?.discordEnabled
+    || !discordToken
+    || Date.now() < discordNextPollAt
+  ) return;
+  discordPollInFlight = true;
+  const pollEpoch = discordConnectionEpoch;
+  const token = discordToken;
+  const channelId = settings.discordChannelId;
+  try {
+    await ensureDiscordChannelSetup(pollEpoch, token, channelId);
+    if (
+      pollEpoch !== discordConnectionEpoch
+      || token !== discordToken
+      || channelId !== settings.discordChannelId
+    ) return;
+    const cursor = runtimeState.discord.lastMessageId;
+    const historical = !cursor && !runtimeState.discord.baselineAt;
+    const messages = await getDiscordMessages(token, channelId, {
+      after: cursor || undefined,
+      limit: historical ? 50 : 100
+    });
+    if (
+      pollEpoch !== discordConnectionEpoch
+      || token !== discordToken
+      || channelId !== settings.discordChannelId
+    ) return;
+    const batch = processDiscordMessageBatch(messages, runtimeState.discord, {
+      roleNames: discordRoleNames,
+      now: Date.now()
+    });
+    for (const signal of batch.signals) handleDiscordSignal(signal, batch.historical);
+    runtimeState.discord.lastMessageId = batch.lastMessageId;
+    runtimeState.discord.baselineAt = batch.baselineAt;
+    runtimeState.discord.lastPollAt = batch.lastPollAt;
+    runtimeState.discord.lastError = "";
+    discordNextPollAt = 0;
+    persistRuntimeState();
+    if (!options.silent) broadcast();
+  } catch (error) {
+    if (
+      pollEpoch !== discordConnectionEpoch
+      || token !== discordToken
+      || channelId !== settings.discordChannelId
+    ) return;
+    const retryMs = error instanceof DiscordApiError && error.retryAfterMs
+      ? error.retryAfterMs
+      : DISCORD_ERROR_RETRY_MS;
+    discordNextPollAt = Date.now() + retryMs;
+    runtimeState.discord.lastError = String(error?.message || "Discord signal polling failed.").slice(0, 240);
+    persistRuntimeState();
+    broadcast();
+  } finally {
+    discordPollInFlight = false;
+  }
+}
+
+function startDiscordPoller() {
+  if (discordPollTimer) clearInterval(discordPollTimer);
+  discordPollTimer = setInterval(() => void pollDiscordSignals(), DISCORD_POLL_INTERVAL_MS);
+  void pollDiscordSignals();
+}
+
+function findSignal(signalId) {
+  return runtimeState?.signals?.find((signal) => signal.id === String(signalId || "")) || null;
+}
+
+async function openSignal(signalId, requestedEntry = "product") {
+  const signal = findSignal(signalId);
+  if (!signal) throw new Error("That restock signal is no longer in the inbox.");
+  const product = settings.products.find((candidate) => candidate.id === signal.productId);
+  if (!product) {
+    if (requestedEntry !== "product") throw new Error("Add this product as a desired mission before using a direct store entry.");
+    resumeMonitoring();
+    const opened = await openExternalRetailer(signal.productUrl, { actionKind: "discord-signal-manual" });
+    return { productId: "", via: opened.via };
+  }
+  if (requestedEntry === "product") return openProduct(product.id);
+  const route = planSignalRoute({
+    signal,
+    settings: {
+      ...settings,
+      monitoringPaused: false,
+      discordAutoOpen: true,
+      products: settings.products.map((candidate) => (
+        candidate.id === product.id
+          ? { ...candidate, signalAutoOpen: true, signalEntry: requestedEntry }
+          : candidate
+      ))
+    },
+    now: Date.now()
+  });
+  if (route.entry !== requestedEntry) {
+    throw new Error("Direct entry requires Autopilot, a fresh under-cap price, a matching sanitized link, and Amazon.com as seller for Amazon. Open the product page instead.");
+  }
+  return openProduct(product.id, {
+    urlOverride: route.url,
+    spacingMs: QUEUE_FANOUT_SPACING_MS,
+    actionKind: `discord-signal-manual-${requestedEntry}`
+  });
 }
 
 function handleCompanionEvent(rawEvent) {
@@ -785,6 +1111,7 @@ function registerIpc() {
 
   ipcMain.handle("cart-assist:save-settings", (_event, nextSettings) => {
     const wasArmed = settings.automationEnabled;
+    const previousDiscordChannelId = settings.discordChannelId;
     let normalized = normalizeSettings(nextSettings, settings);
     assertSafeArmedUpdate(settings, normalized);
     if (normalized.scheduledOpenEnabled && new Date(normalized.scheduledOpenAt).getTime() <= Date.now()) {
@@ -799,6 +1126,9 @@ function registerIpc() {
       normalized = { ...normalized, automationRunId: crypto.randomUUID(), monitoringPaused: false };
     }
     settings = normalized;
+    if (settings.discordChannelId !== previousDiscordChannelId) {
+      resetDiscordChannel(settings.discordChannelId);
+    }
     persistSettings();
     configVersion += 1;
     status = createInitialStatus();
@@ -836,6 +1166,90 @@ function registerIpc() {
   ipcMain.handle("cart-assist:open-buy-list", () => openBuyList());
   ipcMain.handle("cart-assist:open-cart", (_event, retailer) => openStorePage(retailer, "cartUrl"));
   ipcMain.handle("cart-assist:open-orders", (_event, retailer) => openStorePage(retailer, "ordersUrl"));
+
+  ipcMain.handle("cart-assist:discord-connect", async (_event, input) => {
+    if (
+      !safeStorage.isEncryptionAvailable()
+      || safeStorage.getSelectedStorageBackend?.() === "basic_text"
+    ) {
+      throw new Error("Secure operating-system credential storage is unavailable. Cart Confirm will not save a Discord token in plaintext.");
+    }
+    const channelId = normalizeSnowflake(input?.channelId || settings.discordChannelId);
+    const token = String(input?.token || "").trim() || discordToken;
+    if (!token) throw new Error("Paste an official Discord bot token to connect.");
+
+    // A later Connect, Disconnect, or Forget action supersedes this request.
+    // Guard again after Discord responds so a slow validation cannot restore a
+    // credential the user removed while it was in flight.
+    const connectEpoch = ++discordConnectionEpoch;
+
+    // Validate channel access before changing the active connection. Neither
+    // the token nor Discord response bodies are ever written to the feed.
+    const setup = await getDiscordChannelSetup(token, channelId);
+    if (connectEpoch !== discordConnectionEpoch) {
+      throw new Error("That Discord connection request was cancelled before it completed.");
+    }
+    saveDiscordToken(discordTokenPath(), token, safeStorage);
+
+    const channelChanged = channelId !== settings.discordChannelId;
+    if (channelChanged) runtimeState.discord = emptyDiscordRuntime(channelId);
+    discordToken = token;
+    discordRoleNames = setup.roleNames;
+    discordChannelReady = true;
+    discordNextPollAt = 0;
+    settings = normalizeSettings({
+      ...settings,
+      discordEnabled: true,
+      discordChannelId: channelId
+    }, settings);
+    runtimeState.discord.channelId = channelId;
+    runtimeState.discord.channelName = setup.channelName;
+    runtimeState.discord.lastError = "";
+    persistSettings();
+    persistRuntimeState();
+    broadcast();
+    await pollDiscordSignals();
+    return snapshot();
+  });
+
+  ipcMain.handle("cart-assist:discord-disconnect", () => {
+    discordConnectionEpoch += 1;
+    discordChannelReady = false;
+    discordRoleNames = {};
+    discordNextPollAt = 0;
+    settings = { ...settings, discordEnabled: false };
+    runtimeState.discord.lastError = "";
+    persistSettings();
+    persistRuntimeState();
+    broadcast();
+    return snapshot();
+  });
+
+  ipcMain.handle("cart-assist:discord-forget", () => {
+    discordConnectionEpoch += 1;
+    clearDiscordToken(discordTokenPath());
+    discordToken = "";
+    discordChannelReady = false;
+    discordRoleNames = {};
+    discordNextPollAt = 0;
+    settings = { ...settings, discordEnabled: false };
+    runtimeState.discord.lastError = "";
+    persistSettings();
+    persistRuntimeState();
+    broadcast();
+    return snapshot();
+  });
+
+  ipcMain.handle("cart-assist:discord-clear-signals", () => {
+    runtimeState.signals = [];
+    persistRuntimeState();
+    broadcast();
+    return snapshot();
+  });
+
+  ipcMain.handle("cart-assist:open-signal", (_event, signalId, entry) => (
+    openSignal(signalId, String(entry || "product"))
+  ));
 
   ipcMain.handle("cart-assist:show-extension", () => {
     shell.showItemInFolder(path.join(extensionPath(), "manifest.json"));
@@ -1138,6 +1552,13 @@ if (!gotLock) {
     app.setAppUserModelId("com.kevinyang.cartconfirm");
     loadSettings();
     loadPersistedRuntimeState();
+    discordToken = loadDiscordToken(discordTokenPath(), safeStorage);
+    if (hasDiscordToken(discordTokenPath()) && !discordToken) {
+      settings = { ...settings, discordEnabled: false };
+      runtimeState.discord.lastError = "The saved Discord token could not be decrypted on this computer. Paste a replacement token or remove the saved token.";
+      persistSettings();
+      persistRuntimeState();
+    }
     registerIpc();
 
     try {
@@ -1148,6 +1569,7 @@ if (!gotLock) {
 
     createWindow();
     startScheduler();
+    startDiscordPoller();
     app.on("activate", () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow();
     });
@@ -1160,5 +1582,6 @@ app.on("window-all-closed", () => {
 
 app.on("before-quit", () => {
   if (schedulerTimer) clearInterval(schedulerTimer);
+  if (discordPollTimer) clearInterval(discordPollTimer);
   if (companionServer) companionServer.close();
 });

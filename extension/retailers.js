@@ -206,8 +206,8 @@
     const text = String(value || "");
     const patterns = {
       target: /(?:\/|-)A-(\d{6,12})(?:[/?#]|$)/i,
-      walmart: /\/ip\/(?:[^/?#]+\/)?(\d{5,20})(?:[/?#]|$)/i,
-      amazon: /\/(?:dp|gp\/product|gp\/aw\/d)\/([A-Z0-9]{10})(?:[/?#]|$)/i
+      walmart: /\/ip\/(?:[^/?#]+\/)?(\d{5,20})(?:[/?#]|$)|[?&]items=(\d{5,20})(?:&|$)/i,
+      amazon: /\/(?:dp|gp\/product|gp\/aw\/d)\/([A-Z0-9]{10})(?:[/?#]|$)|[?&]asin(?:\.1)?=([A-Z0-9]{10})(?:&|$)/i
     };
     if (retailer === "walmart") {
       const queued = parseWalmartQueue(text);
@@ -215,7 +215,8 @@
     }
     const match = text.match(patterns[retailer]);
     if (!match) return "";
-    return retailer === "amazon" ? match[1].toUpperCase() : match[1];
+    const sku = match[1] || match[2] || "";
+    return retailer === "amazon" ? sku.toUpperCase() : sku;
   }
 
   function isFirstPartyText(retailer, value) {

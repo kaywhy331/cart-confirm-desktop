@@ -18,6 +18,9 @@
   let scanTimer = null;
   let retryTimer = null;
   let scanning = false;
+  let backgroundActiveProductId = "";
+  let backgroundActiveEntry = "product";
+  let lastContextSyncProductId = "";
 
   const retailer = Retailers.detectRetailer(location.href);
   const adapter = Retailers.getAdapter(retailer);
@@ -85,19 +88,40 @@
 
   function activeProduct() {
     const direct = storeProducts().find((product) => adapter.productMatches(product, location.href));
-    if (direct) return direct;
-    const activeId = sessionStorage.getItem(ACTIVE_PRODUCT_KEY);
+    if (direct) {
+      setActiveProduct(direct);
+      return direct;
+    }
+    const activeId = backgroundActiveProductId || sessionStorage.getItem(ACTIVE_PRODUCT_KEY);
     return storeProducts().find((product) => product.id === activeId) || null;
   }
 
   function setActiveProduct(product) {
+    const alreadyBound = backgroundActiveProductId === product.id;
     sessionStorage.setItem(ACTIVE_PRODUCT_KEY, product.id);
+    if (alreadyBound) {
+      lastContextSyncProductId = product.id;
+      return;
+    }
+    backgroundActiveProductId = product.id;
+    backgroundActiveEntry = "product";
+    if (lastContextSyncProductId !== product.id) {
+      lastContextSyncProductId = product.id;
+      void runtimeMessage({
+        type: "CART_CONFIRM_SET_TAB_PRODUCT_CONTEXT",
+        productId: product.id
+      });
+    }
   }
 
   function clearActiveProduct(product) {
     if (sessionStorage.getItem(ACTIVE_PRODUCT_KEY) === product.id) {
       sessionStorage.removeItem(ACTIVE_PRODUCT_KEY);
     }
+    if (backgroundActiveProductId === product.id) backgroundActiveProductId = "";
+    backgroundActiveEntry = "product";
+    lastContextSyncProductId = "";
+    void runtimeMessage({ type: "CART_CONFIRM_CLEAR_TAB_PRODUCT_CONTEXT" });
   }
 
   async function proofFor(product) {
@@ -127,6 +151,19 @@
         source
       }
     });
+  }
+
+  function hasDirectEntryContext(product) {
+    return backgroundActiveProductId === product.id && backgroundActiveEntry !== "product";
+  }
+
+  async function consumeDirectEntryContext(product) {
+    if (!hasDirectEntryContext(product)) return;
+    const result = await runtimeMessage({
+      type: "CART_CONFIRM_CONSUME_DIRECT_ENTRY_CONTEXT",
+      productId: product.id
+    });
+    if (result.ok) backgroundActiveEntry = "product";
   }
 
   async function nextAttempt(product) {
@@ -622,6 +659,7 @@
     }
     const savedProof = await saveProof(product, safeLine, "cart", true, inventory);
     if (!savedProof.ok) return;
+    await consumeDirectEntryContext(product);
 
     const claim = await claimProduct(product);
     if (!claim.ok) {
@@ -734,6 +772,16 @@
         reason: "manual-action-required",
         message: "Order submission may have been sent. Automatic resubmission remains locked until a confirmation or explicit store failure is observed."
       }, `submit-uncertain:${product.id}:${state.submission.updatedAt}`, 60_000);
+      return;
+    }
+
+    // Sanitized Buy Now links may land directly at checkout. They are useful
+    // for getting into the retailer flow quickly, but they do not waive the
+    // cart proof requirement: visit the real cart once, independently verify
+    // its sole line, quantity, seller and price, then return through checkout.
+    if (hasDirectEntryContext(product) && !await proofFor(product)) {
+      if (!await requireStoreAction(product, "direct-entry-cart-verification")) return;
+      location.assign(adapter.cartUrl);
       return;
     }
 
@@ -887,6 +935,10 @@
       seen.clear();
       if (!config.automationEnabled) clearRetry();
     }
+    const context = await runtimeMessage({ type: "CART_CONFIRM_GET_TAB_PRODUCT_CONTEXT" });
+    backgroundActiveProductId = context.ok ? String(context.productId || "") : "";
+    backgroundActiveEntry = context.ok ? String(context.entry || "product") : "product";
+    if (backgroundActiveProductId) sessionStorage.setItem(ACTIVE_PRODUCT_KEY, backgroundActiveProductId);
     scheduleScan(0);
   }
 

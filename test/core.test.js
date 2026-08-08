@@ -96,6 +96,10 @@ test("normalizes a multi-store buy list and preserves a private token", () => {
   assert.equal(result.storeNavigationIntervalSeconds, 25);
   assert.equal(result.overloadCooldownSeconds, 600);
   assert.equal(result.scheduledRetailer, "amazon");
+  assert.equal(result.discordEnabled, false);
+  assert.equal(result.discordAutoOpen, true);
+  assert.equal(result.products[2].signalEntry, "product");
+  assert.equal(result.products[2].signalAutoOpen, true);
 });
 
 test("migrates the original Target-only settings", () => {
@@ -117,6 +121,17 @@ test("rejects unsafe or ambiguous product settings", () => {
   assert.throws(() => normalizeProduct({ ...PRODUCTS[0], maxPrice: -1 }), /Maximum unit price/);
   assert.throws(() => normalizeProduct({ ...PRODUCTS[0], action: "buy-now" }), /Add to cart/);
   assert.throws(() => normalizeProduct({ ...PRODUCTS[0], fulfillmentMode: "drone" }), /shipping, pickup/);
+  assert.throws(() => normalizeProduct({ ...PRODUCTS[0], signalEntry: "amazon-atc" }), /require an Amazon/);
+  assert.throws(() => normalizeProduct({ ...PRODUCTS[2], action: "watch", signalEntry: "amazon-atc" }), /requires an Add to cart/);
+  assert.throws(() => normalizeProduct({ ...PRODUCTS[2], action: "cart", signalEntry: "amazon-buy-now" }), /requires a checkout-review/);
+  assert.throws(() => normalizeProduct({ ...PRODUCTS[1], signalEntry: "amazon-buy-now" }), /require an Amazon/);
+  assert.throws(() => normalizeProduct({ ...PRODUCTS[1], signalEntry: "walmart-buy-now" }), /requires a checkout-review/);
+  assert.equal(normalizeProduct({
+    ...PRODUCTS[1],
+    action: "review",
+    maxOrderTotal: 75,
+    signalEntry: "walmart-buy-now"
+  }).signalEntry, "walmart-buy-now");
   assert.throws(
     () => normalizeSettings({ products: [PRODUCTS[0], PRODUCTS[0]] }),
     /appears more than once/
@@ -125,6 +140,8 @@ test("rejects unsafe or ambiguous product settings", () => {
   assert.throws(() => normalizeSettings({ products: PRODUCTS, storeNavigationIntervalSeconds: 1 }), /navigation interval/);
   assert.throws(() => normalizeSettings({ products: PRODUCTS, overloadCooldownSeconds: 1 }), /Overload cooldown/);
   assert.throws(() => normalizeSettings({ products: PRODUCTS, scheduledRetailer: "other" }), /single schedule/);
+  assert.throws(() => normalizeSettings({ products: PRODUCTS, discordEnabled: true }), /Discord channel ID/);
+  assert.throws(() => normalizeSettings({ products: PRODUCTS, discordChannelId: "not-a-channel" }), /valid Discord channel ID/);
   assert.throws(
     () => normalizeSettings({ products: PRODUCTS, scheduledOpenEnabled: true, scheduledRetailer: "amazon" }),
     /date and time/

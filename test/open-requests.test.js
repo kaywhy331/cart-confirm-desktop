@@ -17,6 +17,25 @@ test("a pending open request can be claimed exactly once", () => {
   assert.deepEqual(store.pending(), []);
 });
 
+test("a pending request carries only its bounded product context", () => {
+  const store = createOpenRequestStore({ now: () => 1_000 });
+  const request = store.add(
+    "amazon",
+    "https://www.amazon.com/gp/aws/cart/add.html?ASIN.1=B0GG16Q4X1",
+    { productId: "amazon:B0GG16Q4X1", contextRequired: true }
+  );
+
+  assert.deepEqual(store.pending()[0], {
+    id: request.id,
+    retailer: "amazon",
+    url: "https://www.amazon.com/gp/aws/cart/add.html?ASIN.1=B0GG16Q4X1",
+    productId: "amazon:B0GG16Q4X1",
+    contextRequired: true,
+    createdAt: 1_000
+  });
+  assert.equal(store.claim(request.id).productId, "amazon:B0GG16Q4X1");
+});
+
 test("waitForClaim resolves true when the companion claims the request", async () => {
   const store = createOpenRequestStore({
     now: () => 1_000,

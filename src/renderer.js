@@ -33,6 +33,18 @@ const elements = {
   storeShortcut: document.getElementById("storeShortcut"),
   openCartButton: document.getElementById("openCartButton"),
   openOrdersButton: document.getElementById("openOrdersButton"),
+  signalPanel: document.getElementById("signalPanel"),
+  discordState: document.getElementById("discordState"),
+  discordHint: document.getElementById("discordHint"),
+  discordBotToken: document.getElementById("discordBotToken"),
+  discordChannelId: document.getElementById("discordChannelId"),
+  discordConnectButton: document.getElementById("discordConnectButton"),
+  discordDisconnectButton: document.getElementById("discordDisconnectButton"),
+  discordForgetButton: document.getElementById("discordForgetButton"),
+  discordAutoOpen: document.getElementById("discordAutoOpen"),
+  signalCount: document.getElementById("signalCount"),
+  clearSignalsButton: document.getElementById("clearSignalsButton"),
+  signalList: document.getElementById("signalList"),
   schedulePanel: document.getElementById("schedulePanel"),
   scheduleNext: document.getElementById("scheduleNext"),
   scheduleCoverage: document.getElementById("scheduleCoverage"),
@@ -247,7 +259,10 @@ function globalSettings(products) {
     overloadCooldownSeconds: Number(elements.overloadCooldownSeconds.value),
     scheduledOpenEnabled: false,
     scheduledRetailer: currentSnapshot?.settings?.scheduledRetailer || "target",
-    scheduledOpenAt: ""
+    scheduledOpenAt: "",
+    discordEnabled: Boolean(currentSnapshot?.settings?.discordEnabled),
+    discordChannelId: currentSnapshot?.settings?.discordChannelId || "",
+    discordAutoOpen: currentSnapshot?.settings?.discordAutoOpen !== false
   };
 }
 
@@ -348,12 +363,17 @@ function buildViewCard(product, status) {
   view(card, "store").textContent = STORE_LABELS[product.retailer];
   view(card, "title").textContent = productLabel(product);
 
-  const subParts = [`$${Math.round(product.maxPrice)} cap`, `×${product.quantity}`];
-  if (["review", "checkout"].includes(product.action)) subParts.push(`total cap $${Math.round(product.maxOrderTotal)}`);
+  const subParts = [`$${Number(product.maxPrice).toFixed(2)} cap`, `×${product.quantity}`];
+  if (["review", "checkout"].includes(product.action)) subParts.push(`total cap $${Number(product.maxOrderTotal).toFixed(2)}`);
   if (product.openAt) {
     subParts.push(`opens ${new Date(product.openAt).toLocaleString([], { dateStyle: "medium", timeStyle: "short" })}`);
   }
   if (product.alertLevel === "alarm") subParts.push("🔔 alarm");
+  subParts.push(product.signalAutoOpen === false
+    ? "signals record only"
+    : product.signalEntry && product.signalEntry !== "product"
+      ? product.signalEntry.replaceAll("-", " ")
+      : "signals open product");
   view(card, "sub").textContent = subParts.join(" · ");
 
   view(card, "action").textContent = ACTION_LABELS[product.action] || product.action;
@@ -427,18 +447,25 @@ function buildEditCard(product) {
   field(card, "title").value = product?.title || "";
   field(card, "productUrl").value = product?.productUrl || "";
   field(card, "sku").value = product?.sku || "";
-  field(card, "maxPrice").value = product ? String(Math.round(Number(product.maxPrice || 0))) : "";
-  field(card, "maxOrderTotal").value = String(Math.round(Number(product?.maxOrderTotal || 0)));
+  field(card, "maxPrice").value = product ? String(Number(product.maxPrice || 0)) : "";
+  field(card, "maxOrderTotal").value = String(Number(product?.maxOrderTotal || 0));
   field(card, "quantity").value = product?.quantity || 1;
   field(card, "action").value = product?.action || "watch";
   field(card, "alertLevel").value = product?.alertLevel || "standard";
   field(card, "fulfillmentMode").value = product?.fulfillmentMode || "manual";
+  field(card, "signalEntry").value = product?.signalEntry || "product";
+  field(card, "signalAutoOpen").checked = product ? product.signalAutoOpen !== false : true;
   field(card, "openAt").value = toLocalInputValue(product?.openAt);
   field(card, "enabled").checked = product ? product.enabled !== false : true;
   updateEditStore(card);
 
   const advanced = card.querySelector(".advanced-fields");
-  advanced.open = Boolean(product && (["review", "checkout"].includes(product.action) || Number(product.maxOrderTotal) > 0));
+  advanced.open = Boolean(product && (
+    ["review", "checkout"].includes(product.action)
+    || Number(product.maxOrderTotal) > 0
+    || (product.signalEntry || "product") !== "product"
+    || product.signalAutoOpen === false
+  ));
 
   field(card, "retailer").addEventListener("change", () => updateEditStore(card));
   field(card, "productUrl").addEventListener("change", () => {
@@ -461,6 +488,7 @@ function buildEditCard(product) {
   });
   field(card, "action").addEventListener("change", () => {
     if (["review", "checkout"].includes(field(card, "action").value)) advanced.open = true;
+    updateSignalEntryOptions(card);
   });
 
   card.querySelector(".mission-done").addEventListener("click", () => void finishEdit(card));
@@ -493,6 +521,22 @@ function updateEditStore(card) {
   const skuInput = field(card, "sku");
   skuInput.placeholder = retailer === "amazon" ? "B0ABC12345" : "Auto-filled from the link";
   skuInput.inputMode = retailer === "amazon" ? "text" : "numeric";
+  updateSignalEntryOptions(card);
+}
+
+function updateSignalEntryOptions(card) {
+  const retailer = field(card, "retailer").value;
+  const action = field(card, "action").value;
+  const select = field(card, "signalEntry");
+  const allowed = new Set(["product"]);
+  if (retailer === "walmart" && ["review", "checkout"].includes(action)) allowed.add("walmart-buy-now");
+  if (retailer === "amazon" && action !== "watch") allowed.add("amazon-atc");
+  if (retailer === "amazon" && ["review", "checkout"].includes(action)) allowed.add("amazon-buy-now");
+  for (const option of select.options) {
+    option.hidden = !allowed.has(option.value);
+    option.disabled = !allowed.has(option.value);
+  }
+  if (!allowed.has(select.value)) select.value = "product";
 }
 
 function reportInvalid(input) {
@@ -517,6 +561,8 @@ function collectMission(card) {
     action: field(card, "action").value,
     alertLevel: field(card, "alertLevel").value,
     fulfillmentMode: field(card, "fulfillmentMode").value,
+    signalAutoOpen: field(card, "signalAutoOpen").checked,
+    signalEntry: field(card, "signalEntry").value,
     enabled: field(card, "enabled").checked
   };
 }
@@ -548,7 +594,7 @@ async function finishEdit(card) {
   }
 }
 
-async function startEdit(product) {
+async function startEdit(product, seed = null) {
   if (editingId) {
     setMessage("Finish the open mission editor first (Done or Cancel).", "error");
     return;
@@ -564,7 +610,7 @@ async function startEdit(product) {
     }
   }
   editingId = product ? product.id : "new";
-  editCardNode = buildEditCard(product);
+  editCardNode = buildEditCard(product || seed);
   renderMissions();
   editCardNode.querySelector("[data-field='productUrl']").focus();
 }
@@ -884,6 +930,201 @@ function renderEvents(allEvents) {
   }));
 }
 
+// --- Discord connection and restock signal inbox ---
+
+function signalStateLabel(signal) {
+  const labels = {
+    historical: "History",
+    "new-product": "New product",
+    disabled: "Recorded",
+    stale: "Stale",
+    pending: "Opening",
+    opened: "Opened",
+    failed: "Open failed"
+  };
+  return labels[signal.autoOpenState] || "Recorded";
+}
+
+function freshSignal(signal) {
+  const observedAt = new Date(signal.observedAt).getTime();
+  return Number.isFinite(observedAt) && Date.now() - observedAt <= 2 * 60_000;
+}
+
+function signalMissionSeed(signal) {
+  const price = Number(signal.price);
+  return {
+    retailer: signal.retailer,
+    title: signal.title || `${STORE_LABELS[signal.retailer]} ${signal.sku}`,
+    productUrl: signal.productUrl,
+    sku: signal.sku,
+    maxPrice: Number.isFinite(price) && price > 0 ? price : 0,
+    maxOrderTotal: 0,
+    quantity: 1,
+    action: "watch",
+    alertLevel: "standard",
+    fulfillmentMode: "manual",
+    signalAutoOpen: true,
+    signalEntry: "product",
+    openAt: "",
+    enabled: true
+  };
+}
+
+async function addSignalAsMission(signal) {
+  await startEdit(null, signalMissionSeed(signal));
+  editCardNode?.scrollIntoView?.({ behavior: "smooth", block: "center" });
+}
+
+function signalActionButton(label, className = "ghost") {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = `button ${className} compact`;
+  button.textContent = label;
+  return button;
+}
+
+function buildSignalCard(signal) {
+  const card = document.createElement("article");
+  card.className = `signal-card ${signal.desired ? "desired" : "new"}`;
+  card.dataset.retailer = signal.retailer;
+
+  const top = document.createElement("div");
+  top.className = "signal-card-top";
+  const identity = document.createElement("div");
+  const store = document.createElement("span");
+  store.className = "store-name";
+  store.textContent = STORE_LABELS[signal.retailer] || signal.retailer;
+  const title = document.createElement("strong");
+  title.textContent = signal.title || `${STORE_LABELS[signal.retailer]} ${signal.sku}`;
+  identity.append(store, title);
+  const badge = document.createElement("span");
+  badge.className = `signal-match ${signal.desired ? "desired" : "new"}`;
+  badge.textContent = signal.desired ? "Desired" : "New";
+  top.append(identity, badge);
+
+  const metadata = document.createElement("small");
+  metadata.className = "signal-meta";
+  const parts = [signal.sku, money(signal.price)];
+  if (Number.isInteger(signal.stock)) parts.push(`stock ${signal.stock}`);
+  if (Number.isInteger(signal.orderLimit)) parts.push(`limit ${signal.orderLimit}`);
+  if (signal.seller) parts.push(signal.seller);
+  parts.push(relativeTime(signal.observedAt));
+  metadata.textContent = parts.filter(Boolean).join(" · ");
+
+  const note = document.createElement("p");
+  note.className = "signal-note";
+  note.textContent = `${signalStateLabel(signal)} — ${signal.note || "Signal recorded."}`;
+
+  const actions = document.createElement("div");
+  actions.className = "action-row signal-actions";
+  const productButton = signalActionButton("Product", "secondary");
+  productButton.addEventListener("click", () => void runAction(
+    () => window.cartAssist.openSignal(signal.id, "product"),
+    (result) => result?.via === "companion-tab" ? "Product opened in an existing Chrome tab." : "Product page opened in Chrome."
+  ));
+  actions.append(productButton);
+
+  const desiredProduct = savedProducts().find((product) => product.id === signal.productId);
+  const signalPrice = Number(signal.price);
+  const directAllowed = Boolean(
+    desiredProduct?.enabled
+    && isArmed()
+    && freshSignal(signal)
+    && Number.isFinite(signalPrice)
+    && signalPrice > 0
+    && signalPrice <= desiredProduct.maxPrice
+  );
+  const directButtons = [
+    ["walmartBuyNowUrl", "walmart-buy-now", "Walmart Buy Now"],
+    ["amazonAtcUrl", "amazon-atc", "Amazon ATC"],
+    ["amazonBuyNowUrl", "amazon-buy-now", "Amazon Buy Now"]
+  ];
+  for (const [urlField, entry, label] of directButtons) {
+    if (!signal[urlField]) continue;
+    const button = signalActionButton(label);
+    const sellerAllowed = !entry.startsWith("amazon-") || /^amazon(?:\.com)?$/i.test(String(signal.seller || "").trim());
+    const actionAllowed = entry === "amazon-atc"
+      ? ["cart", "review", "checkout"].includes(desiredProduct?.action)
+      : ["review", "checkout"].includes(desiredProduct?.action);
+    button.disabled = !directAllowed || !sellerAllowed || !actionAllowed;
+    button.title = button.disabled
+      ? "Direct entry requires a desired mission, Autopilot ON, a signal under two minutes old and under its cap, plus Amazon.com seller proof for Amazon."
+      : "Uses the sanitized exact-SKU link; the browser still re-verifies every purchase condition.";
+    button.addEventListener("click", () => void runAction(
+      () => window.cartAssist.openSignal(signal.id, entry),
+      (result) => result?.directFallback
+        ? "Browser context was unavailable, so the canonical product page opened safely instead."
+        : `${label} opened with durable mission context.`
+    ));
+    actions.append(button);
+  }
+
+  if (!signal.desired) {
+    const addButton = signalActionButton("+ Add as desired", "primary");
+    addButton.addEventListener("click", () => void addSignalAsMission(signal));
+    actions.append(addButton);
+  }
+
+  card.append(top, metadata, note, actions);
+  return card;
+}
+
+function renderDiscord(discord = {}, settings = {}) {
+  const connected = Boolean(discord.connected);
+  const configured = Boolean(discord.configured);
+  const credentialUsable = Boolean(discord.credentialUsable);
+  const enabled = Boolean(discord.enabled);
+  const failed = Boolean(discord.lastError);
+  elements.discordState.className = `step-state ${connected ? "ready" : failed ? "attention" : ""}`.trim();
+  elements.discordState.textContent = connected
+    ? `Listening${discord.channelName ? ` · #${discord.channelName}` : ""}`
+    : failed
+      ? "Needs attention"
+      : enabled && configured
+        ? "Connecting…"
+        : configured
+          ? "Disconnected"
+          : "Not connected";
+  elements.discordHint.textContent = failed
+    ? discord.lastError
+    : connected
+      ? `Last checked ${relativeTime(discord.lastPollAt)}. New desired signals are matched by store + SKU.`
+      : configured
+        ? "The bot token is saved securely. Connect to resume listening, or remove the saved token."
+        : "Connect an official bot with View Channel, Read Message History, and Message Content access. Discord user tokens and self-bots are never accepted.";
+  if (document.activeElement !== elements.discordChannelId) {
+    elements.discordChannelId.value = discord.channelId || settings.discordChannelId || "";
+  }
+  elements.discordBotToken.placeholder = configured
+    ? credentialUsable
+      ? "Saved securely — leave blank to reuse"
+      : "Paste a replacement official bot token"
+    : "Paste an official bot token";
+  elements.discordConnectButton.textContent = configured
+    ? credentialUsable ? "Connect / reconnect" : "Replace token"
+    : "Connect & import";
+  elements.discordDisconnectButton.hidden = !enabled;
+  elements.discordForgetButton.hidden = !configured;
+  if (document.activeElement !== elements.discordAutoOpen) {
+    elements.discordAutoOpen.checked = settings.discordAutoOpen !== false;
+  }
+}
+
+function renderSignals(signals = []) {
+  const desired = signals.filter((signal) => signal.desired).length;
+  const fresh = signals.filter(freshSignal).length;
+  elements.signalCount.textContent = `${signals.length} signal${signals.length === 1 ? "" : "s"} · ${desired} desired · ${fresh} fresh`;
+  elements.clearSignalsButton.disabled = signals.length === 0;
+  if (!signals.length) {
+    const empty = document.createElement("div");
+    empty.className = "empty-state";
+    empty.textContent = "No restock signals yet.";
+    elements.signalList.replaceChildren(empty);
+    return;
+  }
+  elements.signalList.replaceChildren(...signals.map(buildSignalCard));
+}
+
 // --- Top-level render ---
 
 function populateSettingsInputs(settings) {
@@ -922,6 +1163,8 @@ function render(snapshot) {
   elements.versionText.textContent = `${app.name} v${app.version}`;
 
   renderMissions();
+  renderDiscord(snapshot.discord, settings);
+  renderSignals(snapshot.signals || []);
   checkForAlarmEvents(events);
   renderEvents(events);
   renderSchedule();
@@ -958,6 +1201,56 @@ elements.disarmButton.addEventListener("click", () => runAction(async () => {
 }, "Stopped. Autopilot off, queued page openings cancelled, and scheduled times cleared."));
 
 elements.newMissionButton.addEventListener("click", () => void startEdit(null));
+
+elements.discordConnectButton.addEventListener("click", () => void runAction(async () => {
+  if (!elements.discordChannelId.checkValidity()) {
+    elements.discordChannelId.reportValidity();
+    throw new Error("Enter the Discord signal channel ID.");
+  }
+  const next = await window.cartAssist.connectDiscord({
+    token: elements.discordBotToken.value,
+    channelId: elements.discordChannelId.value
+  });
+  elements.discordBotToken.value = "";
+  render(next);
+  return next;
+}, "Discord connected. Recent messages were imported as history; only later fresh signals can open pages automatically."));
+
+elements.discordDisconnectButton.addEventListener("click", () => void runAction(async () => {
+  const next = await window.cartAssist.disconnectDiscord();
+  render(next);
+  return next;
+}, "Discord signal listening is disconnected. The encrypted bot token remains saved."));
+
+elements.discordForgetButton.addEventListener("click", () => {
+  if (!window.confirm("Remove the encrypted Discord bot token from this computer? Existing signal inbox entries will remain.")) return;
+  void runAction(async () => {
+    const next = await window.cartAssist.forgetDiscord();
+    elements.discordBotToken.value = "";
+    render(next);
+    return next;
+  }, "Saved Discord bot token removed.");
+});
+
+elements.discordAutoOpen.addEventListener("change", () => void runAction(async () => {
+  const next = await window.cartAssist.saveSettings({
+    ...currentSnapshot.settings,
+    discordAutoOpen: elements.discordAutoOpen.checked
+  });
+  render(next);
+  return next;
+}, () => elements.discordAutoOpen.checked
+  ? "Fresh desired Discord signals will open automatically."
+  : "Discord signals will be recorded without automatic openings."));
+
+elements.clearSignalsButton.addEventListener("click", () => {
+  if (!window.confirm("Clear the local Discord signal inbox? This does not delete anything from Discord.")) return;
+  void runAction(async () => {
+    const next = await window.cartAssist.clearSignals();
+    render(next);
+    return next;
+  }, "Local signal inbox cleared.");
+});
 
 // Drag a mission card to reorder; order is cosmetic and saves immediately.
 elements.missionList.addEventListener("dragover", (event) => {

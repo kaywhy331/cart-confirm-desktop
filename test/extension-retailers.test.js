@@ -18,7 +18,10 @@ test("extension helpers recognize supported retailer product pages", () => {
   assert.equal(detectRetailer("https://www.amazon.com/name/dp/B0ABC12345"), "amazon");
   assert.equal(extractSkuFromUrl("target", "https://www.target.com/p/name/-/A-123456789"), "123456789");
   assert.equal(extractSkuFromUrl("walmart", "https://www.walmart.com/ip/name/987654321"), "987654321");
+  assert.equal(extractSkuFromUrl("walmart", "https://www.walmart.com/affil/cart/buynow?items=19952559023"), "19952559023");
   assert.equal(extractSkuFromUrl("amazon", "https://www.amazon.com/name/dp/b0abc12345"), "B0ABC12345");
+  assert.equal(extractSkuFromUrl("amazon", "https://www.amazon.com/gp/aws/cart/add.html?ASIN.1=b0abc12345&Quantity.1=1"), "B0ABC12345");
+  assert.equal(extractSkuFromUrl("amazon", "https://www.amazon.com/gp/buy/express/handlers/display.html?ASIN=b0abc12345&quantity=1"), "B0ABC12345");
 });
 
 test("extension price parser handles US currency without mistaking unrelated text", () => {

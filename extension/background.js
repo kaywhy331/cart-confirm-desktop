@@ -4,12 +4,14 @@ importScripts(
   "traffic.js",
   "automation-state.js",
   "retailers.js",
+  "tab-context.js",
   "open-request-tabs.js",
   "update-state.js"
 );
 
 const Traffic = globalThis.CartConfirmTraffic;
 const AutomationState = globalThis.CartConfirmAutomationState;
+const TabContext = globalThis.CartConfirmTabContext;
 const OpenRequestTabs = globalThis.CartConfirmOpenRequestTabs;
 const UpdateState = globalThis.CartConfirmUpdateState;
 
@@ -22,12 +24,14 @@ const TRAFFIC_STATE_KEY = "cartConfirmTrafficStateV1";
 const FAST_MODE_PAUSE_KEY = "cartConfirmFastModePausedUntil";
 const PAIRED_TOKEN_KEY = "cartConfirmPairedDesktopTokenV1";
 const VERSION_RELOAD_STATE_KEY = "cartConfirmVersionReloadStateV1";
+const TAB_PRODUCT_CONTEXT_KEY = "cartConfirmTabProductContextV1";
 const OVERLOAD_DEDUPE_MS = 5_000;
 let cached = null;
 let appliedFastMode = null;
 let fastModePausedUntil = 0;
 let automationStateQueue = Promise.resolve();
 let trafficStateQueue = Promise.resolve();
+let tabContextQueue = Promise.resolve();
 let trafficSyncInFlight = false;
 
 async function fetchWithTimeout(url, options = {}, timeoutMs = REQUEST_TIMEOUT_MS) {
@@ -155,6 +159,95 @@ function retailerFromUrl(value) {
     // Invalid URLs cannot contribute traffic state.
   }
   return "";
+}
+
+function withTabContextLock(action) {
+  const task = tabContextQueue.then(action, action);
+  tabContextQueue = task.catch(() => {});
+  return task;
+}
+
+async function readTabContexts() {
+  const stored = await chrome.storage.session.get(TAB_PRODUCT_CONTEXT_KEY);
+  return TabContext.normalizeContextMap(stored[TAB_PRODUCT_CONTEXT_KEY], Date.now());
+}
+
+async function writeTabContexts(contexts) {
+  await chrome.storage.session.set({ [TAB_PRODUCT_CONTEXT_KEY]: contexts });
+}
+
+async function saveTabProductContext(tabId, context) {
+  if (!Number.isInteger(tabId) || tabId < 0 || !context) return false;
+  return withTabContextLock(async () => {
+    const contexts = await readTabContexts();
+    contexts[String(tabId)] = context;
+    await writeTabContexts(contexts);
+    return true;
+  });
+}
+
+async function clearTabProductContext(tabId) {
+  if (!Number.isInteger(tabId) || tabId < 0) return false;
+  return withTabContextLock(async () => {
+    const contexts = await readTabContexts();
+    const key = String(tabId);
+    const changed = Boolean(contexts[key]);
+    delete contexts[key];
+    if (changed) await writeTabContexts(contexts);
+    return changed;
+  });
+}
+
+async function getTabProductContext(config, sender) {
+  const tabId = sender?.tab?.id;
+  const retailer = retailerFromUrl(sender?.tab?.url);
+  if (!Number.isInteger(tabId) || !retailer) return { ok: false, reason: "tab-unavailable", productId: "" };
+  const contexts = await readTabContexts();
+  const context = TabContext.contextForTab(config, contexts, tabId, retailer, Date.now());
+  return context
+    ? { ok: true, productId: context.productId, entry: context.entry }
+    : { ok: false, reason: "context-unavailable", productId: "", entry: "product" };
+}
+
+async function setTabProductContextFromMessage(config, message, sender) {
+  const tabId = sender?.tab?.id;
+  const productId = String(message.productId || "");
+  const product = (config?.products || []).find((candidate) => candidate?.id === productId);
+  const retailer = retailerFromUrl(sender?.tab?.url);
+  if (!Number.isInteger(tabId) || !product || product.retailer !== retailer) {
+    return { ok: false, reason: "product-context-mismatch" };
+  }
+  const plan = TabContext.validateOpenRequest(config, {
+    retailer,
+    productId,
+    url: product.productUrl,
+    contextRequired: true
+  }, Date.now());
+  if (!plan.ok) return { ok: false, reason: plan.reason };
+  await withTabContextLock(async () => {
+    const contexts = await readTabContexts();
+    const current = contexts[String(tabId)];
+    contexts[String(tabId)] = current?.productId === productId && current.entry !== "product"
+      ? { ...plan.context, entry: current.entry }
+      : plan.context;
+    await writeTabContexts(contexts);
+  });
+  return { ok: true, productId };
+}
+
+async function consumeDirectEntryContext(sender, productIdValue) {
+  const tabId = sender?.tab?.id;
+  const productId = String(productIdValue || "");
+  if (!Number.isInteger(tabId) || !productId) return { ok: false, reason: "tab-unavailable" };
+  return withTabContextLock(async () => {
+    const contexts = await readTabContexts();
+    const key = String(tabId);
+    const context = contexts[key];
+    if (!context || context.productId !== productId) return { ok: false, reason: "context-unavailable" };
+    contexts[key] = { ...context, entry: "product" };
+    await writeTabContexts(contexts);
+    return { ok: true, productId };
+  });
 }
 
 function emptyTrafficState(runId = "") {
@@ -396,6 +489,8 @@ async function reuseTabForOpenRequest(config, request) {
   const url = String(request?.url || "");
   const patterns = RETAILER_TAB_PATTERNS[retailer];
   if (!patterns || retailerFromUrl(url) !== retailer) return;
+  const contextPlan = TabContext.validateOpenRequest(config, request, Date.now());
+  if (!contextPlan.ok) return;
   const tabs = await chrome.tabs.query({ url: patterns });
   // Queue URLs are resolved through the same safe embedded-item parser used
   // by the content script, so a live /qp tab is recognized as its mission and
@@ -403,20 +498,44 @@ async function reuseTabForOpenRequest(config, request) {
   const tab = OpenRequestTabs.chooseReusableTab(config, request, tabs);
   const claimed = await claimOpenRequest(config, String(request.id || ""));
   if (!claimed) return;
+
+  const createContextTab = async (destination = url) => {
+    let created = null;
+    try {
+      created = await chrome.tabs.create({ url: "about:blank", active: true });
+      if (contextPlan.context) await saveTabProductContext(created.id, contextPlan.context);
+      await chrome.tabs.update(created.id, { url: destination, active: true });
+      return created;
+    } catch (error) {
+      if (created?.id !== undefined) {
+        await clearTabProductContext(created.id).catch(() => {});
+        await chrome.tabs.remove(created.id).catch(() => {});
+      }
+      throw error;
+    }
+  };
   try {
     if (tab) {
+      if (contextPlan.context) await saveTabProductContext(tab.id, contextPlan.context);
       await chrome.tabs.update(tab.id, { url, active: true });
       await chrome.windows.update(tab.windowId, { focused: true }).catch(() => {});
     } else {
       // Every existing tab belongs to another enabled mission. Claim the
       // request and create a tab immediately instead of making the desktop
       // wait through its fallback timeout.
-      await chrome.tabs.create({ url, active: true });
+      await createContextTab();
     }
   } catch {
     // The tab closed between query and navigation; the claim already stopped
-    // the desktop fallback, so open the page in a fresh tab instead.
-    await chrome.tabs.create({ url, active: true });
+    // the desktop fallback. Recreate context before direct navigation; if
+    // session storage fails, use the configured canonical product page.
+    if (tab?.id !== undefined) await clearTabProductContext(tab.id).catch(() => {});
+    try {
+      await createContextTab();
+    } catch {
+      const product = (config.products || []).find((candidate) => candidate?.id === contextPlan.context?.productId);
+      if (product?.productUrl) await chrome.tabs.create({ url: product.productUrl, active: true });
+    }
   }
 }
 
@@ -700,6 +819,20 @@ async function handleMessage(message, sender) {
       const config = await discoverConfig(Boolean(message.force));
       return { ok: Boolean(config), config: publicConfig(config) };
     }
+    case "CART_CONFIRM_GET_TAB_PRODUCT_CONTEXT": {
+      const config = await discoverConfig(false);
+      if (!config) return { ok: false, reason: "desktop-not-found", productId: "" };
+      return getTabProductContext(config, sender);
+    }
+    case "CART_CONFIRM_SET_TAB_PRODUCT_CONTEXT": {
+      const config = await discoverConfig(false);
+      if (!config) return { ok: false, reason: "desktop-not-found" };
+      return setTabProductContextFromMessage(config, message, sender);
+    }
+    case "CART_CONFIRM_CLEAR_TAB_PRODUCT_CONTEXT":
+      return { ok: await clearTabProductContext(sender?.tab?.id) };
+    case "CART_CONFIRM_CONSUME_DIRECT_ENTRY_CONTEXT":
+      return consumeDirectEntryContext(sender, message.productId);
     case "CART_CONFIRM_EVENT":
       return postEvent(message.payload);
     case "CART_CONFIRM_CLAIM_PRODUCT":
@@ -744,6 +877,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     .then(sendResponse)
     .catch((error) => sendResponse({ ok: false, reason: error.message || "background-error" }));
   return true;
+});
+
+chrome.tabs.onRemoved.addListener((tabId) => {
+  void clearTabProductContext(tabId).catch(() => {});
 });
 
 chrome.webRequest.onHeadersReceived.addListener((details) => {
