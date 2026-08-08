@@ -1,43 +1,53 @@
 "use strict";
 
 const elements = {
-  automationEnabled: document.getElementById("automationEnabled"),
+  autopilotToggle: document.getElementById("autopilotToggle"),
+  autopilotState: document.getElementById("autopilotState"),
+  disarmButton: document.getElementById("disarmButton"),
+  connectionPill: document.getElementById("connectionPill"),
+  connectionText: document.getElementById("connectionText"),
+  alarmBar: document.getElementById("alarmBar"),
+  alarmText: document.getElementById("alarmText"),
+  silenceAlarmButton: document.getElementById("silenceAlarmButton"),
+  digestBar: document.getElementById("digestBar"),
+  digestText: document.getElementById("digestText"),
+  digestDismissButton: document.getElementById("digestDismissButton"),
+  connectCard: document.getElementById("connectCard"),
+  connectState: document.getElementById("connectState"),
+  connectHint: document.getElementById("connectHint"),
+  showExtensionButton: document.getElementById("showExtensionButton"),
+  copyExtensionButton: document.getElementById("copyExtensionButton"),
+  portBadge: document.getElementById("portBadge"),
+  missionList: document.getElementById("missionList"),
+  missionViewTemplate: document.getElementById("missionViewTemplate"),
+  missionEditTemplate: document.getElementById("missionEditTemplate"),
+  newMissionButton: document.getElementById("newMissionButton"),
+  testButton: document.getElementById("testButton"),
+  openAllButton: document.getElementById("openAllButton"),
+  worstCase: document.getElementById("worstCase"),
+  settingsBox: document.getElementById("settingsBox"),
   fastMode: document.getElementById("fastMode"),
   retryIntervalSeconds: document.getElementById("retryIntervalSeconds"),
   storeNavigationIntervalSeconds: document.getElementById("storeNavigationIntervalSeconds"),
   overloadCooldownSeconds: document.getElementById("overloadCooldownSeconds"),
-  scheduledOpenEnabled: document.getElementById("scheduledOpenEnabled"),
-  scheduledRetailer: document.getElementById("scheduledRetailer"),
-  scheduledOpenAt: document.getElementById("scheduledOpenAt"),
-  countdown: document.getElementById("countdown"),
-  productList: document.getElementById("productList"),
-  productRowTemplate: document.getElementById("productRowTemplate"),
-  productStatusList: document.getElementById("productStatusList"),
-  addProductButton: document.getElementById("addProductButton"),
-  saveButton: document.getElementById("saveButton"),
-  openBuyListButton: document.getElementById("openBuyListButton"),
-  disarmButton: document.getElementById("disarmButton"),
   storeShortcut: document.getElementById("storeShortcut"),
   openCartButton: document.getElementById("openCartButton"),
   openOrdersButton: document.getElementById("openOrdersButton"),
-  showExtensionButton: document.getElementById("showExtensionButton"),
-  copyExtensionButton: document.getElementById("copyExtensionButton"),
-  clearEventsButton: document.getElementById("clearEventsButton"),
-  testButton: document.getElementById("testButton"),
-  connectionPill: document.getElementById("connectionPill"),
-  connectionText: document.getElementById("connectionText"),
-  boundaryBanner: document.getElementById("boundaryBanner"),
-  boundaryText: document.getElementById("boundaryText"),
-  latestMessage: document.getElementById("latestMessage"),
-  latestTime: document.getElementById("latestTime"),
+  schedulePanel: document.getElementById("schedulePanel"),
+  scheduleNext: document.getElementById("scheduleNext"),
+  scheduleCoverage: document.getElementById("scheduleCoverage"),
+  enableScheduledButton: document.getElementById("enableScheduledButton"),
+  scheduleWeek: document.getElementById("scheduleWeek"),
   eventList: document.getElementById("eventList"),
-  portBadge: document.getElementById("portBadge"),
+  eventFilterButton: document.getElementById("eventFilterButton"),
+  clearEventsButton: document.getElementById("clearEventsButton"),
   message: document.getElementById("message"),
   versionText: document.getElementById("versionText")
 };
 
 const STORE_LABELS = Object.freeze({ target: "Target", walmart: "Walmart", amazon: "Amazon" });
 const SKU_LABELS = Object.freeze({ target: "TCIN", walmart: "Walmart item ID", amazon: "ASIN" });
+const ACTION_LABELS = Object.freeze({ watch: "Watch", cart: "Add only", review: "I submit", checkout: "Auto-buy" });
 const BLOCKING_REASONS = new Set([
   "cart-unverified",
   "manual-action-required",
@@ -56,18 +66,32 @@ const BLOCKING_REASONS = new Set([
   "run-expired",
   "unmatched-product"
 ]);
+
 let currentSnapshot = null;
 let messageTimer = null;
+let openRunInFlight = false;
+let editingId = null; // null | product id | "new"
+let editCardNode = null;
+let resumeAutopilotAfterEdit = false;
+let awaySince = 0;
+let settingsSaveTimer = null;
+let eventFilterProductId = null;
+let lastAlarmEventStamp = "";
+const alarmLastFiredAt = new Map();
+let alarmAudio = null;
+let alarmBeepInterval = null;
+let alarmStopTimer = null;
+
+// --- Small helpers ---
 
 function setMessage(text, kind = "") {
   clearTimeout(messageTimer);
   elements.message.textContent = text;
-  elements.message.className = `message ${kind}`.trim();
+  elements.message.className = `message ${kind}${text ? " show" : ""}`.trim();
   if (text) {
     messageTimer = setTimeout(() => {
-      elements.message.textContent = "";
-      elements.message.className = "message";
-    }, 7000);
+      elements.message.classList.remove("show");
+    }, 8000);
   }
 }
 
@@ -93,6 +117,7 @@ function formatTime(value) {
 }
 
 function money(value) {
+  if (value === null || value === undefined || value === "") return "Not observed";
   return Number.isFinite(Number(value)) ? `$${Number(value).toFixed(2)}` : "Not observed";
 }
 
@@ -101,6 +126,17 @@ function eventName(type) {
     .split("-")
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
     .join(" ");
+}
+
+function relativeTime(iso) {
+  if (!iso) return "not checked yet";
+  const then = new Date(iso).getTime();
+  if (!Number.isFinite(then)) return "not checked yet";
+  const seconds = Math.max(0, Math.floor((Date.now() - then) / 1000));
+  if (seconds < 60) return `${seconds}s ago`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
+  return new Date(then).toLocaleDateString([], { dateStyle: "medium" });
 }
 
 function detectRetailer(url) {
@@ -145,238 +181,125 @@ function extractSku(retailer, value) {
   return "";
 }
 
-function field(row, name) {
-  return row.querySelector(`[data-field="${name}"]`);
-}
-
-function updateRowStore(row) {
-  const retailer = field(row, "retailer").value;
-  row.dataset.retailer = retailer;
-  row.querySelector(".sku-label").textContent = SKU_LABELS[retailer];
-  const skuInput = field(row, "sku");
-  skuInput.placeholder = retailer === "amazon" ? "B0ABC12345" : "Digits only";
-  skuInput.inputMode = retailer === "amazon" ? "text" : "numeric";
-}
-
-function markIdentityDirty(row) {
-  row.dataset.productId = "";
-  const openButton = row.querySelector(".open-product-row");
-  openButton.disabled = true;
-  openButton.title = "Save this product before opening it.";
-}
-
-function createProductRow(product = {}) {
-  const row = elements.productRowTemplate.content.firstElementChild.cloneNode(true);
-  const retailer = product.retailer || "target";
-  row.dataset.productId = product.id || "";
-  field(row, "retailer").value = retailer;
-  field(row, "productUrl").value = product.productUrl || "";
-  field(row, "sku").value = product.sku || "";
-  field(row, "maxPrice").value = Number(product.maxPrice || 0).toFixed(2);
-  field(row, "maxOrderTotal").value = Number(product.maxOrderTotal || 0).toFixed(2);
-  field(row, "quantity").value = product.quantity || 1;
-  field(row, "action").value = product.action || "cart";
-  field(row, "fulfillmentMode").value = product.fulfillmentMode || "manual";
-  field(row, "enabled").checked = product.enabled !== false;
-  updateRowStore(row);
-
-  const openButton = row.querySelector(".open-product-row");
-  openButton.disabled = !row.dataset.productId;
-  openButton.title = row.dataset.productId ? "Open this saved product." : "Save this product before opening it.";
-
-  field(row, "retailer").addEventListener("change", () => {
-    updateRowStore(row);
-    markIdentityDirty(row);
-  });
-  field(row, "productUrl").addEventListener("change", () => {
-    const detected = detectRetailer(field(row, "productUrl").value);
-    if (detected) {
-      field(row, "retailer").value = detected;
-      updateRowStore(row);
-      if (!field(row, "sku").value.trim()) {
-        field(row, "sku").value = extractSku(detected, field(row, "productUrl").value);
-      }
-    }
-    markIdentityDirty(row);
-  });
-  field(row, "sku").addEventListener("change", () => {
-    if (field(row, "retailer").value === "amazon") {
-      field(row, "sku").value = field(row, "sku").value.trim().toUpperCase();
-    }
-    markIdentityDirty(row);
-  });
-  field(row, "action").addEventListener("change", updateBoundary);
-  field(row, "enabled").addEventListener("change", updateBoundary);
-
-  openButton.addEventListener("click", () => {
-    if (!row.dataset.productId) {
-      setMessage("Save this product before opening it.", "error");
-      return;
-    }
-    void runAction(
-      () => window.cartAssist.openProduct(row.dataset.productId),
-      `${STORE_LABELS[field(row, "retailer").value]} product opened in your default browser.`
-    );
-  });
-
-  row.querySelector(".remove-product-row").addEventListener("click", () => {
-    if (elements.productList.childElementCount <= 1) {
-      setMessage("The buy list must contain at least one product.", "error");
-      return;
-    }
-    row.remove();
-    updateBoundary();
-  });
-
-  return row;
-}
-
-function populateForm(settings) {
-  elements.automationEnabled.checked = settings.automationEnabled;
-  elements.fastMode.checked = settings.fastMode;
-  elements.retryIntervalSeconds.value = settings.retryIntervalSeconds;
-  elements.storeNavigationIntervalSeconds.value = settings.storeNavigationIntervalSeconds;
-  elements.overloadCooldownSeconds.value = settings.overloadCooldownSeconds;
-  elements.scheduledOpenEnabled.checked = settings.scheduledOpenEnabled;
-  elements.scheduledRetailer.value = settings.scheduledRetailer || "target";
-  elements.scheduledOpenAt.value = toLocalInputValue(settings.scheduledOpenAt);
-  elements.productList.replaceChildren(...settings.products.map(createProductRow));
-  updateScheduleControls();
-  updateBoundary();
-}
-
-function collectProducts() {
-  return [...elements.productList.querySelectorAll(".product-row")].map((row) => {
-    const retailer = field(row, "retailer").value;
-    const sku = field(row, "sku").value.trim();
-    return {
-      retailer,
-      productUrl: field(row, "productUrl").value.trim(),
-      sku: retailer === "amazon" ? sku.toUpperCase() : sku,
-      maxPrice: Number(field(row, "maxPrice").value),
-      maxOrderTotal: Number(field(row, "maxOrderTotal").value),
-      quantity: Number(field(row, "quantity").value),
-      action: field(row, "action").value,
-      fulfillmentMode: field(row, "fulfillmentMode").value,
-      enabled: field(row, "enabled").checked
-    };
-  });
-}
-
-function validateVisibleInputs() {
-  for (const input of elements.productList.querySelectorAll("input, select")) {
-    if (!input.checkValidity()) {
-      input.reportValidity();
-      return false;
-    }
+// A readable mission name from the product link's slug.
+function deriveTitleFromUrl(url) {
+  try {
+    const segments = new URL(String(url || "")).pathname.split("/").filter(Boolean);
+    const candidates = segments.filter((segment) => (
+      !["p", "ip", "dp", "gp", "product"].includes(segment.toLowerCase())
+      && !/^A-\d+$/i.test(segment)
+      && !/^\d+$/.test(segment)
+      && !/^[A-Z0-9]{10}$/.test(segment)
+      && segment !== "-"
+    ));
+    const slug = candidates.sort((a, b) => b.length - a.length)[0] || "";
+    return decodeURIComponent(slug)
+      .replace(/[-_+]+/g, " ")
+      .trim()
+      .split(" ")
+      .filter(Boolean)
+      .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+      .join(" ")
+      .slice(0, 80);
+  } catch {
+    return "";
   }
-  if (!elements.retryIntervalSeconds.checkValidity()) {
-    elements.retryIntervalSeconds.reportValidity();
-    return false;
-  }
-  if (!elements.storeNavigationIntervalSeconds.checkValidity()) {
-    elements.storeNavigationIntervalSeconds.reportValidity();
-    return false;
-  }
-  if (!elements.overloadCooldownSeconds.checkValidity()) {
-    elements.overloadCooldownSeconds.reportValidity();
-    return false;
-  }
-  if (elements.scheduledOpenEnabled.checked && !elements.scheduledOpenAt.value) {
-    setMessage("Choose a date and time for the single store schedule.", "error");
-    elements.scheduledOpenAt.focus();
-    return false;
-  }
-  return true;
 }
 
-function formSettings() {
-  const scheduledOpenAt = elements.scheduledOpenAt.value
-    ? new Date(elements.scheduledOpenAt.value).toISOString()
-    : "";
+function savedProducts() {
+  return currentSnapshot?.settings?.products || [];
+}
+
+function isArmed() {
+  return Boolean(currentSnapshot?.settings?.automationEnabled);
+}
+
+function productTitle(productId) {
+  const product = savedProducts().find((candidate) => candidate.id === productId);
+  return product?.title || "";
+}
+
+function productLabel(product) {
+  return product.title || `${STORE_LABELS[product.retailer]} ${product.sku}`;
+}
+
+async function runAction(action, successMessage) {
+  try {
+    const result = await action();
+    const text = typeof successMessage === "function" ? successMessage(result) : successMessage;
+    setMessage(text, "success");
+    return result;
+  } catch (error) {
+    setMessage(error.message || "The action failed.", "error");
+    return null;
+  }
+}
+
+// --- Saving ---
+
+function globalSettings(products) {
   return {
-    products: collectProducts(),
-    automationEnabled: elements.automationEnabled.checked,
+    products,
+    automationEnabled: isArmed(),
     fastMode: elements.fastMode.checked,
     retryIntervalSeconds: Number(elements.retryIntervalSeconds.value),
     storeNavigationIntervalSeconds: Number(elements.storeNavigationIntervalSeconds.value),
     overloadCooldownSeconds: Number(elements.overloadCooldownSeconds.value),
-    scheduledOpenEnabled: elements.scheduledOpenEnabled.checked,
-    scheduledRetailer: elements.scheduledRetailer.value,
-    scheduledOpenAt
+    scheduledOpenEnabled: false,
+    scheduledRetailer: currentSnapshot?.settings?.scheduledRetailer || "target",
+    scheduledOpenAt: ""
   };
 }
 
-async function saveCurrentForm() {
-  if (!validateVisibleInputs()) throw new Error("Fix the highlighted settings before saving.");
-  const autoSubmitCount = [...elements.productList.querySelectorAll(".product-row")]
-    .filter((row) => field(row, "enabled").checked && field(row, "action").value === "checkout")
-    .length;
-  if (
-    elements.automationEnabled.checked
-    && !currentSnapshot?.settings?.automationEnabled
-    && autoSubmitCount > 0
-    && !window.confirm(`${autoSubmitCount} enabled product${autoSubmitCount === 1 ? "" : "s"} may submit a real order. Re-arming starts a new run and can retry an item whose prior submission was uncertain. Verify retailer order history first. Final-review mode is safer. Arm auto-submit anyway?`)
-  ) {
-    throw new Error("Automation was not armed.");
-  }
-  const next = await window.cartAssist.saveSettings(formSettings());
-  render(next, true);
+async function saveMissionList(products) {
+  const next = await window.cartAssist.saveSettings(globalSettings(products));
+  render(next);
   return next;
 }
 
-function updateBoundary() {
-  const armed = elements.automationEnabled.checked;
-  const checkoutCount = [...elements.productList.querySelectorAll(".product-row")]
-    .filter((row) => field(row, "enabled").checked && field(row, "action").value === "checkout")
-    .length;
-  elements.boundaryBanner.classList.toggle("armed", armed);
-  elements.boundaryBanner.querySelector("strong").textContent = armed
-    ? "Automation is armed."
-    : "Automation is disarmed.";
-  elements.boundaryText.textContent = armed
-    ? `${checkoutCount} advanced auto-submit product${checkoutCount === 1 ? "" : "s"} may place a real order. Final-review rows always stop for your click.`
-    : "Save your buy list, verify every cap and quantity, then explicitly arm it when ready.";
+// --- Pause / resume Autopilot around edits, so armed missions stay editable ---
+
+async function pauseAutopilot() {
+  const next = await window.cartAssist.saveSettings({
+    ...currentSnapshot.settings,
+    automationEnabled: false
+  });
+  render(next);
 }
 
-function updateScheduleControls() {
-  const enabled = elements.scheduledOpenEnabled.checked;
-  elements.scheduledRetailer.disabled = !enabled;
-  elements.scheduledOpenAt.disabled = !enabled;
-  updateCountdown();
+async function resumeAutopilot() {
+  const saved = currentSnapshot.settings;
+  const autoSubmitCount = saved.products.filter((product) => product.enabled && product.action === "checkout").length;
+  if (
+    autoSubmitCount > 0
+    && !window.confirm(`${autoSubmitCount} enabled mission${autoSubmitCount === 1 ? "" : "s"} may submit a real order. Resuming starts a new run. Switch Autopilot back on?`)
+  ) {
+    setMessage("Autopilot stayed off. Switch it on from the header when ready.", "warn");
+    return;
+  }
+  const next = await window.cartAssist.saveSettings({ ...saved, automationEnabled: true });
+  render(next);
 }
 
-function updateCountdown() {
-  const enabled = elements.scheduledOpenEnabled.checked;
-  const value = elements.scheduledOpenAt.value;
-  const store = STORE_LABELS[elements.scheduledRetailer.value] || "Selected store";
+// Apply per-mission enabled changes, transparently pausing and resuming
+// Autopilot when it is on (a resume starts a new run by design).
+async function setMissionsEnabled(updates) {
+  const wasArmed = isArmed();
+  if (wasArmed) await pauseAutopilot();
+  await saveMissionList(savedProducts().map((product) => (
+    updates.has(product.id) ? { ...product, enabled: updates.get(product.id) } : product
+  )));
+  if (wasArmed) await resumeAutopilot();
+}
 
-  if (!enabled || !value) {
-    elements.countdown.textContent = "No scheduled opening. Only one store schedule can be active.";
-    return;
-  }
+// --- Mission cards ---
 
-  const target = new Date(value).getTime();
-  if (Number.isNaN(target)) {
-    elements.countdown.textContent = "Choose a valid local date and time.";
-    return;
-  }
+function field(card, name) {
+  return card.querySelector(`[data-field="${name}"]`);
+}
 
-  const remaining = target - Date.now();
-  if (remaining <= 0) {
-    elements.countdown.textContent = `${store} scheduled time reached. Save a future time to arm it again.`;
-    return;
-  }
-
-  const totalSeconds = Math.floor(remaining / 1000);
-  const days = Math.floor(totalSeconds / 86400);
-  const hours = Math.floor((totalSeconds % 86400) / 3600);
-  const minutes = Math.floor((totalSeconds % 3600) / 60);
-  const seconds = totalSeconds % 60;
-  const chunks = [];
-  if (days) chunks.push(`${days}d`);
-  chunks.push(`${hours}h`, `${minutes}m`, `${seconds}s`);
-  elements.countdown.textContent = `${store} products open once in ${chunks.join(" ")}.`;
+function view(card, name) {
+  return card.querySelector(`[data-view="${name}"]`);
 }
 
 function productStateClass(product, status) {
@@ -390,7 +313,7 @@ function productStateClass(product, status) {
 }
 
 function stateLabel(product, status) {
-  if (!product.enabled) return "Disabled";
+  if (!product.enabled) return "Off";
   if (status.order === "confirmed") return "Order confirmed";
   if (status.checkout === "review-ready") return "Final review ready";
   if (status.reason === "retailer-queue") return "Retailer queue";
@@ -402,85 +325,532 @@ function stateLabel(product, status) {
   return "Waiting";
 }
 
-function statusMetric(label, value, kind = "") {
-  const item = document.createElement("div");
-  item.className = `status-metric ${kind}`.trim();
-  const title = document.createElement("span");
-  title.textContent = label;
-  const text = document.createElement("strong");
-  text.textContent = value;
-  item.append(title, text);
-  return item;
+function defaultStatus() {
+  return {
+    eligible: false,
+    reason: "",
+    cart: "not-confirmed",
+    checkout: "not-started",
+    order: "not-confirmed",
+    lastEventAt: "",
+    lastMessage: "Waiting for this mission to be observed."
+  };
 }
 
-function renderProductStatuses(products, statuses) {
-  const cards = products.map((product) => {
-    const status = statuses[product.id] || {
-      availability: "unknown",
-      eligible: false,
-      reason: "",
-      observedPrice: null,
-      observedOrderTotal: null,
-      seller: "",
-      firstParty: false,
-      cart: "not-confirmed",
-      checkout: "not-started",
-      order: "not-confirmed",
-      attempts: 0,
-      lastMessage: "Waiting for this product to be observed."
-    };
-    const card = document.createElement("article");
-    const stateClass = productStateClass(product, status);
-    card.className = `product-status-card ${stateClass}`.trim();
-    card.dataset.retailer = product.retailer;
+function buildViewCard(product, status) {
+  const card = elements.missionViewTemplate.content.firstElementChild.cloneNode(true);
+  const stateClass = productStateClass(product, status);
+  card.classList.add(stateClass || "idle");
+  card.dataset.retailer = product.retailer;
+  card.title = `${STORE_LABELS[product.retailer]} ${product.sku} — ${status.lastMessage || "Waiting."}`;
 
-    const heading = document.createElement("div");
-    heading.className = "product-status-heading";
-    const identity = document.createElement("div");
-    const store = document.createElement("span");
-    store.className = "store-name";
-    store.textContent = STORE_LABELS[product.retailer];
-    const sku = document.createElement("strong");
-    sku.textContent = product.sku;
-    identity.append(store, sku);
-    const state = document.createElement("span");
-    state.className = `state-chip ${stateClass}`.trim();
-    state.textContent = stateLabel(product, status);
-    heading.append(identity, state);
+  view(card, "enabled").checked = product.enabled !== false;
+  view(card, "store").textContent = STORE_LABELS[product.retailer];
+  view(card, "title").textContent = productLabel(product);
 
-    const message = document.createElement("p");
-    message.textContent = status.lastMessage || "Waiting for this product to be observed.";
+  const subParts = [`$${Math.round(product.maxPrice)} cap`, `×${product.quantity}`];
+  if (["review", "checkout"].includes(product.action)) subParts.push(`total cap $${Math.round(product.maxOrderTotal)}`);
+  if (product.openAt) {
+    subParts.push(`opens ${new Date(product.openAt).toLocaleString([], { dateStyle: "medium", timeStyle: "short" })}`);
+  }
+  if (product.alertLevel === "alarm") subParts.push("🔔 alarm");
+  view(card, "sub").textContent = subParts.join(" · ");
 
-    const metrics = document.createElement("div");
-    metrics.className = "status-metrics";
-    metrics.append(
-      statusMetric("Observed / cap", `${money(status.observedPrice)} / ${money(product.maxPrice)}`, status.eligible ? "good" : ""),
-      statusMetric("Final total / cap", product.action !== "cart"
-        ? `${money(status.observedOrderTotal)} / ${money(product.maxOrderTotal)}`
-        : "Add only"),
-      statusMetric("Seller", status.firstParty ? `${status.seller || STORE_LABELS[product.retailer]} ✓` : status.seller || "Unverified", status.firstParty ? "good" : ""),
-      statusMetric("Availability", status.availability || "unknown"),
-      statusMetric("Quantity", String(product.quantity)),
-      statusMetric("Action", product.action === "checkout"
-        ? "Auto-submit"
-        : product.action === "review" ? "Final review" : "Add only"),
-      statusMetric("Fulfillment", product.fulfillmentMode === "shipping"
-        ? "Shipping"
-        : product.fulfillmentMode === "pickup" ? "Pickup" : "Manual review"),
-      statusMetric("Attempts", String(status.attempts || 0))
-    );
+  view(card, "action").textContent = ACTION_LABELS[product.action] || product.action;
+  view(card, "action").dataset.action = product.action;
+  const age = view(card, "age");
+  age.dataset.at = status.lastEventAt || "";
+  age.textContent = relativeTime(status.lastEventAt || "");
+  const state = view(card, "state");
+  state.className = `state-chip ${stateClass}`.trim();
+  state.textContent = stateLabel(product, status);
 
-    card.append(heading, message, metrics);
-    return card;
+  const armedNow = isArmed();
+  const editButton = card.querySelector(".mission-edit");
+  const removeButton = card.querySelector(".mission-remove");
+  if (armedNow) {
+    editButton.title = "Pauses Autopilot while you edit; it resumes on Done";
+    removeButton.title = "Pauses Autopilot to remove, then resumes";
+  }
+
+  card.dataset.productId = product.id;
+  card.draggable = true;
+  card.addEventListener("dragstart", (event) => {
+    if (editingId) {
+      event.preventDefault();
+      return;
+    }
+    event.dataTransfer.setData("text/plain", product.id);
+    event.dataTransfer.effectAllowed = "move";
+    card.classList.add("dragging");
   });
-  elements.productStatusList.replaceChildren(...cards);
+  card.addEventListener("dragend", () => card.classList.remove("dragging"));
+
+
+  card.querySelector(".mission-open").addEventListener("click", () => {
+    void runAction(
+      () => window.cartAssist.openProduct(product.id),
+      (result) => (result?.via === "companion-tab"
+        ? `${productLabel(product)} opened in your existing Chrome tab.`
+        : `${productLabel(product)} page opened in Chrome.`)
+    );
+  });
+  editButton.addEventListener("click", () => void startEdit(product));
+  removeButton.addEventListener("click", () => {
+    if (!window.confirm(`Remove "${productLabel(product)}"?`)) return;
+    void runAction(async () => {
+      const wasArmed = isArmed();
+      if (wasArmed) await pauseAutopilot();
+      await saveMissionList(savedProducts().filter((candidate) => candidate.id !== product.id));
+      if (wasArmed) await resumeAutopilot();
+    }, `${productLabel(product)} removed.`);
+  });
+  view(card, "enabled").addEventListener("change", (event) => {
+    const enabled = event.target.checked;
+    void runAction(
+      () => setMissionsEnabled(new Map([[product.id, enabled]])),
+      `${productLabel(product)} ${enabled ? "enabled" : "disabled"}.`
+    );
+  });
+  card.querySelector(".mission-main").addEventListener("click", () => {
+    eventFilterProductId = eventFilterProductId === product.id ? null : product.id;
+    renderEvents(currentSnapshot?.events || []);
+  });
+
+  return card;
 }
 
-function renderEvents(events) {
+function buildEditCard(product) {
+  const card = elements.missionEditTemplate.content.firstElementChild.cloneNode(true);
+  const retailer = product?.retailer || "target";
+  field(card, "retailer").value = retailer;
+  field(card, "title").value = product?.title || "";
+  field(card, "productUrl").value = product?.productUrl || "";
+  field(card, "sku").value = product?.sku || "";
+  field(card, "maxPrice").value = product ? String(Math.round(Number(product.maxPrice || 0))) : "";
+  field(card, "maxOrderTotal").value = String(Math.round(Number(product?.maxOrderTotal || 0)));
+  field(card, "quantity").value = product?.quantity || 1;
+  field(card, "action").value = product?.action || "watch";
+  field(card, "alertLevel").value = product?.alertLevel || "standard";
+  field(card, "fulfillmentMode").value = product?.fulfillmentMode || "manual";
+  field(card, "openAt").value = toLocalInputValue(product?.openAt);
+  field(card, "enabled").checked = product ? product.enabled !== false : true;
+  updateEditStore(card);
+
+  const advanced = card.querySelector(".advanced-fields");
+  advanced.open = Boolean(product && (["review", "checkout"].includes(product.action) || Number(product.maxOrderTotal) > 0));
+
+  field(card, "retailer").addEventListener("change", () => updateEditStore(card));
+  field(card, "productUrl").addEventListener("change", () => {
+    const url = field(card, "productUrl").value;
+    const detected = detectRetailer(url);
+    if (detected) {
+      field(card, "retailer").value = detected;
+      updateEditStore(card);
+      const detectedSku = extractSku(detected, url);
+      if (detectedSku) field(card, "sku").value = detectedSku;
+    }
+    if (!field(card, "title").value.trim()) {
+      field(card, "title").value = deriveTitleFromUrl(url);
+    }
+  });
+  field(card, "sku").addEventListener("change", () => {
+    if (field(card, "retailer").value === "amazon") {
+      field(card, "sku").value = field(card, "sku").value.trim().toUpperCase();
+    }
+  });
+  field(card, "action").addEventListener("change", () => {
+    if (["review", "checkout"].includes(field(card, "action").value)) advanced.open = true;
+  });
+
+  card.querySelector(".mission-done").addEventListener("click", () => void finishEdit(card));
+  const cancel = () => {
+    editingId = null;
+    editCardNode = null;
+    renderMissions();
+    if (resumeAutopilotAfterEdit) {
+      resumeAutopilotAfterEdit = false;
+      void runAction(() => resumeAutopilot(), "Autopilot resumed.");
+    }
+  };
+  card.querySelector(".mission-cancel").addEventListener("click", cancel);
+  card.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      cancel();
+    } else if (event.key === "Enter" && event.target instanceof HTMLInputElement) {
+      event.preventDefault();
+      void finishEdit(card);
+    }
+  });
+  return card;
+}
+
+function updateEditStore(card) {
+  const retailer = field(card, "retailer").value;
+  card.dataset.retailer = retailer;
+  card.querySelector(".sku-label").textContent = SKU_LABELS[retailer];
+  const skuInput = field(card, "sku");
+  skuInput.placeholder = retailer === "amazon" ? "B0ABC12345" : "Auto-filled from the link";
+  skuInput.inputMode = retailer === "amazon" ? "text" : "numeric";
+}
+
+function reportInvalid(input) {
+  const details = input.closest("details");
+  if (details && !details.open) details.open = true;
+  input.reportValidity();
+}
+
+function collectMission(card) {
+  const retailer = field(card, "retailer").value;
+  const sku = field(card, "sku").value.trim();
+  const openAtValue = field(card, "openAt").value;
+  return {
+    retailer,
+    title: field(card, "title").value.trim(),
+    openAt: openAtValue ? new Date(openAtValue).toISOString() : "",
+    productUrl: field(card, "productUrl").value.trim(),
+    sku: retailer === "amazon" ? sku.toUpperCase() : sku,
+    maxPrice: Number(field(card, "maxPrice").value),
+    maxOrderTotal: Number(field(card, "maxOrderTotal").value),
+    quantity: Number(field(card, "quantity").value),
+    action: field(card, "action").value,
+    alertLevel: field(card, "alertLevel").value,
+    fulfillmentMode: field(card, "fulfillmentMode").value,
+    enabled: field(card, "enabled").checked
+  };
+}
+
+async function finishEdit(card) {
+  for (const input of card.querySelectorAll("input, select")) {
+    if (!input.checkValidity()) {
+      reportInvalid(input);
+      return;
+    }
+  }
+  const mission = collectMission(card);
+  const existing = savedProducts();
+  const products = editingId === "new"
+    ? [...existing, mission]
+    : existing.map((candidate) => (candidate.id === editingId ? mission : candidate));
+  const saved = await runAction(
+    () => saveMissionList(products),
+    "Mission saved. The browser companion picks it up within a few seconds."
+  );
+  if (saved) {
+    editingId = null;
+    editCardNode = null;
+    renderMissions();
+    if (resumeAutopilotAfterEdit) {
+      resumeAutopilotAfterEdit = false;
+      await runAction(() => resumeAutopilot(), "Autopilot resumed.");
+    }
+  }
+}
+
+async function startEdit(product) {
+  if (editingId) {
+    setMessage("Finish the open mission editor first (Done or Cancel).", "error");
+    return;
+  }
+  if (isArmed()) {
+    try {
+      await pauseAutopilot();
+      resumeAutopilotAfterEdit = true;
+      setMessage("Autopilot paused while you edit — it resumes on Done.", "warn");
+    } catch (error) {
+      setMessage(error.message || "Could not pause Autopilot.", "error");
+      return;
+    }
+  }
+  editingId = product ? product.id : "new";
+  editCardNode = buildEditCard(product);
+  renderMissions();
+  editCardNode.querySelector("[data-field='productUrl']").focus();
+}
+
+function renderMissions() {
+  // While a mission editor is open, leave the list DOM alone: background
+  // snapshot broadcasts must not steal focus from the person typing.
+  if (editingId && editCardNode && elements.missionList.contains(editCardNode)) {
+    updateWorstCase();
+    return;
+  }
+  const statuses = currentSnapshot?.productStatuses || {};
+  const cards = [];
+  if (editingId === "new" && editCardNode) cards.push(editCardNode);
+  for (const product of savedProducts()) {
+    if (editingId === product.id && editCardNode) cards.push(editCardNode);
+    else cards.push(buildViewCard(product, statuses[product.id] || defaultStatus()));
+  }
+  if (!cards.length) {
+    const empty = document.createElement("div");
+    empty.className = "empty-state mission-empty";
+    const line = document.createElement("p");
+    line.textContent = "Watch or buy anything on Target, Walmart, or Amazon.";
+    const cta = document.createElement("button");
+    cta.type = "button";
+    cta.className = "button primary";
+    cta.textContent = "+ Create your first mission";
+    cta.addEventListener("click", () => startEdit(null));
+    empty.append(line, cta);
+    cards.push(empty);
+  }
+  elements.missionList.replaceChildren(...cards);
+  updateWorstCase();
+}
+
+function updateStatusAges() {
+  for (const age of elements.missionList.querySelectorAll(".status-age")) {
+    age.textContent = relativeTime(age.dataset.at || "");
+  }
+}
+
+// The hard ceiling: what everything hitting at once could cost.
+function updateWorstCase() {
+  const products = savedProducts();
+  if (!products.length) {
+    elements.worstCase.textContent = "";
+    return;
+  }
+  let total = 0;
+  let autoBuyCount = 0;
+  for (const product of products) {
+    if (!product.enabled) continue;
+    if (product.action === "checkout") autoBuyCount += 1;
+    if (product.action === "watch") continue;
+    total += ["review", "checkout"].includes(product.action)
+      ? Number(product.maxOrderTotal) || 0
+      : (Number(product.maxPrice) || 0) * (Number(product.quantity) || 1);
+  }
+  const exposure = total > 0
+    ? `Worst case if every enabled mission hits its cap: $${Math.round(total)}.`
+    : "No spending exposure: only watch-only missions are enabled.";
+  const liveNote = isArmed()
+    ? autoBuyCount > 0
+      ? ` Autopilot is ON — ${autoBuyCount} auto-buy mission${autoBuyCount === 1 ? "" : "s"} can place real orders.`
+      : " Autopilot is ON."
+    : "";
+  elements.worstCase.textContent = `${exposure}${liveNote}`;
+}
+
+// --- Companion connection card ---
+
+function companionStepState() {
+  if (currentSnapshot && !currentSnapshot.app?.companionPort) {
+    return {
+      done: false,
+      label: "Local server error",
+      hint: "This app could not start its local server on ports 32191–32195, so the extension has nothing to connect to. Close any other Cart Confirm windows or programs using those ports, then restart the app."
+    };
+  }
+  const connected = currentSnapshot?.status?.companion === "connected";
+  if (connected) return { done: true, label: "Connected ✓", hint: "" };
+  const hello = currentSnapshot?.companionHello;
+  const appVersion = currentSnapshot?.app?.version || "";
+  if (!hello) {
+    const diag = currentSnapshot?.serverDiagnostics || {};
+    if (diag.rejectedAt && (!diag.configServedAt || diag.rejectedAt > diag.configServedAt)) {
+      return {
+        done: false,
+        label: "Extension rejected",
+        hint: `Chrome IS reaching this app, but its requests come from “${diag.rejectedOrigin}”, which is not the expected Cart Confirm extension. On chrome://extensions, remove the extension and use Load unpacked again with the exact folder from “Show companion folder” — its ID must be kmpoonjaidgnldeobaaopfhfhlalclhd.`
+      };
+    }
+    if (diag.configServedAt) {
+      return {
+        done: false,
+        label: "Report missing",
+        hint: `The extension contacted this app (last at ${formatTime(diag.configServedAt)}) but its status report never arrived — it is probably running old companion code. On chrome://extensions, click the reload arrow on the Cart Confirm card, check it for a red “Errors” button, and confirm it was loaded from the folder shown by “Show companion folder”. Then click the toolbar icon to retry.`
+      };
+    }
+    return {
+      done: false,
+      label: "Waiting for Chrome",
+      hint: "Nothing from Chrome has reached this app yet. Click the Cart Confirm toolbar icon in Chrome (pin it via the puzzle-piece menu) and read its badge: IDLE/ARM = connected · OFF = Chrome cannot reach this app — close ALL other Cart Confirm/Electron processes (or reboot) and check antivirus/firewall web protection · UPD = reload the extension · PAIR = pairing issue. Also confirm the extension was loaded from the folder shown by “Show companion folder”."
+    };
+  }
+  if (hello.reason === "version-mismatch") {
+    return {
+      done: false,
+      label: "Reload the extension",
+      hint: `Chrome has companion v${hello.version} but this app is v${appVersion}. In chrome://extensions, click the reload arrow on the Cart Confirm Companion card.`
+    };
+  }
+  if (hello.reason === "pairing-mismatch") {
+    return {
+      done: false,
+      label: "Re-pair the extension",
+      hint: "The pinned pairing changed. Remove the unpacked extension and load it again from the companion folder."
+    };
+  }
+  return {
+    done: false,
+    label: "Open a store tab",
+    hint: "Extension loaded ✓ — now open (or reload) a Target, Walmart, or Amazon tab in the same Chrome profile. Product links opened by this app already go to Chrome."
+  };
+}
+
+// --- Schedule agenda ---
+
+function scheduledProducts(includeDisabled = false) {
+  return savedProducts()
+    .filter((product) => product.openAt && (includeDisabled || product.enabled))
+    .map((product) => ({ ...product, openAtMs: new Date(product.openAt).getTime() }))
+    .filter((product) => Number.isFinite(product.openAtMs))
+    .sort((a, b) => a.openAtMs - b.openAtMs);
+}
+
+function formatRemaining(ms) {
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+  const days = Math.floor(totalSeconds / 86400);
+  const hours = Math.floor((totalSeconds % 86400) / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  const chunks = [];
+  if (days) chunks.push(`${days}d`);
+  if (days || hours) chunks.push(`${hours}h`);
+  chunks.push(`${minutes}m`, `${seconds}s`);
+  return chunks.join(" ");
+}
+
+function updateScheduleNext() {
+  const items = scheduledProducts();
+  if (!items.length) {
+    elements.scheduleNext.textContent = "Nothing scheduled";
+    return;
+  }
+  const item = items[0];
+  const remaining = item.openAtMs - Date.now();
+  elements.scheduleNext.textContent = remaining <= 0
+    ? `${productLabel(item)}: opening now`
+    : `Next: ${productLabel(item)} in ${formatRemaining(remaining)}`;
+}
+
+function renderSchedule() {
+  const items = scheduledProducts(true);
+  elements.schedulePanel.hidden = items.length === 0;
+  if (!items.length) return;
+  const enabledCount = items.filter((item) => item.enabled).length;
+  elements.scheduleCoverage.textContent = `${enabledCount}/${items.length} enabled`;
+  elements.enableScheduledButton.hidden = enabledCount === items.length;
+  const dayStart = new Date();
+  dayStart.setHours(0, 0, 0, 0);
+  const weekStart = dayStart.getTime();
+  const cells = [];
+  for (let dayOffset = 0; dayOffset < 7; dayOffset += 1) {
+    const start = weekStart + dayOffset * 86_400_000;
+    const end = start + 86_400_000;
+    const cell = document.createElement("div");
+    cell.className = dayOffset === 0 ? "schedule-day today" : "schedule-day";
+    const head = document.createElement("span");
+    head.className = "day-head";
+    head.textContent = new Date(start).toLocaleDateString([], { weekday: "short", day: "numeric" });
+    cell.append(head);
+    for (const item of items.filter((candidate) => candidate.openAtMs >= start && candidate.openAtMs < end)) {
+      const chip = document.createElement("span");
+      chip.className = item.enabled ? "schedule-chip" : "schedule-chip off";
+      chip.dataset.retailer = item.retailer;
+      chip.textContent = `${new Date(item.openAtMs).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })} · ${productLabel(item)}`;
+      chip.title = `${STORE_LABELS[item.retailer]} · ${productLabel(item)} — click to ${item.enabled ? "disable" : "enable"}`;
+      chip.addEventListener("click", () => {
+        void runAction(
+          () => setMissionsEnabled(new Map([[item.id, !item.enabled]])),
+          `${productLabel(item)} ${item.enabled ? "disabled" : "enabled"}.`
+        );
+      });
+      cell.append(chip);
+    }
+    cells.push(cell);
+  }
+  const later = items.filter((item) => item.openAtMs >= weekStart + 7 * 86_400_000);
+  if (later.length) {
+    const div = document.createElement("div");
+    div.className = "schedule-later";
+    div.textContent = `Later: ${later.map((item) => (
+      `${productLabel(item)} — ${new Date(item.openAtMs).toLocaleString([], { dateStyle: "medium", timeStyle: "short" })}`
+    )).join(" · ")}`;
+    cells.push(div);
+  }
+  elements.scheduleWeek.replaceChildren(...cells);
+  updateScheduleNext();
+}
+
+// --- Loud alarm for alert-level "alarm" missions (throttled per mission) ---
+
+const ALARM_EVENT_TYPES = new Set(["offer-observed", "cart-item-confirmed", "review-ready", "order-confirmed"]);
+const ALARM_THROTTLE_MS = 5 * 60_000;
+const ALARM_MAX_MS = 30_000;
+
+function silenceAlarm() {
+  clearInterval(alarmBeepInterval);
+  clearTimeout(alarmStopTimer);
+  alarmBeepInterval = null;
+  alarmStopTimer = null;
+  elements.alarmBar.hidden = true;
+}
+
+function beep() {
+  try {
+    alarmAudio ||= new (window.AudioContext || window.webkitAudioContext)();
+    const now = alarmAudio.currentTime;
+    for (const [offset, frequency] of [[0, 880], [0.18, 1245], [0.36, 880]]) {
+      const oscillator = alarmAudio.createOscillator();
+      const gain = alarmAudio.createGain();
+      oscillator.type = "square";
+      oscillator.frequency.value = frequency;
+      gain.gain.setValueAtTime(0.12, now + offset);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + offset + 0.15);
+      oscillator.connect(gain).connect(alarmAudio.destination);
+      oscillator.start(now + offset);
+      oscillator.stop(now + offset + 0.16);
+    }
+  } catch {
+    // Audio is best-effort; the visual alarm bar still shows.
+  }
+}
+
+function startAlarm(label) {
+  elements.alarmText.textContent = `🔔 ${label}`;
+  elements.alarmBar.hidden = false;
+  beep();
+  clearInterval(alarmBeepInterval);
+  clearTimeout(alarmStopTimer);
+  alarmBeepInterval = setInterval(beep, 1_500);
+  alarmStopTimer = setTimeout(silenceAlarm, ALARM_MAX_MS);
+}
+
+function checkForAlarmEvents(events) {
+  const products = savedProducts();
+  for (const event of events.slice(0, 20)) {
+    if (!event.timestamp || event.timestamp <= lastAlarmEventStamp) break;
+    if (!ALARM_EVENT_TYPES.has(event.eventType)) continue;
+    if (event.eventType === "offer-observed" && event.eligible !== true) continue;
+    const product = products.find((candidate) => candidate.id === event.productId);
+    if (!product || product.alertLevel !== "alarm") continue;
+    const lastFired = alarmLastFiredAt.get(product.id) || 0;
+    if (Date.now() - lastFired < ALARM_THROTTLE_MS) continue;
+    alarmLastFiredAt.set(product.id, Date.now());
+    startAlarm(event.message || `${productLabel(product)}: ${eventName(event.eventType)}`);
+    break;
+  }
+  if (events.length && events[0].timestamp) lastAlarmEventStamp = events[0].timestamp;
+}
+
+// --- Feed ---
+
+function renderEvents(allEvents) {
+  const events = eventFilterProductId
+    ? allEvents.filter((event) => event.productId === eventFilterProductId)
+    : allEvents;
+  elements.eventFilterButton.hidden = !eventFilterProductId;
+  if (eventFilterProductId) {
+    elements.eventFilterButton.textContent = `Showing ${productTitle(eventFilterProductId) || "one mission"} — show all`;
+  }
   if (!events.length) {
     const empty = document.createElement("div");
     empty.className = "empty-state";
-    empty.textContent = "No events yet.";
+    empty.textContent = eventFilterProductId ? "No events for this mission yet." : "No events yet.";
     elements.eventList.replaceChildren(empty);
     return;
   }
@@ -494,7 +864,11 @@ function renderEvents(events) {
     const title = document.createElement("strong");
     title.textContent = event.message || eventName(event.eventType);
     const detail = document.createElement("small");
-    const parts = [STORE_LABELS[event.retailer], event.sku, eventName(event.eventType)].filter(Boolean);
+    const parts = [
+      STORE_LABELS[event.retailer],
+      productTitle(event.productId) || event.sku,
+      eventName(event.eventType)
+    ].filter(Boolean);
     if (event.price !== undefined) parts.push(money(event.price));
     if (event.orderTotal !== undefined) parts.push(`total ${money(event.orderTotal)}`);
     if (event.reason) parts.push(event.reason.replaceAll("-", " "));
@@ -510,79 +884,163 @@ function renderEvents(events) {
   }));
 }
 
-function render(snapshot, populate = false) {
-  const previousSettings = currentSnapshot?.settings;
+// --- Top-level render ---
+
+function populateSettingsInputs(settings) {
+  const map = [
+    [elements.retryIntervalSeconds, settings.retryIntervalSeconds],
+    [elements.storeNavigationIntervalSeconds, settings.storeNavigationIntervalSeconds],
+    [elements.overloadCooldownSeconds, settings.overloadCooldownSeconds]
+  ];
+  for (const [input, value] of map) {
+    if (document.activeElement !== input) input.value = value;
+  }
+  if (document.activeElement !== elements.fastMode) elements.fastMode.checked = settings.fastMode;
+}
+
+function render(snapshot) {
   currentSnapshot = snapshot;
   const { settings, status, productStatuses, events, app } = snapshot;
-  if (populate) populateForm(settings);
-  else if (previousSettings && (
-    previousSettings.scheduledOpenEnabled !== settings.scheduledOpenEnabled
-    || previousSettings.scheduledRetailer !== settings.scheduledRetailer
-    || previousSettings.scheduledOpenAt !== settings.scheduledOpenAt
-  )) {
-    elements.scheduledOpenEnabled.checked = settings.scheduledOpenEnabled;
-    elements.scheduledRetailer.value = settings.scheduledRetailer || "target";
-    elements.scheduledOpenAt.value = toLocalInputValue(settings.scheduledOpenAt);
-    updateScheduleControls();
-  }
 
+  const companionState = companionStepState();
+  elements.connectCard.hidden = companionState.done;
+  elements.connectState.textContent = companionState.label;
+  elements.connectHint.textContent = companionState.hint;
+  elements.connectHint.hidden = !companionState.hint;
   elements.connectionPill.classList.toggle("connected", status.companion === "connected");
   elements.connectionText.textContent = status.companion === "connected"
-    ? "Browser companion connected"
-    : "Waiting for companion";
-  elements.latestMessage.textContent = status.lastMessage || "Waiting for the browser companion.";
-  elements.latestTime.textContent = formatDateTime(status.lastEventAt);
+    ? "Companion connected"
+    : companionState.label;
+  elements.connectionPill.title = companionState.hint;
+
+  const armed = Boolean(settings.automationEnabled);
+  elements.autopilotToggle.classList.toggle("on", armed);
+  elements.autopilotState.textContent = armed ? "ON" : "OFF";
+
+  populateSettingsInputs(settings);
   elements.portBadge.textContent = app.companionPort ? `Port ${app.companionPort}` : "Port unavailable";
   elements.versionText.textContent = `${app.name} v${app.version}`;
-  elements.disarmButton.disabled = !settings.automationEnabled;
-  renderProductStatuses(settings.products, productStatuses);
+
+  renderMissions();
+  checkForAlarmEvents(events);
   renderEvents(events);
-  updateCountdown();
+  renderSchedule();
 }
 
-async function runAction(action, successMessage) {
-  try {
-    const result = await action();
-    const text = typeof successMessage === "function" ? successMessage(result) : successMessage;
-    setMessage(text, "success");
-    return result;
-  } catch (error) {
-    setMessage(error.message || "The action failed.", "error");
-    return null;
+// --- Actions ---
+
+elements.autopilotToggle.addEventListener("click", () => runAction(async () => {
+  if (!currentSnapshot) throw new Error("Settings have not loaded yet.");
+  if (editingId) throw new Error("Finish the open mission editor first (Done or Cancel).");
+  const saved = currentSnapshot.settings;
+  if (saved.automationEnabled) {
+    const next = await window.cartAssist.saveSettings({ ...saved, automationEnabled: false });
+    render(next);
+    return { armed: false };
   }
-}
-
-elements.addProductButton.addEventListener("click", () => {
-  elements.productList.append(createProductRow({
-    retailer: elements.storeShortcut.value,
-    maxPrice: 0,
-    maxOrderTotal: 0,
-    quantity: 1,
-    action: "cart",
-    fulfillmentMode: "manual",
-    enabled: true
-  }));
-  updateBoundary();
-});
-
-elements.saveButton.addEventListener("click", () => runAction(
-  saveCurrentForm,
-  "Buy list saved. The browser companion will pick up the new configuration shortly."
-));
-
-elements.openBuyListButton.addEventListener("click", () => runAction(
-  () => window.cartAssist.openBuyList(),
-  (count) => `${count} enabled product page${count === 1 ? "" : "s"} opened in your default browser.`
-));
+  const autoSubmitCount = saved.products.filter((product) => product.enabled && product.action === "checkout").length;
+  if (
+    autoSubmitCount > 0
+    && !window.confirm(`${autoSubmitCount} enabled mission${autoSubmitCount === 1 ? "" : "s"} may submit a real order. Re-arming starts a new run and can retry an item whose prior submission was uncertain. Verify retailer order history first. "Prepare checkout, I submit" is safer. Switch Autopilot on anyway?`)
+  ) {
+    throw new Error("Autopilot was not switched on.");
+  }
+  const next = await window.cartAssist.saveSettings({ ...saved, automationEnabled: true });
+  render(next);
+  return { armed: true };
+}, (result) => (result?.armed
+  ? "Autopilot ON. Missions act whenever their product pages are open — use Open all enabled to launch them."
+  : "Autopilot OFF. Monitoring pages stay open, but nothing will be clicked.")));
 
 elements.disarmButton.addEventListener("click", () => runAction(async () => {
-  if (!currentSnapshot) throw new Error("Settings have not loaded yet.");
-  const next = await window.cartAssist.saveSettings({
-    ...currentSnapshot.settings,
-    automationEnabled: false
-  });
-  render(next, true);
-}, "Automation disarmed and saved."));
+  const next = await window.cartAssist.stopAll();
+  render(next);
+}, "Stopped. Autopilot off, queued page openings cancelled, and scheduled times cleared."));
+
+elements.newMissionButton.addEventListener("click", () => void startEdit(null));
+
+// Drag a mission card to reorder; order is cosmetic and saves immediately.
+elements.missionList.addEventListener("dragover", (event) => {
+  if (!editingId) event.preventDefault();
+});
+elements.missionList.addEventListener("drop", (event) => {
+  event.preventDefault();
+  const sourceId = event.dataTransfer.getData("text/plain");
+  if (!sourceId || editingId) return;
+  const products = [...savedProducts()];
+  const from = products.findIndex((candidate) => candidate.id === sourceId);
+  if (from === -1) return;
+  const targetId = event.target instanceof Element
+    ? event.target.closest(".mission-card")?.dataset.productId
+    : "";
+  const [moved] = products.splice(from, 1);
+  let to = products.length;
+  if (targetId && targetId !== sourceId) {
+    const targetIndex = products.findIndex((candidate) => candidate.id === targetId);
+    if (targetIndex !== -1) to = targetIndex;
+  }
+  products.splice(to, 0, moved);
+  void runAction(() => saveMissionList(products), "Missions reordered.");
+});
+
+elements.testButton.addEventListener("click", () => runAction(async () => {
+  if (isArmed()) {
+    throw new Error("Switch Autopilot off before testing — Test opens the product page without buying anything.");
+  }
+  await window.cartAssist.testEvent();
+  return window.cartAssist.openProduct();
+}, (result) => (result?.via === "companion-tab"
+  ? "Test started in your existing Chrome tab. Watch the mission row and feed — nothing is added while Autopilot is off."
+  : result?.via === "default-browser"
+    ? "Test page opened, but Chrome was not found — it used your default browser, where the companion cannot see it. Install Chrome or open the link in Chrome manually."
+    : "Test started: the product page is opening in Chrome. Watch the mission row and feed — nothing is added while Autopilot is off.")));
+
+elements.openAllButton.addEventListener("click", async () => {
+  if (openRunInFlight) return;
+  openRunInFlight = true;
+  elements.openAllButton.disabled = true;
+  setMessage("Opening enabled missions… multiple opens are paced to respect store limits.");
+  try {
+    const result = await window.cartAssist.openBuyList();
+    const parts = [`${result.count} mission page${result.count === 1 ? "" : "s"} opened`];
+    if (result.reused) parts.push(`${result.reused} reused an existing Chrome tab`);
+    if (result.deduped) parts.push(`${result.deduped} already queued`);
+    const armNote = result.armed
+      ? "Autopilot is ON — missions act as each page loads."
+      : "Autopilot is OFF — nothing will be added until you switch it on.";
+    const browserNote = result.defaultBrowser
+      ? " Chrome was not found, so your default browser was used — the companion only works inside Chrome."
+      : "";
+    setMessage(`${parts.join(", ")}. ${armNote}${browserNote}`, result.defaultBrowser ? "error" : result.armed ? "success" : "warn");
+  } catch (error) {
+    setMessage(error.message || "The action failed.", "error");
+  } finally {
+    openRunInFlight = false;
+    elements.openAllButton.disabled = false;
+  }
+});
+
+function scheduleSettingsSave() {
+  clearTimeout(settingsSaveTimer);
+  settingsSaveTimer = setTimeout(() => {
+    for (const input of [
+      elements.retryIntervalSeconds,
+      elements.storeNavigationIntervalSeconds,
+      elements.overloadCooldownSeconds
+    ]) {
+      if (!input.checkValidity()) {
+        input.reportValidity();
+        return;
+      }
+    }
+    void runAction(() => saveMissionList(savedProducts()), "Settings saved.");
+  }, 600);
+}
+
+elements.fastMode.addEventListener("change", scheduleSettingsSave);
+elements.retryIntervalSeconds.addEventListener("change", scheduleSettingsSave);
+elements.storeNavigationIntervalSeconds.addEventListener("change", scheduleSettingsSave);
+elements.overloadCooldownSeconds.addEventListener("change", scheduleSettingsSave);
 
 elements.openCartButton.addEventListener("click", () => runAction(
   () => window.cartAssist.openCart(elements.storeShortcut.value),
@@ -607,21 +1065,70 @@ elements.copyExtensionButton.addEventListener("click", () => runAction(
 elements.clearEventsButton.addEventListener("click", () => runAction(async () => {
   const next = await window.cartAssist.clearEvents();
   render(next);
-}, "Event log cleared."));
+}, "Feed cleared."));
 
-elements.testButton.addEventListener("click", () => runAction(
-  () => window.cartAssist.testEvent(),
-  "Local companion server is running. Load the Chrome companion for live store events."
-));
+elements.enableScheduledButton.addEventListener("click", () => {
+  const updates = new Map(
+    scheduledProducts(true).filter((item) => !item.enabled).map((item) => [item.id, true])
+  );
+  if (!updates.size) return;
+  void runAction(
+    () => setMissionsEnabled(updates),
+    `${updates.size} scheduled mission${updates.size === 1 ? "" : "s"} enabled.`
+  );
+});
 
-elements.automationEnabled.addEventListener("change", updateBoundary);
-elements.scheduledOpenEnabled.addEventListener("change", updateScheduleControls);
-elements.scheduledRetailer.addEventListener("change", updateCountdown);
-elements.scheduledOpenAt.addEventListener("input", updateCountdown);
+// Morning digest: summarize what happened while the window was unfocused.
+const DIGEST_MIN_AWAY_MS = 10 * 60_000;
+
+function showDigest(text) {
+  elements.digestText.textContent = text;
+  elements.digestBar.hidden = false;
+}
+
+elements.digestDismissButton.addEventListener("click", () => {
+  elements.digestBar.hidden = true;
+});
+
+window.addEventListener("blur", () => {
+  awaySince = Date.now();
+});
+
+window.addEventListener("focus", () => {
+  const since = awaySince;
+  awaySince = 0;
+  if (!since || Date.now() - since < DIGEST_MIN_AWAY_MS) return;
+  const sinceIso = new Date(since).toISOString();
+  const recent = (currentSnapshot?.events || []).filter((event) => event.timestamp > sinceIso);
+  if (!recent.length) return;
+  const count = (predicate) => recent.filter(predicate).length;
+  const orders = count((event) => event.eventType === "order-confirmed");
+  const secured = count((event) => event.eventType === "cart-item-confirmed");
+  const reviews = count((event) => event.eventType === "review-ready");
+  const sightings = count((event) => event.eventType === "offer-observed" && event.eligible === true);
+  const blocks = count((event) => ["automation-blocked", "store-error"].includes(event.eventType));
+  const parts = [];
+  if (orders) parts.push(`${orders} order${orders === 1 ? "" : "s"} confirmed`);
+  if (secured) parts.push(`${secured} cart${secured === 1 ? "" : "s"} secured`);
+  if (reviews) parts.push(`${reviews} final review${reviews === 1 ? "" : "s"} ready`);
+  if (sightings) parts.push(`${sightings} eligible sighting${sightings === 1 ? "" : "s"}`);
+  if (blocks) parts.push(`${blocks} block${blocks === 1 ? "" : "s"}`);
+  if (!parts.length) return;
+  showDigest(`While you were away: ${parts.join(" · ")}.`);
+});
+
+elements.silenceAlarmButton.addEventListener("click", silenceAlarm);
+elements.eventFilterButton.addEventListener("click", () => {
+  eventFilterProductId = null;
+  renderEvents(currentSnapshot?.events || []);
+});
 
 window.cartAssist.onUpdate((snapshot) => render(snapshot));
-setInterval(updateCountdown, 1000);
+setInterval(() => {
+  updateScheduleNext();
+  updateStatusAges();
+}, 1000);
 
 window.cartAssist.getSnapshot()
-  .then((snapshot) => render(snapshot, true))
+  .then((snapshot) => render(snapshot))
   .catch((error) => setMessage(error.message || "Unable to load the app.", "error"));

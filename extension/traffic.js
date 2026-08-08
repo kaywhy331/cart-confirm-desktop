@@ -50,6 +50,15 @@
     const reservationId = String(options.reservationId || "");
     if (!reservationId) throw new Error("A navigation reservation ID is required.");
     const state = pruneReservations(cloneState(input), now);
+    // A product re-reserving replaces its own earlier slot instead of queueing
+    // behind it; stale abandoned slots must not starve the other products.
+    const ownerId = String(options.ownerId || "");
+    const productId = String(options.productId || "");
+    for (const [id, reservation] of Object.entries(state.reservations)) {
+      if (id !== reservationId && reservation.ownerId === ownerId && reservation.productId === productId) {
+        delete state.reservations[id];
+      }
+    }
     const notBefore = finiteTime(options.notBefore, now);
     const allowedAt = Math.max(
       now,

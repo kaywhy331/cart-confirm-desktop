@@ -142,6 +142,66 @@
     }
   }
 
+  // Retailer pages embed schema.org Product JSON-LD tied to the exact item.
+  // It is the fallback when the visible price element cannot be located from
+  // the buy box (e.g. Target's "$35 orders" shipping blurb satisfies the
+  // dollar-amount climb before the real price is reached).
+  function structuredProductNodes(doc) {
+    const nodes = [];
+    for (const script of queryAll(doc, ["script[type='application/ld+json']"]).slice(0, 25)) {
+      const stack = [[parseMaybeJson(script.textContent), 0]];
+      while (stack.length) {
+        const [node, depth] = stack.pop();
+        if (!node || typeof node !== "object" || depth > 6) continue;
+        if (Array.isArray(node)) {
+          for (const item of node.slice(0, 50)) stack.push([item, depth + 1]);
+          continue;
+        }
+        const types = [node["@type"]].flat().map((type) => String(type || "").toLowerCase());
+        if (types.includes("product")) nodes.push(node);
+        for (const key of ["@graph", "mainEntity", "itemListElement", "item"]) {
+          if (node[key]) stack.push([node[key], depth + 1]);
+        }
+      }
+    }
+    return nodes;
+  }
+
+  function offerPrice(offers, depth = 0) {
+    if (depth > 3) return null;
+    for (const offer of [offers].flat().filter(Boolean).slice(0, 10)) {
+      if (typeof offer !== "object") continue;
+      for (const raw of [offer.price, offer.lowPrice]) {
+        const price = Number(raw);
+        if (raw !== undefined && raw !== null && raw !== "" && Number.isFinite(price) && price >= 0 && price <= 1_000_000) {
+          return Math.round(price * 100) / 100;
+        }
+      }
+      if (offer.offers) {
+        const nested = offerPrice(offer.offers, depth + 1);
+        if (nested !== null) return nested;
+      }
+    }
+    return null;
+  }
+
+  function structuredPrice(doc, retailer, sku) {
+    const wanted = String(sku || "");
+    const nodes = structuredProductNodes(doc);
+    const matching = nodes.filter((node) => {
+      const nodeSku = String(node.sku || node.productID || "").trim();
+      const url = String(node.url || node["@id"] || "");
+      return wanted && (nodeSku === wanted || extractSkuFromUrl(retailer, url) === wanted);
+    });
+    // Only fall back to an unkeyed node when it is the page's single product.
+    const usable = matching.length ? matching : (nodes.length === 1 ? nodes : []);
+    for (const node of usable) {
+      const price = offerPrice(node.offers);
+      if (price !== null) return price;
+    }
+    return null;
+  }
+
   function extractSkuFromUrl(retailer, value) {
     const text = String(value || "");
     const patterns = {
@@ -160,6 +220,16 @@
 
   function isFirstPartyText(retailer, value) {
     return Boolean(STORE_CONFIG[retailer]?.firstPartyPattern.test(String(value || "")));
+  }
+
+  // Target labels marketplace (Target Plus) offers explicitly and renders no
+  // seller text at all for items it sells itself. When no seller label exists,
+  // the absence of every marketplace marker is the first-party signal; any
+  // marker in scope fails closed. Walmart and Amazon keep the strict labels.
+  const TARGET_MARKETPLACE_PATTERN = /sold\s+(?:and|&)\s+shipped\s+by\s+(?!target\b)|sold\s+by\s+(?!target\b)|target\s*plus|marketplace\s+seller/i;
+
+  function targetFirstPartyByAbsence(scopeText) {
+    return !TARGET_MARKETPLACE_PATTERN.test(String(scopeText || ""));
   }
 
   function sellerRegion(doc, selectors) {
@@ -213,18 +283,31 @@
   }
 
   function readQuantity(container) {
-    const control = query(container, [
+    const hinted = query(container, [
       "select[aria-label*='quantity' i]",
       "select[name*='quantity' i]",
+      "select[data-test*='quantity' i]",
+      "select[data-testid*='quantity' i]",
       "input[aria-label*='quantity' i]",
-      "input[name*='quantity' i]",
-      "select"
+      "input[name*='quantity' i]"
     ]);
-    const raw = control?.value || control?.getAttribute?.("aria-valuenow") || "";
-    const value = Number.parseInt(raw, 10);
-    if (Number.isInteger(value) && value > 0) return value;
+    const hintedRaw = hinted?.value || hinted?.getAttribute?.("aria-valuenow") || "";
+    const hintedValue = Number.parseInt(hintedRaw, 10);
+    if (Number.isInteger(hintedValue) && hintedValue > 0) return hintedValue;
+    // A generic select only counts when its whole value is a small number —
+    // "2-year-plan" style add-on options must not parse as quantity 2.
+    const generic = query(container, ["select"]);
+    const genericRaw = String(generic?.value || "");
+    if (/^\d{1,2}$/.test(genericRaw)) return Number(genericRaw);
     const match = textOf(container).match(/(?:qty|quantity)\s*[: ]\s*(\d{1,2})/i);
-    return match ? Number(match[1]) : null;
+    if (match) return Number(match[1]);
+    const stepper = query(container, [
+      "[role='spinbutton'][aria-valuenow]",
+      "[aria-label*='quantity' i][aria-valuenow]"
+    ]);
+    const stepperValue = Number.parseInt(stepper?.getAttribute?.("aria-valuenow") || "", 10);
+    if (Number.isInteger(stepperValue) && stepperValue > 0) return stepperValue;
+    return null;
   }
 
   function quantityControls(container) {
@@ -261,10 +344,15 @@
       }
     };
     const seller = sellerRegion(container, configs[retailer].seller);
+    let firstParty = isFirstPartyText(retailer, seller || textOf(container));
+    if (!firstParty && retailer === "target") {
+      firstParty = targetFirstPartyByAbsence(textOf(container));
+    }
     return {
       container,
-      seller,
-      firstParty: isFirstPartyText(retailer, seller || textOf(container)),
+      // Fulfillment/radio copy caught by the region scan is not a seller name.
+      seller: /sold|seller/i.test(seller) ? seller : "",
+      firstParty,
       price: readPrice(container, configs[retailer].price),
       quantity: readQuantity(container),
       controls: quantityControls(container)
@@ -490,10 +578,18 @@
         ]) || findAction(doc, [], /add to cart/i);
         const offerRoot = closestOfferContainer(addButton);
         const seller = sellerRegion(offerRoot, ["[data-test*='sold-by' i]", "[data-test*='seller' i]", "[data-test*='fulfillment' i]"]);
+        // The climb can stop at a fulfillment blurb whose "$35 orders" text
+        // looks like a price region; the JSON-LD product record keyed to the
+        // exact TCIN is the fallback, then the page-level price element.
+        const price = readPrice(offerRoot, ["[data-test='product-price']", "[data-test*='current-price' i]", "meta[itemprop='price']", "[itemprop='price']"])
+          ?? structuredPrice(doc, "target", product.sku)
+          ?? readPrice(doc, ["[data-test='product-price']", "meta[itemprop='price']"]);
         return {
-          seller,
-          firstParty: isFirstPartyText("target", seller),
-          price: readPrice(offerRoot, ["[data-test='product-price']", "[data-test*='current-price' i]", "meta[itemprop='price']", "[itemprop='price']"]),
+          // Fulfillment copy ("Ships free with … orders") is not a seller name.
+          seller: /sold|seller/i.test(seller) ? seller : "",
+          firstParty: isFirstPartyText("target", seller)
+            || targetFirstPartyByAbsence(pageText(doc, 200_000)),
+          price,
           available: isActionable(addButton) && !/sold out|out of stock|unavailable/i.test(textOf(addButton)),
           addButton
         };
@@ -550,7 +646,7 @@
         if (path.includes("/cart")) return "cart";
         return extractSkuFromUrl("walmart", url) ? "product" : "other";
       },
-      offer(doc) {
+      offer(doc, product) {
         const addButton = query(doc, ["button[data-automation-id='add-to-cart']", "button[data-testid*='add-to-cart' i]"])
           || findAction(doc, [], /add to cart/i);
         const offerRoot = closestOfferContainer(addButton);
@@ -558,7 +654,8 @@
         return {
           seller,
           firstParty: isFirstPartyText("walmart", seller),
-          price: readPrice(offerRoot, ["[data-automation-id='product-price']", "[data-testid='price-wrap'] [itemprop='price']", "meta[itemprop='price']", "[itemprop='price']"]),
+          price: readPrice(offerRoot, ["[data-automation-id='product-price']", "[data-testid='price-wrap'] [itemprop='price']", "meta[itemprop='price']", "[itemprop='price']"])
+            ?? structuredPrice(doc, "walmart", product?.sku),
           available: isActionable(addButton) && !/sold out|out of stock|unavailable/i.test(textOf(addButton)),
           addButton
         };

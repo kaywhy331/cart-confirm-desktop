@@ -10,12 +10,12 @@ These rules are enforced in code and cannot be disabled from the UI:
 
 - The URL and exact store identifier must match: Target TCIN, Walmart item ID, or Amazon ASIN.
 - The page must expose a readable unit price at or below the product's cap.
-- The seller must be verifiably first-party: Target, Walmart, or Amazon directly. Marketplace, fulfilled-only, and missing-seller offers are blocked.
+- The seller must be verifiably first-party: Target, Walmart, or Amazon directly. Marketplace, fulfilled-only, and missing-seller offers are blocked. Because Target labels marketplace (Target Plus) offers explicitly and shows no seller text for items it sells itself, an unlabeled Target offer is treated as first-party only when no marketplace marker appears anywhere on the page; any marker fails closed. Walmart and Amazon always require an explicit first-party label.
 - The requested cart quantity must be confirmed after any quantity change settles.
 - Current cart seller and price evidence must be readable; product-page evidence cannot make an ambiguous cart safe.
 - Before checkout, the companion must completely enumerate exactly one cart line, independently reconcile remove controls, and prove that it is the configured SKU. Unknown, duplicate, and extra lines block submission.
 - Checkout requires fresh cart-confirmed proof and a readable final order total at or below that row's final-total cap.
-- Only one automated product workflow per store can run at a time. Duplicate tabs cannot claim the same product.
+- Each product is processed by exactly one tab — duplicate tabs cannot claim the same product — and **Add to cart only** items run in parallel across their own tabs. Final-review and auto-submit workflows remain exclusive per store: only one purchase flow per store at a time.
 - A confirmed product is marked complete for the current automation run and cannot be purchased twice. Disarming and re-arming intentionally starts a new run.
 - Proof, attempts, completion, and submit intent live in extension-owned storage. An uncertain final click holds its run lock until a retailer-specific confirmation or explicit failure appears; starting a new run requires an explicit warning to check retailer order history first.
 - Final auto-submit re-reads the complete evidence immediately before clicking, requires the configured shipping/pickup mode, and blocks selected subscriptions, protection plans, tips, donations, gift wrap, and installment choices.
@@ -28,10 +28,15 @@ Start with **Add to cart only** until you have verified the current store select
 
 ## Features
 
-- Up to 50 unique products across Target, Walmart, and Amazon.
-- Per-product maximum unit price, maximum final order total, quantity, fulfillment mode, enabled state, and add-only/review/auto-submit action.
-- One global schedule: choose one store and one local date/time. At that time, only enabled products for that store are queued.
-- Manual **Open enabled buy list** action for all enabled stores, with each store's pages queued independently.
+- A mission-control layout: each product is a mission card showing its caps, action, live status, and last-checked age in one row, with inline editing (Done saves immediately) and a per-mission enable switch. A header **Autopilot** toggle arms and disarms everything; the Connect Chrome setup card appears only while the companion is disconnected and names the exact blocker.
+- Up to 50 unique products across Target, Walmart, and Amazon, each with an optional display name.
+- Per-product maximum unit price, maximum final order total, quantity, fulfillment mode, enabled state, and a mission action: **Watch & alert only** (monitors and alerts at or under your cap without ever clicking), add-only, final-review, or auto-submit. Rarely used fields live behind each row's **Advanced** section.
+- Per-product alert loudness: standard ping, **loud alarm** (repeating audible alert with an on-screen Silence bar, throttled to once per five minutes per item), or silent log only.
+- A worst-case exposure line in step 4: the total if every enabled item hits its cap — automation can never exceed the caps you set.
+- Click any live-status row to filter the event log to that item's timeline.
+- A **Test (no buying)** button that opens the first enabled item while disarmed so the companion can report price, seller, and stock without touching the cart.
+- Per-product scheduled openings for known drop times: give any item an **Open at** date/time, save, and arm in advance. At that moment its page opens in Chrome (reusing an existing tab when possible) and the armed companion takes over. Step 4 shows a seven-day calendar strip of upcoming openings with a live countdown; times fire exactly once, are marked missed instead of running more than two minutes late, and an old single global schedule migrates onto its store's enabled products automatically.
+- Manual **Open enabled items now** action for all enabled stores, with each store's pages queued independently. When the companion is connected, an existing Chrome tab for that store is navigated instead of opening a new window, and identical pending opens are deduplicated.
 - Configurable retry interval from 5 to 3,600 seconds, with jitter and increasing backoff after repeated store errors.
 - Configurable per-store navigation spacing from 10 to 3,600 seconds and overload cooldown from 60 to 86,400 seconds.
 - Automatic recovery when an item becomes unavailable in the cart or during checkout.
@@ -62,30 +67,28 @@ The extension badge reads `IDLE` when the desktop app is connected but automatio
 
 ## Configure a buy list
 
-For each row:
+Click **+ New mission**, then:
 
-1. Choose Target, Walmart, or Amazon.
-2. Paste the canonical product URL. The UI attempts to infer the store and SKU.
-3. Confirm the TCIN, Walmart item ID, or ASIN.
-4. Set a maximum **per-unit** price in US dollars.
-5. For final-review or auto-submit rows, set a positive maximum **final order total**. It must be at least the capped unit price multiplied by quantity.
-6. Set the total quantity for that product.
-7. Choose **Add to cart only**, **Stop at final review (recommended)**, or **Submit order automatically (advanced)**.
-8. For auto-submit, explicitly require **Shipping / delivery** or **Store pickup**. If the final page cannot prove that choice, submission is blocked.
-9. Enable the row and save.
+1. Paste the product page URL. The store, the TCIN / Walmart item ID / ASIN, and a mission name are detected automatically (the ID is visible under **Advanced**; edit the name freely).
+2. Set a maximum **per-unit** price in whole US dollars and the quantity.
+3. Choose the action: **Watch & alert only** (the default — monitors and alerts, never clicks), **Add to cart only**, **Prepare checkout, I submit** (stops at the final review), or **Submit order automatically** (advanced).
+4. For the two checkout-involving actions, open **Advanced** and set a positive maximum **final order total** (at least the capped unit price multiplied by quantity). For auto-submit, also explicitly require **Shipping / delivery** or **Store pickup**; if the final page cannot prove that choice, submission is blocked.
+5. Optionally set **Open at** for a known drop time and pick an alert loudness under **Advanced**.
+6. Click **Done** — the mission saves immediately. Editing and removal are locked while Autopilot is on.
 
-To use the one allowed schedule, enable it, select a store, and select one future local date/time. There is no per-product or second schedule. A receipt is persisted before pages open, the schedule disables itself after that attempt, and a time missed by more than two minutes is marked missed instead of running late.
+To schedule an item for a known drop, set its **Open at** field to a future local date/time and save. Each product schedules independently. A receipt is persisted before the page opens, the time clears itself after that single attempt, and a time missed by more than two minutes is marked missed instead of running late. **Stop everything** clears all scheduled times.
 
 ## Recommended workflow
 
-1. Leave automation disarmed and save the complete buy list.
+1. With Autopilot off, create the complete mission list.
 2. Empty unrelated items from any store cart that will use checkout mode.
-3. Open the enabled buy list and confirm that each store page and SKU are correct.
+3. Use **Test (no buying)** to open the first enabled mission, and confirm on its row that the page, price, and seller are recognized. Nothing is added while Autopilot is off.
 4. Use add-only mode for an initial low-risk test.
-5. Review every quantity, unit cap, final-total cap, and action again.
-6. Arm automation and keep the intended Chrome profile plus Cart Confirm open. The app will require explicit re-arming after every restart.
-7. Complete sign-in or security prompts manually if a store presents them.
-8. Watch the per-product status and event log. Disarm immediately if the configuration or store page looks wrong.
+5. Review every quantity, unit cap, final-total cap, and action again — the worst-case line shows your total exposure.
+6. Switch **Autopilot** on and keep the intended Chrome profile plus Cart Confirm open. The app always restarts with Autopilot off.
+7. Use **Open all enabled** to open each mission's page; while Autopilot is on, the companion acts as each page loads.
+8. Complete sign-in or security prompts manually if a store presents them.
+9. Watch the mission rows and the activity feed (click a row to filter it). **Stop everything** is always available.
 
 When an item is out of stock, the companion reserves a per-store navigation slot after the configured minimum delay. If it becomes unavailable in the cart or checkout, the companion returns to the product and resumes. Safety failures such as a third-party seller, unreadable price or total, quantity mismatch, incomplete cart enumeration, extra cart item, or uncertain order submission stop the affected workflow for manual review.
 
@@ -98,7 +101,7 @@ need a human pass on the real final-review page first.
 
 ## Traffic overload behavior
 
-The desktop opening queue and extension share the same safety goal: do not create bursts against one retailer. The desktop spaces its scheduled and manual openings per store, while the extension centrally serializes retry navigation across tabs. Main-frame store navigations are observed so a retry cannot immediately follow a newly opened page.
+The desktop opening queue and extension share the same safety goal: do not create bursts against one retailer. Desktop-initiated openings (manual, test, and scheduled — one page load each) use a short fixed three-second stagger per store, while the extension centrally serializes automatic retry navigation across tabs using the configured per-store spacing; a product's fresh retry reservation replaces its own stale one so no product can starve the others. Main-frame store navigations are observed so a retry cannot immediately follow a newly opened page. All openings and retries still consume the same fixed 120-action rolling-hour budget.
 
 Responses with status `429`, `502`, `503`, `504`, or `520`–`524` pause automatic navigation and store mutations for that retailer and propagate the same deadline back to pending openings. Repeated overloads exponentially increase the cooldown, decay after six quiet hours, and remain capped at 24 hours. Recognizable overload pages are reported as `traffic-overload` instead of being treated as out of stock.
 
@@ -128,13 +131,13 @@ Or:
 npm run verify
 ```
 
-Verification performs a syntax check and runs the Node test suite, including queue URL reduction, exactly-once schedule receipts, durable submission transitions, action/run budgets, overload escalation, safety migration, first-party seller classification, and jsdom cart/order-review fixtures for all three retailers. GitHub CI also builds both unsigned Windows artifacts. Tests do not place live orders or guarantee that current retailer selectors are unchanged.
+Verification performs a syntax check and runs the Node test suite, including queue URL reduction, exactly-once schedule receipts, durable submission transitions, action/run budgets, overload escalation, safety migration, first-party seller classification (including Target's labeled-marketplace/absence rule), companion tab-reuse open requests, a jsdom boot of the guided-step UI, and jsdom cart/order-review fixtures for all three retailers. GitHub CI also builds both unsigned Windows artifacts. Tests do not place live orders or guarantee that current retailer selectors are unchanged.
 
 ## Privacy and local security
 
 - The desktop server binds only to `127.0.0.1` on ports `32191` through `32195`.
 - The extension and app use a random per-install token. The extension pins the first accepted token and rejects later mismatches; app and extension versions must match exactly.
-- The unpacked extension has a deterministic ID, and the local server accepts browser requests only from that exact extension origin.
+- The unpacked extension has a deterministic ID. The local server requires a loopback `Host` header (defeating DNS rebinding) and accepts a request only when it carries that exact extension origin, or no origin at all together with the pinned extension-ID header — Chrome omits the `Origin` header on host-permitted extension requests, while readable cross-origin web requests always reveal their true origin and are rejected. All state-changing endpoints additionally require the per-install token.
 - Settings are stored under Electron's local user-data directory.
 - Reported page addresses are reduced to origin plus pathname; query strings are discarded.
 - The bounded local ledger contains only milestone names, store/SKU, seller label, observed unit price and final total, quantity/attempt state, query-free paths, and timestamps.
@@ -144,10 +147,16 @@ Verification performs a syntax check and runs the Node test suite, including que
 
 ### Companion remains disconnected
 
+Step 1 in the app diagnoses this: **Waiting for Chrome** means the extension has never reported in (load it, or click its reload arrow); **Reload the extension** means its version differs from the app; **Open a store tab** means the extension is loaded and the last requirement is a Target, Walmart, or Amazon tab in that Chrome profile — "Connected ✓" appears only once a store tab is reporting.
+
+Also check:
+
 - Confirm Cart Confirm is running.
-- Confirm the unpacked extension is enabled and reloaded after an update.
-- Reload a supported store tab.
-- Check for `IDLE` or `ARM` on the extension badge.
+- Confirm the unpacked extension is enabled and reloaded after every update.
+- Click the Cart Confirm toolbar icon in Chrome to force an immediate connection check.
+- Reload a supported store tab in the same Chrome profile the extension is loaded in.
+- Read the extension badge: `IDLE`/`ARM` = connected, `OFF` = Chrome cannot reach the app on `127.0.0.1` (app not running, or a firewall/antivirus is intercepting loopback), `UPD` = version mismatch, `PAIR` = pairing mismatch.
+- The app opens product pages directly in Chrome when it can find it; if Chrome is not installed, pages fall back to the default browser, where the companion cannot see them.
 - Close duplicate desktop app processes if ports `32191` through `32195` are occupied.
 
 ### Offer is blocked

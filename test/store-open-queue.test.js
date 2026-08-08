@@ -43,6 +43,32 @@ test("a blocked store queue does not block a different retailer", async () => {
   assert.deepEqual(opened, ["amazon", "target"]);
 });
 
+test("cancelPending stops queued openings before their action runs", async () => {
+  let clock = 1_000;
+  const opened = [];
+  const queue = createStoreOpenQueue({
+    now: () => clock,
+    intervalMs: () => 20_000,
+    wait: async (milliseconds) => {
+      clock += milliseconds;
+      queue.cancelPending();
+    }
+  });
+
+  const first = await queue.enqueue("target", async () => {
+    opened.push("first");
+    return { via: "chrome" };
+  });
+  const second = await queue.enqueue("target", async () => {
+    opened.push("second");
+    return { via: "chrome" };
+  });
+
+  assert.deepEqual(opened, ["first"]);
+  assert.equal(first.via, "chrome");
+  assert.equal(second.cancelled, true);
+});
+
 test("a cooldown arriving during a queued wait extends the opening time", async () => {
   let clock = 1_000;
   let cooldownUntil = 0;
@@ -63,4 +89,23 @@ test("a cooldown arriving during a queued wait extends the opening time", async 
   await queue.enqueue("target", async () => opened.push(clock));
   assert.deepEqual(opened, [1_000, 51_000]);
   assert.deepEqual(waits, [20_000, 30_000]);
+});
+
+test("a per-call spacing override shortens the wait between openings", async () => {
+  let clock = 1_000;
+  const waits = [];
+  const opened = [];
+  const queue = createStoreOpenQueue({
+    now: () => clock,
+    intervalMs: () => 20_000,
+    wait: async (milliseconds) => {
+      waits.push(milliseconds);
+      clock += milliseconds;
+    }
+  });
+
+  await queue.enqueue("target", async () => opened.push(clock), { spacingMs: 3_000 });
+  await queue.enqueue("target", async () => opened.push(clock), { spacingMs: 3_000 });
+  assert.deepEqual(opened, [1_000, 4_000]);
+  assert.deepEqual(waits, [3_000]);
 });

@@ -24,8 +24,12 @@ let trafficSyncInFlight = false;
 async function fetchWithTimeout(url, options = {}, timeoutMs = REQUEST_TIMEOUT_MS) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
+  // Chrome omits the Origin header on host-permitted GETs, so every request
+  // carries the extension id explicitly; the desktop accepts origin-less
+  // loopback requests only when this header matches its pinned id.
+  const headers = { ...(options.headers || {}), "X-Cart-Assist-Extension": chrome.runtime.id };
   try {
-    return await fetch(url, { ...options, signal: controller.signal, cache: "no-store" });
+    return await fetch(url, { ...options, headers, signal: controller.signal, cache: "no-store" });
   } finally {
     clearTimeout(timer);
   }
@@ -48,6 +52,16 @@ async function setConnectionProblemBadge(text, title) {
   await chrome.action.setBadgeText({ text });
   await chrome.action.setBadgeBackgroundColor({ color: "#b45309" });
   await chrome.action.setTitle({ title });
+}
+
+// Never leave the badge blank: OFF must be distinguishable from "never tried",
+// or a blocked loopback connection looks identical to a missing extension.
+async function setDisconnectedBadge() {
+  await chrome.action.setBadgeText({ text: "OFF" });
+  await chrome.action.setBadgeBackgroundColor({ color: "#475569" });
+  await chrome.action.setTitle({
+    title: "Cart Confirm desktop app not reachable on 127.0.0.1:32191-32195. Is the app running? Click to retry."
+  });
 }
 
 async function acceptDesktopIdentity(config) {
@@ -292,6 +306,97 @@ async function syncActiveTrafficCooldowns(config) {
   }
 }
 
+const RETAILER_TAB_PATTERNS = Object.freeze({
+  target: ["https://target.com/*", "https://*.target.com/*"],
+  walmart: ["https://walmart.com/*", "https://*.walmart.com/*"],
+  amazon: ["https://amazon.com/*", "https://*.amazon.com/*"]
+});
+let openRequestsInFlight = false;
+const lastHelloAtByPort = new Map();
+
+// Announce this extension to the desktop even when identity checks fail, so
+// the app can show "reload the extension" instead of a blanket waiting state.
+// Throttled per port: a stale process on a lower port must not suppress the
+// hello owed to the real desktop app on a later port.
+async function sendCompanionHello(baseUrl, token, reason) {
+  if (Date.now() - (lastHelloAtByPort.get(baseUrl) || 0) < 10_000) return;
+  lastHelloAtByPort.set(baseUrl, Date.now());
+  try {
+    await fetchWithTimeout(`${baseUrl}/companion/hello`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Cart-Assist-Token": token
+      },
+      body: JSON.stringify({
+        extensionVersion: chrome.runtime.getManifest().version,
+        reason: String(reason || "")
+      })
+    });
+  } catch {
+    // The desktop keeps showing its waiting state when unreachable.
+  }
+}
+
+async function claimOpenRequest(config, id) {
+  try {
+    const response = await fetchWithTimeout(`${config.baseUrl}/open-requests/claim`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Cart-Assist-Token": config.token
+      },
+      body: JSON.stringify({ id })
+    });
+    if (!response.ok) return null;
+    const result = await response.json().catch(() => null);
+    return result?.ok ? result : null;
+  } catch {
+    return null;
+  }
+}
+
+async function reuseTabForOpenRequest(config, request) {
+  const retailer = String(request?.retailer || "");
+  const url = String(request?.url || "");
+  const patterns = RETAILER_TAB_PATTERNS[retailer];
+  if (!patterns || retailerFromUrl(url) !== retailer) return;
+  const tabs = await chrome.tabs.query({ url: patterns });
+  if (!tabs.length) return; // Unclaimed requests fall back to a desktop-opened page.
+  const tab = tabs.find((candidate) => candidate.active)
+    || [...tabs].sort((a, b) => Number(b.lastAccessed || 0) - Number(a.lastAccessed || 0))[0];
+  const claimed = await claimOpenRequest(config, String(request.id || ""));
+  if (!claimed) return;
+  try {
+    await chrome.tabs.update(tab.id, { url, active: true });
+    await chrome.windows.update(tab.windowId, { focused: true }).catch(() => {});
+  } catch {
+    // The tab closed between query and navigation; the claim already stopped
+    // the desktop fallback, so open the page in a fresh tab instead.
+    await chrome.tabs.create({ url, active: true });
+  }
+}
+
+async function processOpenRequests(config) {
+  if (openRequestsInFlight || !config) return;
+  openRequestsInFlight = true;
+  try {
+    const response = await fetchWithTimeout(`${config.baseUrl}/open-requests`, {
+      headers: { "X-Cart-Assist-Token": config.token }
+    });
+    if (!response.ok) return;
+    const payload = await response.json().catch(() => ({}));
+    const requests = Array.isArray(payload.requests) ? payload.requests : [];
+    for (const request of requests.slice(0, 10)) {
+      await reuseTabForOpenRequest(config, request).catch(() => {});
+    }
+  } catch {
+    // The desktop opens a fresh page whenever requests cannot be served.
+  } finally {
+    openRequestsInFlight = false;
+  }
+}
+
 async function discoverConfig(force = false) {
   if (!force && cached && Date.now() - cached.fetchedAt < CONFIG_TTL_MS) return cached;
 
@@ -304,6 +409,7 @@ async function discoverConfig(force = false) {
       const config = await response.json();
       if (!config.token || !Array.isArray(config.products)) continue;
       const identity = await acceptDesktopIdentity(config);
+      void sendCompanionHello(baseUrl, config.token, identity.ok ? "" : identity.reason);
       if (!identity.ok) {
         connectionProblem ||= identity.reason;
         continue;
@@ -312,6 +418,7 @@ async function discoverConfig(force = false) {
       await setBadge(cached);
       await applyFastMode(cached.fastMode).catch(() => {});
       void syncActiveTrafficCooldowns(cached).catch(() => {});
+      void processOpenRequests(cached).catch(() => {});
       return cached;
     } catch {
       // Try the next local port.
@@ -325,7 +432,7 @@ async function discoverConfig(force = false) {
   } else if (connectionProblem === "pairing-mismatch") {
     await setConnectionProblemBadge("PAIR", "Cart Confirm desktop pairing changed; review the local installation");
   } else {
-    await setBadge(null);
+    await setDisconnectedBadge();
   }
   return null;
 }
@@ -359,7 +466,7 @@ async function postEvent(payload) {
     return { ok: response.ok, ...result };
   } catch {
     cached = null;
-    await setBadge(null);
+    await setDisconnectedBadge();
     return { ok: false, reason: "desktop-unreachable" };
   }
 }
@@ -602,10 +709,19 @@ chrome.webRequest.onBeforeRequest.addListener((details) => {
 
 chrome.runtime.onInstalled.addListener(() => {
   appliedFastMode = null;
+  lastHelloAtByPort.clear();
   void discoverConfig(true);
 });
 
 chrome.runtime.onStartup.addListener(() => {
   appliedFastMode = null;
+  lastHelloAtByPort.clear();
+  void discoverConfig(true);
+});
+
+// Clicking the toolbar icon is a manual re-check: force a fresh discovery and
+// an immediate hello so the desktop's step 1 reacts within a second.
+chrome.action.onClicked.addListener(() => {
+  lastHelloAtByPort.clear();
   void discoverConfig(true);
 });

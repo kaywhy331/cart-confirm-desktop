@@ -21,113 +21,107 @@
         </div>
         <div>
           <h1>Cart Confirm</h1>
-          <p>Multi-store first-party buy-list companion</p>
+          <p>Mission control for your buy list</p>
         </div>
       </div>
-      <div class="connection" id="connectionPill">
-        <span class="connection-dot"></span>
-        <span id="connectionText">Waiting for companion</span>
+      <div class="topbar-controls">
+        <div class="connection" id="connectionPill" title="">
+          <span class="connection-dot"></span>
+          <span id="connectionText">Waiting for companion</span>
+        </div>
+        <button class="autopilot" id="autopilotToggle" type="button">
+          <span class="autopilot-label">Autopilot</span>
+          <span class="autopilot-state" id="autopilotState">OFF</span>
+        </button>
+        <button class="button danger" id="disarmButton" type="button" title="Disarm, cancel queued openings, clear scheduled times">Stop everything</button>
       </div>
     </header>
 
-    <div class="boundary-banner" id="boundaryBanner">
-      <strong>Automation is disarmed.</strong>
-      <span id="boundaryText">Save your buy list, verify every cap and quantity, then explicitly arm it when ready.</span>
+    <div class="alarm-bar" id="alarmBar" hidden>
+      <span id="alarmText">Alert</span>
+      <button class="button danger compact" id="silenceAlarmButton" type="button">Silence</button>
     </div>
 
-    <main class="main-grid">
-      <section class="panel buy-list-panel">
-        <div class="panel-heading">
-          <div>
-            <span class="eyebrow">Target · Walmart · Amazon</span>
-            <h2>Buy list</h2>
-            <p class="heading-copy">Each enabled product is accepted only when the page shows the exact SKU, a first-party seller, availability, and a unit price at or below its cap.</p>
+    <div class="digest-bar" id="digestBar" hidden>
+      <span id="digestText">While you were away…</span>
+      <button class="button ghost compact" id="digestDismissButton" type="button">Dismiss</button>
+    </div>
+
+    <main class="layout">
+      <div class="missions-column">
+
+        <section class="panel connect-card" id="connectCard">
+          <div class="panel-heading">
+            <div>
+              <span class="eyebrow">One-time setup</span>
+              <h2>Connect Chrome</h2>
+            </div>
+            <span class="step-state attention" id="connectState">Waiting for Chrome</span>
           </div>
-          <div class="heading-actions">
-            <button class="button ghost compact" id="addProductButton" type="button">Add product</button>
-            <button class="button primary compact" id="saveButton" type="button">Save changes</button>
+          <ol class="install-steps">
+            <li>Click <strong>Show companion folder</strong> below.</li>
+            <li>In Chrome, open <strong>chrome://extensions</strong> and turn on <strong>Developer mode</strong>.</li>
+            <li>Click <strong>Load unpacked</strong> and pick the companion folder.</li>
+            <li>Open or reload a Target, Walmart, or Amazon tab — the badge shows <strong>IDLE</strong> when connected.</li>
+          </ol>
+          <div class="action-row">
+            <button class="button secondary" id="showExtensionButton" type="button">Show companion folder</button>
+            <button class="button ghost" id="copyExtensionButton" type="button">Copy folder path</button>
+            <span class="port-badge" id="portBadge">Port —</span>
           </div>
-        </div>
+          <p class="step-hint attention-hint" id="connectHint" hidden></p>
+          <p class="privacy-note">The companion sends only milestone names, store/SKU, seller label, observed prices, a query-free page address, and timestamps to this computer. It never sends cookies, passwords, addresses, payment details, or order numbers, and it does not solve CAPTCHAs, bypass queues, or defeat store controls.</p>
+        </section>
 
-        <div class="automation-grid">
-          <label class="control-card arm-card">
-            <span class="control-title">Automation</span>
-            <span class="toggle-row">
-              <input id="automationEnabled" type="checkbox">
-              <span>Arm enabled products</span>
-            </span>
-            <small>Add-only rows stop in the cart. Final-review rows stop before submission. Auto-submit rows can place a real order.</small>
-          </label>
+        <section class="panel missions-panel">
+          <div class="panel-heading">
+            <h2>Missions</h2>
+            <div class="action-row">
+              <button class="button secondary compact" id="testButton" type="button" title="Opens your first enabled item while disarmed; nothing is added">Test (no buying)</button>
+              <button class="button ghost compact" id="openAllButton" type="button">Open all enabled</button>
+              <button class="button primary compact" id="newMissionButton" type="button">+ New mission</button>
+            </div>
+          </div>
+          <p class="step-hint worst-case" id="worstCase"></p>
+          <div class="mission-list" id="missionList"></div>
+        </section>
 
-          <label class="control-card">
-            <span class="control-title">Fast-load mode</span>
-            <span class="toggle-row">
-              <input id="fastMode" type="checkbox">
-              <span>Block images, fonts, and media</span>
-            </span>
-            <small>HTML, styles, scripts, sign-in, and store security controls still load normally.</small>
-          </label>
-
-          <label class="control-card field compact-field">
-            <span class="control-title">Retry interval</span>
-            <span class="number-suffix">
-              <input id="retryIntervalSeconds" type="number" min="5" max="3600" step="1" inputmode="numeric" required>
-              <span>seconds</span>
-            </span>
-            <small>Retries use this minimum plus jitter and backoff after store errors.</small>
-          </label>
-
-          <label class="control-card field compact-field">
-            <span class="control-title">Store traffic spacing</span>
-            <span class="number-suffix">
-              <input id="storeNavigationIntervalSeconds" type="number" min="10" max="3600" step="1" inputmode="numeric" required>
-              <span>seconds</span>
-            </span>
-            <small>All automatic and queued page openings for one store are serialized by this minimum.</small>
-          </label>
-
-          <label class="control-card field compact-field">
-            <span class="control-title">Overload cooldown</span>
-            <span class="number-suffix">
-              <input id="overloadCooldownSeconds" type="number" min="60" max="86400" step="1" inputmode="numeric" required>
-              <span>seconds</span>
-            </span>
-            <small>429 and temporary gateway failures pause that store; a longer Retry-After value wins.</small>
-          </label>
-        </div>
-
-        <div class="fixed-rule">
-          <span class="shield" aria-hidden="true">✓</span>
-          <div><strong>First-party only is permanently enforced.</strong> Third-party, marketplace, missing-seller, and unreadable-price offers are blocked.</div>
-        </div>
-
-        <div class="product-list" id="productList"></div>
-
-        <div class="schedule-box">
-          <label class="toggle-row schedule-toggle">
-            <input id="scheduledOpenEnabled" type="checkbox">
-            <span>Queue every enabled product once at a scheduled time</span>
-          </label>
-          <div class="schedule-fields">
-            <label class="field">
-              <span>Store</span>
-              <select id="scheduledRetailer">
-                <option value="target">Target</option>
-                <option value="walmart">Walmart</option>
-                <option value="amazon">Amazon</option>
-              </select>
+        <details class="advanced-box" id="settingsBox">
+          <summary>Settings: timing, fast-load, and store shortcuts</summary>
+          <div class="automation-grid">
+            <label class="control-card">
+              <span class="control-title">Fast-load mode</span>
+              <span class="toggle-row">
+                <input id="fastMode" type="checkbox">
+                <span>Block images, fonts, and media</span>
+              </span>
+              <small>HTML, scripts, sign-in, and store security controls still load normally.</small>
             </label>
-            <label class="field">
-              <span>Local date and time</span>
-              <input id="scheduledOpenAt" type="datetime-local">
+            <label class="control-card field compact-field">
+              <span class="control-title">Retry interval</span>
+              <span class="number-suffix">
+                <input id="retryIntervalSeconds" type="number" min="5" max="3600" step="1" inputmode="numeric" required>
+                <span>seconds</span>
+              </span>
+              <small>Retries use this minimum plus jitter and backoff after store errors.</small>
+            </label>
+            <label class="control-card field compact-field">
+              <span class="control-title">Store traffic spacing</span>
+              <span class="number-suffix">
+                <input id="storeNavigationIntervalSeconds" type="number" min="10" max="3600" step="1" inputmode="numeric" required>
+                <span>seconds</span>
+              </span>
+              <small>Automatic retry navigation for one store is serialized by this minimum.</small>
+            </label>
+            <label class="control-card field compact-field">
+              <span class="control-title">Overload cooldown</span>
+              <span class="number-suffix">
+                <input id="overloadCooldownSeconds" type="number" min="60" max="86400" step="1" inputmode="numeric" required>
+                <span>seconds</span>
+              </span>
+              <small>429s and temporary gateway failures pause that store; a longer Retry-After wins.</small>
             </label>
           </div>
-          <div class="countdown" id="countdown">No scheduled opening.</div>
-        </div>
-
-        <div class="run-bar">
-          <button class="button primary" id="openBuyListButton" type="button">Open enabled buy list</button>
-          <button class="button danger" id="disarmButton" type="button">Disarm now</button>
           <div class="store-shortcuts">
             <label for="storeShortcut">Store shortcuts</label>
             <select id="storeShortcut">
@@ -138,137 +132,146 @@
             <button class="button secondary compact" id="openCartButton" type="button">Cart</button>
             <button class="button ghost compact" id="openOrdersButton" type="button">Orders</button>
           </div>
-        </div>
+        </details>
 
         <div class="message" id="message" role="status" aria-live="polite"></div>
-      </section>
+      </div>
 
-      <section class="panel status-panel">
-        <div class="panel-heading">
-          <div>
-            <span class="eyebrow">Live product state</span>
-            <h2>Automation status</h2>
+      <div class="monitor-column">
+        <section class="panel" id="schedulePanel" hidden>
+          <div class="panel-heading">
+            <h2>Drop calendar</h2>
+            <div class="action-row">
+              <span class="schedule-coverage" id="scheduleCoverage"></span>
+              <button class="button ghost compact" id="enableScheduledButton" type="button" hidden>Enable all scheduled</button>
+            </div>
           </div>
-          <button class="button ghost compact" id="testButton" type="button">Test local server</button>
-        </div>
-        <div class="product-status-list" id="productStatusList">
-          <div class="empty-state">Waiting for saved products.</div>
-        </div>
-        <div class="latest-event">
-          <span class="eyebrow">Latest event</span>
-          <p id="latestMessage">Waiting for the browser companion.</p>
-          <small id="latestTime">No events yet.</small>
-        </div>
-      </section>
+          <div class="schedule-next-row"><span class="schedule-next" id="scheduleNext"></span></div>
+          <div class="schedule-week" id="scheduleWeek"></div>
+        </section>
 
-      <section class="panel companion-panel">
-        <div class="panel-heading">
-          <div>
-            <span class="eyebrow">One-time browser setup</span>
-            <h2>Chrome companion</h2>
+        <section class="panel log-panel">
+          <div class="panel-heading">
+            <h2>Activity</h2>
+            <div class="action-row">
+              <button class="button ghost compact" id="eventFilterButton" type="button" hidden>Show all</button>
+              <button class="button ghost compact" id="clearEventsButton" type="button">Clear</button>
+            </div>
           </div>
-          <span class="port-badge" id="portBadge">Port —</span>
-        </div>
-
-        <ol class="install-steps">
-          <li>Open <strong>chrome://extensions</strong> in Chrome.</li>
-          <li>Turn on <strong>Developer mode</strong>.</li>
-          <li>Select <strong>Load unpacked</strong> and choose the companion folder.</li>
-          <li>Keep this app open and remain signed in to the stores you plan to use.</li>
-        </ol>
-
-        <div class="action-grid companion-actions">
-          <button class="button secondary" id="showExtensionButton" type="button">Show companion folder</button>
-          <button class="button ghost" id="copyExtensionButton" type="button">Copy folder path</button>
-        </div>
-
-        <p class="privacy-note">The companion sends only milestone names, store/SKU, seller label, observed unit price and final total, a query-free page address, and timestamps to this computer. It never sends cookies, passwords, addresses, payment details, or order numbers. It does not solve CAPTCHAs, bypass queues, or defeat store controls.</p>
-      </section>
-
-      <section class="panel log-panel">
-        <div class="panel-heading">
-          <div>
-            <span class="eyebrow">Persistent local safety ledger</span>
-            <h2>Event log</h2>
+          <div class="event-list" id="eventList">
+            <div class="empty-state">No activity yet.</div>
           </div>
-          <button class="button ghost compact" id="clearEventsButton" type="button">Clear</button>
-        </div>
-        <div class="event-list" id="eventList">
-          <div class="empty-state">No events yet.</div>
-        </div>
-      </section>
+        </section>
+      </div>
     </main>
 
     <footer>
       <span id="versionText">Cart Confirm</span>
-      <span>Unofficial personal-use tool. Store names and marks belong to their respective owners.</span>
+      <span>First-party sellers only, always capped — enforced in code. Unofficial personal-use tool; store names and marks belong to their respective owners.</span>
     </footer>
   </div>
 
-  <template id="productRowTemplate">
-    <article class="product-row">
-      <div class="product-row-heading">
-        <div class="store-identity">
-          <select class="retailer-select" data-field="retailer" aria-label="Store">
-            <option value="target">Target</option>
-            <option value="walmart">Walmart</option>
-            <option value="amazon">Amazon</option>
-          </select>
-          <span class="first-party-chip">First-party only</span>
+  <template id="missionViewTemplate">
+    <article class="mission-card">
+      <label class="toggle-row mission-enabled" title="Only enabled missions run">
+        <input data-view="enabled" type="checkbox">
+      </label>
+      <div class="mission-main">
+        <div class="mission-title-row">
+          <span class="store-name" data-view="store"></span>
+          <strong class="status-title" data-view="title"></strong>
         </div>
-        <label class="toggle-row row-enabled">
+        <div class="mission-sub" data-view="sub"></div>
+      </div>
+      <span class="action-chip" data-view="action"></span>
+      <span class="status-age" data-view="age"></span>
+      <span class="state-chip" data-view="state"></span>
+      <div class="row-actions">
+        <button class="button ghost compact mission-open" type="button">Open</button>
+        <button class="button ghost compact mission-edit" type="button">Edit</button>
+        <button class="button ghost compact mission-remove" type="button" aria-label="Remove mission">✕</button>
+      </div>
+    </article>
+  </template>
+
+  <template id="missionEditTemplate">
+    <article class="product-row mission-edit-card">
+      <div class="product-row-top">
+        <label class="toggle-row row-enabled" title="Only enabled missions run">
           <input data-field="enabled" type="checkbox">
-          <span>Enabled</span>
+          <span>On</span>
         </label>
+        <select class="retailer-select" data-field="retailer" aria-label="Store">
+          <option value="target">Target</option>
+          <option value="walmart">Walmart</option>
+          <option value="amazon">Amazon</option>
+        </select>
+        <input class="title-input" data-field="title" type="text" maxlength="80" autocomplete="off" spellcheck="false" placeholder="Name this mission (auto-filled from the link)" aria-label="Mission name">
+        <div class="row-actions">
+          <button class="button primary compact mission-done" type="button">Done</button>
+          <button class="button ghost compact mission-cancel" type="button">Cancel</button>
+        </div>
       </div>
 
       <label class="field product-url-field">
-        <span>Product URL</span>
-        <input data-field="productUrl" type="url" autocomplete="off" spellcheck="false" placeholder="https://www.example.com/product/..." required>
+        <span>Product link</span>
+        <input data-field="productUrl" type="url" autocomplete="off" spellcheck="false" placeholder="Paste the product page address, e.g. https://www.target.com/p/..." required>
       </label>
 
       <div class="product-fields">
         <label class="field">
-          <span class="sku-label">SKU</span>
-          <input data-field="sku" type="text" maxlength="20" autocomplete="off" spellcheck="false" required>
-        </label>
-        <label class="field">
-          <span>Maximum unit price</span>
-          <span class="money-input"><span>$</span><input data-field="maxPrice" type="number" min="0" max="1000000" step="0.01" inputmode="decimal" required></span>
-        </label>
-        <label class="field">
-          <span>Maximum final order total</span>
-          <span class="money-input"><span>$</span><input data-field="maxOrderTotal" type="number" min="0" max="1000000" step="0.01" inputmode="decimal" required></span>
+          <span>Max price per item</span>
+          <span class="money-input"><span>$</span><input data-field="maxPrice" type="number" min="0" max="1000000" step="1" inputmode="numeric" placeholder="35" required></span>
         </label>
         <label class="field">
           <span>Quantity</span>
           <input data-field="quantity" type="number" min="1" max="99" step="1" inputmode="numeric" required>
         </label>
         <label class="field">
-          <span>Success action</span>
+          <span>When it is in stock</span>
           <select data-field="action">
+            <option value="watch">Watch &amp; alert only</option>
             <option value="cart">Add to cart only</option>
-            <option value="review">Stop at final review (recommended)</option>
-            <option value="checkout">Submit order automatically (advanced)</option>
+            <option value="review">Prepare checkout, I submit</option>
+            <option value="checkout">Submit order automatically</option>
           </select>
         </label>
         <label class="field">
-          <span>Required fulfillment</span>
-          <select data-field="fulfillmentMode">
-            <option value="manual">Confirm manually</option>
-            <option value="shipping">Shipping / delivery</option>
-            <option value="pickup">Store pickup</option>
-          </select>
+          <span>Open at (optional)</span>
+          <input data-field="openAt" type="datetime-local">
         </label>
       </div>
 
-      <div class="product-row-footer">
-        <small class="row-help">The unit cap always applies. Final review and auto-submit also require a positive total cap and a fully verified one-product cart.</small>
-        <div class="row-actions">
-          <button class="button ghost compact open-product-row" type="button">Open</button>
-          <button class="button ghost compact remove-product-row" type="button">Remove</button>
+      <details class="advanced-fields">
+        <summary>Advanced: item ID, order total cap, fulfillment, alerts</summary>
+        <div class="product-fields">
+          <label class="field">
+            <span class="sku-label">Item ID</span>
+            <input data-field="sku" type="text" maxlength="20" autocomplete="off" spellcheck="false" placeholder="Auto-filled from the link">
+          </label>
+          <label class="field">
+            <span>Max final order total</span>
+            <span class="money-input"><span>$</span><input data-field="maxOrderTotal" type="number" min="0" max="1000000" step="1" inputmode="numeric" required></span>
+          </label>
+          <label class="field">
+            <span>Required fulfillment</span>
+            <select data-field="fulfillmentMode">
+              <option value="manual">Confirm manually</option>
+              <option value="shipping">Shipping / delivery</option>
+              <option value="pickup">Store pickup</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Alert loudness</span>
+            <select data-field="alertLevel">
+              <option value="standard">Standard ping</option>
+              <option value="alarm">Loud alarm until silenced</option>
+              <option value="silent">Silent log only</option>
+            </select>
+          </label>
         </div>
-      </div>
+        <small class="row-help">The order total cap and fulfillment are required only when checkout is involved. The item ID fills in automatically from the product link.</small>
+      </details>
     </article>
   </template>
 

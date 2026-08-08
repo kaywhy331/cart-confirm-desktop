@@ -55,3 +55,23 @@ test("proof timestamps are minted in extension-owned state", () => {
   assert.equal(saved.proof.cartConfirmedAt, 5_000);
   assert.equal(saved.proof.inventoryConfirmed, true);
 });
+
+test("add-only products run in parallel while checkout keeps the store lane exclusive", () => {
+  const state = State.createState("run", 1_000);
+  const addA = { id: "walmart:1000001", retailer: "walmart", action: "cart" };
+  const addB = { id: "walmart:1000002", retailer: "walmart", action: "cart" };
+  const checkoutC = { id: "walmart:1000003", retailer: "walmart", action: "checkout" };
+  const reviewD = { id: "walmart:1000004", retailer: "walmart", action: "review" };
+
+  assert.equal(State.claim(state, addA, "tab:1", 1_000).ok, true);
+  assert.equal(State.claim(state, addB, "tab:2", 1_001).ok, true, "a second add-only product must not be blocked");
+  assert.equal(State.claim(state, addA, "tab:9", 1_002).reason, "product-busy");
+  assert.equal(State.claim(state, checkoutC, "tab:3", 1_003).ok, true);
+  assert.equal(State.claim(state, reviewD, "tab:4", 1_004).reason, "store-busy");
+  assert.equal(State.claim(state, addB, "tab:2", 1_005).ok, true, "adds continue while a checkout holds the store lane");
+  assert.equal(State.beginSubmission(state, checkoutC, "tab:3", "evidence", 1_010).ok, true);
+  assert.equal(State.markSubmission(state, checkoutC, "tab:3", "clicked", 1_020).ok, true);
+  assert.equal(State.complete(state, checkoutC, 1_050).ok, true);
+  assert.equal(State.claim(state, checkoutC, "tab:3", 1_060).reason, "completed");
+  assert.equal(State.claim(state, reviewD, "tab:4", 1_061).ok, true, "completing the checkout releases the store lane");
+});

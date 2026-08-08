@@ -13,6 +13,7 @@ const fs = require("node:fs");
 const http = require("node:http");
 const path = require("node:path");
 const crypto = require("node:crypto");
+const { spawn } = require("node:child_process");
 
 const {
   DEFAULT_SETTINGS,
@@ -27,10 +28,12 @@ const {
 } = require("./lib/core");
 const { migrateStoredSettings } = require("./lib/migrations");
 const { consumeStoreAction } = require("./lib/action-budget");
-const { evaluateSchedule } = require("./lib/schedule");
+const { evaluateProductSchedules, evaluateSchedule } = require("./lib/schedule");
 const { loadRuntimeState, saveRuntimeState } = require("./lib/runtime-state");
-const { isAllowedExtensionOrigin } = require("./lib/extension-identity");
+const { isAllowedExtensionOrigin, isTrustedCompanionRequest } = require("./lib/extension-identity");
 const { createStoreOpenQueue } = require("./lib/store-open-queue");
+const { createOpenRequestStore } = require("./lib/open-requests");
+const { findChrome } = require("./lib/chrome-launcher");
 const {
   RETAILERS,
   parseRetailUrl,
@@ -42,6 +45,12 @@ const PORT_CANDIDATES = [32191, 32192, 32193, 32194, 32195];
 const MAX_BODY_BYTES = 64 * 1024;
 const MAX_EVENTS = 250;
 const NOTIFICATION_COOLDOWN_MS = 15_000;
+const COMPANION_TAB_FRESH_MS = 20_000;
+const COMPANION_CLAIM_TIMEOUT_MS = 7_000;
+// Desktop-initiated openings (manual, test, scheduled) are one page load each,
+// so they use a short fixed stagger; the configured per-store spacing governs
+// the extension's automatic retry navigation.
+const DESKTOP_OPEN_SPACING_MS = 3_000;
 
 let mainWindow = null;
 let companionServer = null;
@@ -54,8 +63,22 @@ let runtimeState = null;
 let startupWasDisarmed = false;
 let schedulerTimer = null;
 let configVersion = 1;
+let companionHello = null;
+let serverDiagnostics = {
+  lastContactAt: "",
+  lastOrigin: "",
+  lastPath: "",
+  rejectedOrigin: "",
+  rejectedAt: "",
+  configServedAt: ""
+};
+let lastDiagnosticsBroadcastAt = 0;
+let stopEpoch = 0;
 const lastNotificationAt = new Map();
 const storeOverloadUntil = new Map();
+const retailerTabSeenAt = new Map();
+const pendingNavigationKeys = new Set();
+const openRequests = createOpenRequestStore();
 const storeOpenQueue = createStoreOpenQueue({
   intervalMs: () => Number(settings?.storeNavigationIntervalSeconds || 20) * 1000,
   notBefore: (retailer) => storeOverloadUntil.get(retailer) || 0
@@ -151,6 +174,8 @@ function snapshot() {
   return {
     settings: publicSettings(),
     status,
+    companionHello,
+    serverDiagnostics,
     productStatuses,
     events,
     retailers: Object.fromEntries(
@@ -215,15 +240,70 @@ function reserveStoreAction(retailer, kind = "navigation") {
     : { allowed: false, reason: result.reason, retryAt: result.retryAt, kind };
 }
 
+function companionTabLikely(retailer) {
+  return Date.now() - (retailerTabSeenAt.get(retailer) || 0) < COMPANION_TAB_FRESH_MS;
+}
+
+// The companion only exists inside Chrome, so pages are opened there directly.
+// The OS default browser is a last resort (and is reported so the UI can warn).
+function openPageInChrome(url) {
+  const chromePath = findChrome();
+  if (!chromePath) {
+    return shell.openExternal(url, { activate: true }).then(() => "default-browser");
+  }
+  return new Promise((resolve) => {
+    let settled = false;
+    const fallback = () => {
+      if (settled) return;
+      settled = true;
+      void shell.openExternal(url, { activate: true }).finally(() => resolve("default-browser"));
+    };
+    try {
+      const child = spawn(chromePath, [url], { detached: true, stdio: "ignore" });
+      child.once("error", fallback);
+      child.unref();
+      setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        resolve("chrome");
+      }, 250);
+    } catch {
+      fallback();
+    }
+  });
+}
+
 async function openExternalRetailer(url) {
   const { parsed, retailer } = parseRetailUrl(url);
-  await storeOpenQueue.enqueue(retailer, () => {
-    const budget = reserveStoreAction(retailer, "desktop-navigation");
-    if (!budget.allowed) {
-      throw new Error(`${retailerLabel(retailer)} reached the fixed 120-action hourly safety budget.`);
-    }
-    return shell.openExternal(parsed.href, { activate: true });
-  });
+  const navigationKey = `${retailer}|${parsed.href}`;
+  if (pendingNavigationKeys.has(navigationKey)) {
+    return { retailer, url: parsed.href, via: "already-queued" };
+  }
+  pendingNavigationKeys.add(navigationKey);
+  try {
+    const result = await storeOpenQueue.enqueue(retailer, async () => {
+
+      const taskEpoch = stopEpoch;
+      const budget = reserveStoreAction(retailer, "desktop-navigation");
+      if (!budget.allowed) {
+        throw new Error(`${retailerLabel(retailer)} reached the fixed 120-action hourly safety budget.`);
+      }
+      // Ask a connected companion to reuse an existing store tab first; a
+      // request nobody claims falls back to opening a fresh page.
+      if (companionTabLikely(retailer)) {
+        const request = openRequests.add(retailer, parsed.href);
+        if (await openRequests.waitForClaim(request.id, COMPANION_CLAIM_TIMEOUT_MS)) {
+          return { retailer, url: parsed.href, via: "companion-tab" };
+        }
+      }
+      if (taskEpoch !== stopEpoch) return { retailer, url: parsed.href, via: "cancelled" };
+      const via = await openPageInChrome(parsed.href);
+      return { retailer, url: parsed.href, via };
+    }, { spacingMs: DESKTOP_OPEN_SPACING_MS });
+    return result?.cancelled ? { retailer, url: parsed.href, via: "cancelled" } : result;
+  } finally {
+    pendingNavigationKeys.delete(navigationKey);
+  }
 }
 
 function findProduct(productId) {
@@ -237,8 +317,8 @@ async function openProduct(productId) {
     ? findProduct(productId)
     : settings.products.find((candidate) => candidate.enabled);
   if (!product) throw new Error("Enable at least one product first.");
-  await openExternalRetailer(product.productUrl);
-  return product.id;
+  const opened = await openExternalRetailer(product.productUrl);
+  return { productId: product.id, via: opened.via };
 }
 
 async function openBuyList(retailer = "") {
@@ -251,8 +331,14 @@ async function openBuyList(retailer = "") {
       : "Enable at least one product first.");
   }
 
-  await Promise.all(enabledProducts.map((product) => openExternalRetailer(product.productUrl)));
-  return enabledProducts.length;
+  const results = await Promise.all(enabledProducts.map((product) => openExternalRetailer(product.productUrl)));
+  return {
+    count: results.filter((result) => !["already-queued", "cancelled"].includes(result.via)).length,
+    reused: results.filter((result) => result.via === "companion-tab").length,
+    deduped: results.filter((result) => result.via === "already-queued").length,
+    defaultBrowser: results.some((result) => result.via === "default-browser"),
+    armed: settings.automationEnabled
+  };
 }
 
 async function openStorePage(retailer, type) {
@@ -313,6 +399,8 @@ function sendEventNotification(event, product) {
     return;
   }
   if (!product) return;
+  if (product.alertLevel === "silent") return;
+  const force = product.alertLevel === "alarm";
   const store = retailerLabel(product.retailer);
   const key = `${product.id}:${event.eventType}:${event.reason || ""}`;
 
@@ -320,12 +408,13 @@ function sendEventNotification(event, product) {
     notifyOnce(
       key,
       `${store} offer is eligible`,
-      `${product.sku} is first-party at $${event.price.toFixed(2)} (cap $${product.maxPrice.toFixed(2)}).`
+      `${product.title || product.sku} is first-party at $${event.price.toFixed(2)} (cap $${product.maxPrice.toFixed(2)}).`,
+      force
     );
   } else if (event.eventType === "automation-blocked") {
     notifyOnce(key, `${store} safety check stopped`, event.message || "The offer did not pass every configured check.");
   } else if (event.eventType === "cart-item-confirmed") {
-    notifyOnce(key, `${store} cart confirmed`, `${product.sku}, quantity ${product.quantity}, is in the cart.`);
+    notifyOnce(key, `${store} cart confirmed`, `${product.title || product.sku}, quantity ${product.quantity}, is in the cart.`, force);
   } else if (event.eventType === "checkout-reached") {
     notifyOnce(key, `${store} checkout reached`, "The browser companion is validating the order review before submission.");
   } else if (event.eventType === "order-confirmed") {
@@ -343,6 +432,9 @@ function handleCompanionEvent(rawEvent) {
   if (result.error) return { accepted: false, reason: result.error };
 
   const { event, product } = result;
+  if (event.retailer && RETAILERS[event.retailer]) {
+    retailerTabSeenAt.set(event.retailer, Date.now());
+  }
   if (event.eventType === "traffic-overload") {
     const previousCooldown = storeOverloadUntil.get(event.retailer) || 0;
     if (event.cooldownUntil <= previousCooldown) return { accepted: true, deduped: true };
@@ -366,13 +458,36 @@ function handleCompanionEvent(rawEvent) {
   return { accepted: true };
 }
 
+// Track what actually reaches the local server, so the UI can distinguish
+// "nothing arrives" (blocked loopback, dead extension) from "arrives but is
+// rejected" (wrong extension identity) from "config fetched but no report".
+function noteServerContact(req, requestUrl, rejected) {
+  const origin = String(req.headers.origin || "").slice(0, 120);
+  const now = new Date().toISOString();
+  serverDiagnostics = {
+    ...serverDiagnostics,
+    lastContactAt: now,
+    lastOrigin: origin,
+    lastPath: requestUrl.pathname.slice(0, 80),
+    ...(rejected ? { rejectedOrigin: origin || "(no origin header)", rejectedAt: now } : {})
+  };
+  if (Date.now() - lastDiagnosticsBroadcastAt > 3000) {
+    lastDiagnosticsBroadcastAt = Date.now();
+    broadcast();
+  }
+}
+
 function corsOrigin(req) {
   const origin = String(req.headers.origin || "");
   return isAllowedExtensionOrigin(origin) ? origin : "";
 }
 
 function hasAllowedLocalOrigin(req) {
-  return isAllowedExtensionOrigin(req.headers.origin);
+  return isTrustedCompanionRequest(
+    req.headers.origin,
+    req.headers.host,
+    req.headers["x-cart-assist-extension"]
+  );
 }
 
 function writeJson(req, res, statusCode, payload) {
@@ -432,11 +547,12 @@ function startServerOnPort(port) {
 
       if (req.method === "OPTIONS") {
         const origin = corsOrigin(req);
+        noteServerContact(req, requestUrl, !origin);
         res.statusCode = origin ? 204 : 403;
         if (origin) {
           res.setHeader("Access-Control-Allow-Origin", origin);
           res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-          res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-Cart-Assist-Token");
+          res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-Cart-Assist-Token, X-Cart-Assist-Extension");
           res.setHeader("Access-Control-Max-Age", "600");
           res.setHeader("Vary", "Origin");
         }
@@ -445,11 +561,14 @@ function startServerOnPort(port) {
       }
 
       if (!hasAllowedLocalOrigin(req)) {
+        noteServerContact(req, requestUrl, true);
         writeJson(req, res, 403, { error: "extension-origin-required" });
         return;
       }
+      noteServerContact(req, requestUrl, false);
 
       if (req.method === "GET" && requestUrl.pathname === "/config") {
+        serverDiagnostics = { ...serverDiagnostics, configServedAt: new Date().toISOString() };
         writeJson(req, res, 200, extensionConfig());
         return;
       }
@@ -463,6 +582,44 @@ function startServerOnPort(port) {
         readJsonRequest(req, res, (body) => {
           const eventResult = handleCompanionEvent(body);
           return { statusCode: eventResult.accepted ? 202 : 200, payload: eventResult };
+        });
+        return;
+      }
+
+      if (req.method === "POST" && requestUrl.pathname === "/companion/hello") {
+        if (req.headers["x-cart-assist-token"] !== settings.companionToken) {
+          writeJson(req, res, 401, { error: "invalid-token" });
+          return;
+        }
+        readJsonRequest(req, res, (body) => {
+          companionHello = {
+            version: String(body?.extensionVersion || "").slice(0, 20),
+            reason: String(body?.reason || "").slice(0, 40),
+            seenAt: new Date().toISOString()
+          };
+          broadcast();
+          return { statusCode: 200, payload: { ok: true } };
+        });
+        return;
+      }
+
+      if (req.method === "GET" && requestUrl.pathname === "/open-requests") {
+        if (req.headers["x-cart-assist-token"] !== settings.companionToken) {
+          writeJson(req, res, 401, { error: "invalid-token" });
+          return;
+        }
+        writeJson(req, res, 200, { requests: openRequests.pending() });
+        return;
+      }
+
+      if (req.method === "POST" && requestUrl.pathname === "/open-requests/claim") {
+        if (req.headers["x-cart-assist-token"] !== settings.companionToken) {
+          writeJson(req, res, 401, { error: "invalid-token" });
+          return;
+        }
+        readJsonRequest(req, res, (body) => {
+          const result = openRequests.claim(String(body?.id || ""));
+          return { statusCode: result.ok ? 200 : 409, payload: result };
         });
         return;
       }
@@ -516,7 +673,8 @@ function createWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
-      webSecurity: true
+      webSecurity: true,
+      autoplayPolicy: "no-user-gesture-required"
     }
   });
 
@@ -544,6 +702,11 @@ function registerIpc() {
     if (normalized.scheduledOpenEnabled && new Date(normalized.scheduledOpenAt).getTime() <= Date.now()) {
       throw new Error("Choose a future date and time for the single store schedule.");
     }
+    for (const product of normalized.products) {
+      if (product.openAt && new Date(product.openAt).getTime() <= Date.now()) {
+        throw new Error(`Choose a future opening time for ${product.title || product.sku}.`);
+      }
+    }
     if (normalized.automationEnabled && !wasArmed) {
       normalized = { ...normalized, automationRunId: crypto.randomUUID() };
     }
@@ -554,6 +717,28 @@ function registerIpc() {
     persistRuntimeState();
     resetProductStatuses();
     lastNotificationAt.clear();
+    broadcast();
+    return snapshot();
+  });
+
+  ipcMain.handle("cart-assist:stop-all", () => {
+    stopEpoch += 1;
+    storeOpenQueue.cancelPending();
+    openRequests.cancelAll();
+    settings = {
+      ...settings,
+      automationEnabled: false,
+      scheduledOpenEnabled: false,
+      products: settings.products.map((product) => (
+        product.openAt ? { ...product, openAt: "" } : product
+      ))
+    };
+    persistSettings();
+    configVersion += 1;
+    status = {
+      ...status,
+      lastMessage: "Stopped. Automation disarmed, queued page openings cancelled, and the schedule cleared."
+    };
     broadcast();
     return snapshot();
   });
@@ -583,6 +768,59 @@ function registerIpc() {
   });
 }
 
+function clearProductOpenAt(productId) {
+  settings = {
+    ...settings,
+    products: settings.products.map((product) => (
+      product.id === productId ? { ...product, openAt: "" } : product
+    ))
+  };
+  persistSettings();
+  configVersion += 1;
+}
+
+function handleProductSchedule(decision) {
+  const product = settings.products.find((candidate) => candidate.id === decision.productId);
+  if (!product) return;
+  const label = product.title || `${retailerLabel(product.retailer)} ${product.sku}`;
+  runtimeState.productScheduleReceipts[decision.key] = {
+    status: decision.action === "fire" ? "firing" : "missed",
+    recordedAt: new Date().toISOString()
+  };
+  clearProductOpenAt(decision.productId);
+  persistRuntimeState();
+
+  if (decision.action === "missed") {
+    status = {
+      ...status,
+      lastMessage: `The scheduled opening for ${label} was missed by more than two minutes. Save a new future time.`
+    };
+    notifyOnce(`product-schedule-missed:${decision.key}`, "Scheduled opening missed", `${label} was not opened. Save a new future time.`, true);
+    broadcast();
+    return;
+  }
+
+  status = { ...status, lastMessage: `Scheduled opening: ${label} is opening now.` };
+  broadcast();
+  void openProduct(decision.productId)
+    .then(() => {
+      runtimeState.productScheduleReceipts[decision.key] = {
+        status: "fired",
+        recordedAt: new Date().toISOString()
+      };
+      persistRuntimeState();
+      notifyOnce(
+        `product-schedule:${decision.key}`,
+        `${retailerLabel(product.retailer)} scheduled opening`,
+        `${label} was opened at its scheduled time.`,
+        true
+      );
+    })
+    .catch((error) => {
+      notifyOnce(`product-schedule-error:${decision.key}`, "Scheduled opening failed", error.message, true);
+    });
+}
+
 function startScheduler() {
   schedulerTimer = setInterval(() => {
     if (status.companion === "connected" && status.lastHeartbeatAt) {
@@ -591,6 +829,14 @@ function startScheduler() {
         status = { ...status, companion: "waiting" };
         broadcast();
       }
+    }
+
+    for (const productDecision of evaluateProductSchedules(
+      settings.products,
+      runtimeState?.productScheduleReceipts,
+      Date.now()
+    )) {
+      handleProductSchedule(productDecision);
     }
 
     const decision = evaluateSchedule(settings, runtimeState?.scheduleReceipt, Date.now());
