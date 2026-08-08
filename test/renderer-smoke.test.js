@@ -88,6 +88,10 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   assert.equal(doc.getElementById("autopilotState").textContent, "OFF");
   assert.match(doc.getElementById("worstCase").textContent, /\$40/);
   assert.equal(doc.getElementById("alarmBar").hidden, true);
+  assert.ok(
+    doc.getElementById("testButton").closest(".topbar-controls"),
+    "Test lives in the header next to Autopilot"
+  );
 
   // Edit flow: inline editor with values, cancel restores the view card.
   card.querySelector(".mission-edit").click();

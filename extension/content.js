@@ -207,7 +207,7 @@
   }
 
   async function scheduleRetry(product, message, destination = "reload", errorBackoff = false) {
-    if (!config?.automationEnabled || !product.enabled || retryTimer) return;
+    if (!config?.automationEnabled || config?.monitoringPaused || !product.enabled || retryTimer) return;
     const state = await productAutomationState(product);
     if (!state.ok || state.completed || !state.armed) return;
     if (state.budgetReason) {
@@ -837,6 +837,10 @@
 
   async function scan() {
     if (scanning || !config) return;
+    if (config.monitoringPaused) {
+      clearRetry();
+      return;
+    }
     scanning = true;
     try {
       const product = activeProduct();
