@@ -19,10 +19,10 @@ These rules are enforced in code and cannot be disabled from the UI:
 - A confirmed product is marked complete for the current automation run and cannot be purchased twice. Disarming and re-arming intentionally starts a new run.
 - Proof, attempts, completion, and submit intent live in extension-owned storage. An uncertain final click holds its run lock until a retailer-specific confirmation or explicit failure appears; starting a new run requires an explicit warning to check retailer order history first.
 - Final auto-submit re-reads the complete evidence immediately before clicking, requires the configured shipping/pickup mode, and blocks selected subscriptions, protection plans, tips, donations, gift wrap, and installment choices.
-- Automation always starts disarmed after the desktop app launches. Editing purchase settings while armed is rejected.
+- Every desktop launch starts fully **STOPPED**: Autopilot is disarmed, browser scans and retries are paused, background checks and schedules cannot fire, and Discord is not polled. Editing purchase settings while armed is rejected.
 - Discord messages are untrusted hints, never purchase proof. Signals match missions only by normalized `retailer:SKU`; their price, seller, stock, offer ID, and action links are re-validated before use, and the signed-in browser remains authoritative.
 - Only official Discord bot tokens are accepted. The token is stored separately through Electron's operating-system encryption; plaintext and Linux `basic_text` fallbacks are refused. Discord user tokens and self-bots are not supported.
-- A first Discord connection imports recent messages as history without opening pages. Later signals must be under two minutes old to auto-open, and **Stop everything** continues recording signals while preventing every automatic opening.
+- A first Discord connection imports recent messages as history without opening pages. Later signals must be under two minutes old to auto-open. **Stop everything** pauses Discord polling as well as automatic openings, so nothing new is ingested until an explicit Arm, Test, or Open action resumes monitoring.
 - CAPTCHAs, queues, sign-in prompts, and security challenges are never bypassed. When Walmart places one mission on an official `/qp` queue page, Cart Confirm makes one exactly-once pass through the other enabled Walmart missions at a one-second stagger so they can enter through their normal product pages too. A tab already in queue is frozen: ticket endpoints and signatures are never stored, called, replayed, or refreshed.
 - All desktop and extension store actions share a fixed 120-action rolling-hour budget. Each product is limited to 100 attempts in a four-hour run and requires manual re-arming after exhaustion.
 - Tool-controlled navigations are serialized per store. HTTP `429`, `502`, `503`, `504`, and `520`–`524` responses open an escalating store-specific cooldown circuit, and a bounded `Retry-After` header is honored.
@@ -37,7 +37,7 @@ Start with **Add to cart only** until you have verified the current store select
 - Per-product alert loudness: standard ping, **loud alarm** (repeating audible alert with an on-screen Silence bar, throttled to once per five minutes per item), or silent log only.
 - A worst-case exposure line in step 4: the total if every enabled item hits its cap — automation can never exceed the caps you set.
 - Click any live-status row to filter the event log to that item's timeline.
-- A **Test (no buying)** button in the header that opens the first enabled mission while Autopilot is off so the companion can report price, seller, and stock without touching the cart.
+- A **Test next (no buying)** button in the header that rotates through enabled missions while Autopilot is off so the companion can report price, seller, and stock without touching the cart.
 - Quiet background stock checks for tab-less missions on Target and Walmart (read-only page fetches, rotated per store within the traffic budget) that open Chrome automatically the moment a mission verifies in stock.
 - Per-product scheduled openings for known drop times: give any item an **Open at** date/time, save, and arm in advance. At that moment its page opens in Chrome (reusing an existing tab when possible) and the armed companion takes over. Same-store drops due together open one second apart, exactly once per mission. Step 4 shows a seven-day calendar strip of upcoming openings with a live countdown; times are marked missed instead of running more than two minutes late, and an old single global schedule migrates onto its store's enabled products automatically.
 - Official-queue fan-out for simultaneous Walmart drops: the first enabled mission that reports a live `/qp` queue causes every other enabled, not-yet-queued Walmart mission to navigate once, one second apart. A durable per-run receipt prevents a second burst, Stop cancels pending pages, and every navigation still consumes the shared traffic budget.
@@ -55,7 +55,7 @@ Start with **Add to cart only** until you have verified the current store select
 
 ## Background stock checks vs. browser-only purchasing
 
-While Autopilot is on, missions without a live Chrome tab get **quiet background checks**: the desktop fetches the public product page (no cookies, no sign-in, no cart actions), reads the embedded schema.org availability and price, and rotates round-robin through each store's missions inside the same per-store spacing and 120-action hourly budget. When a mission verifies in stock, the real page opens in Chrome and the in-tab pipeline re-verifies seller, price, and quantity before acting. If a store blocks or obscures these plain fetches, quiet checks for that store shut off after a few failures and the app tells you to keep a tab open instead. Amazon is tab-only. **Stop everything** pauses all monitoring — quiet checks and tab observation — until you arm, test, or open something again.
+While Autopilot is on, missions without a live Chrome tab get **quiet background checks**: the desktop fetches the public product page (no cookies, no sign-in, no cart actions), reads the embedded schema.org availability and price, and rotates round-robin through each store's missions inside the same per-store spacing and 120-action hourly budget. When a mission verifies in stock, the real page opens in Chrome and the in-tab pipeline re-verifies seller, price, and quantity before acting. If a store blocks or obscures these plain fetches, quiet checks for that store shut off after a few failures and the app tells you to keep a tab open instead. Amazon is tab-only. **Stop everything** is a hard cancellation boundary: it aborts active quiet HTTP checks, wakes and cancels store-opening waits, drops late non-health tab events, clears retry timers as the tabs receive the stopped configuration, pauses Discord and schedules, and disables Fast Mode. Only a connection heartbeat remains. Arm, Test next, Open, or Open all explicitly resumes monitoring.
 
 Purchasing, by contrast, is browser-only, and deliberately so: authenticated carts and checkout flows depend on browser JavaScript, cookies, CSRF protections, inventory checks, and store security controls. Replaying private requests or treating checkout as a plain HTML form would be fragile and could submit stale or unsafe data.
 
@@ -73,7 +73,7 @@ Fast-load mode keeps the authenticated browser workflow but removes nonessential
 8. If an older companion is already loaded, select **Reload** on its extension card and approve the expanded first-party subdomain permission used for overload detection.
 9. Sign in normally to every store you plan to use and verify saved delivery, payment, and store preferences.
 
-The extension badge reads `IDLE` when the desktop app is connected but automation is disarmed, and `ARM` when automation is armed. Keep the desktop app open while running the buy list.
+The extension badge reads `STOP` when monitoring is paused, `IDLE` when monitoring is active but Autopilot is disarmed, and `ARM` when Autopilot is armed. Keep the desktop app open while running the buy list.
 
 ## Configure a buy list
 
@@ -118,10 +118,10 @@ The signal card's **Product** button is always the safest manual entry. Direct b
 
 1. With Autopilot off, create the complete mission list.
 2. Empty unrelated items from any store cart that will use checkout mode.
-3. Use **Test (no buying)** to open the first enabled mission, and confirm on its row that the page, price, and seller are recognized. Nothing is added while Autopilot is off.
+3. Use **Test next (no buying)** repeatedly to rotate through the enabled missions, and confirm on each row that the page, price, and seller are recognized. Nothing is added while Autopilot is off.
 4. Use add-only mode for an initial low-risk test.
 5. Review every quantity, unit cap, final-total cap, and action again — the worst-case line shows your total exposure.
-6. Switch **Autopilot** on and keep the intended Chrome profile plus Cart Confirm open. The app always restarts with Autopilot off.
+6. Switch **Autopilot** on and keep the intended Chrome profile plus Cart Confirm open. The app always restarts fully stopped; it never resumes monitoring or a saved schedule on launch without an explicit action.
 7. Use **Open all enabled** to open each mission's page; while Autopilot is on, the companion acts as each page loads.
 8. Complete sign-in or security prompts manually if a store presents them.
 9. Watch the mission rows and the activity feed (click a row to filter it). **Stop everything** is always available.
@@ -193,7 +193,7 @@ Also check:
 - Confirm the unpacked extension is enabled and reloaded after every update.
 - Click the Cart Confirm toolbar icon in Chrome to force an immediate connection check.
 - Reload a supported store tab in the same Chrome profile the extension is loaded in.
-- Read the extension badge: `IDLE`/`ARM` = connected, `OFF` = Chrome cannot reach the app on `127.0.0.1` (app not running, or a firewall/antivirus is intercepting loopback), `UPD` = version mismatch, `PAIR` = pairing mismatch.
+- Read the extension badge: `STOP` = connected and fully paused, `IDLE` = connected and observing while disarmed, `ARM` = connected and armed, `OFF` = Chrome cannot reach the app on `127.0.0.1` (app not running, or a firewall/antivirus is intercepting loopback), `UPD` = version mismatch, `PAIR` = pairing mismatch.
 - The app opens product pages directly in Chrome when it can find it; if Chrome is not installed, pages fall back to the default browser, where the companion cannot see them.
 - Close duplicate desktop app processes if ports `32191` through `32195` are occupied.
 

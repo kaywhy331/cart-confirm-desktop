@@ -48,7 +48,8 @@ blocks bad states rather than only ever testing the happy path.
          anywhere in the flow, confirm a pre-checked instance of it blocks
          submission (section 4's third item) rather than silently proceeding.
    - [ ] Force-quit the desktop app mid-run once, relaunch it, and confirm it
-         comes back **disarmed** and does not attempt to resubmit.
+         comes back **STOPPED**: no tab scans, retry feed events, background
+         checks, Discord polls, scheduled openings, or resubmission attempts.
 7. **Only after 3–6 all look correct**, widen one axis at a time: more
    products on the same store first, then repeat 3–6 fresh on the next store.
    Don't switch the whole buy list to auto-submit in one step.
@@ -142,11 +143,22 @@ for one supervised run) and manually walk the checkout to the final review page:
 
 ## 5. Ongoing
 
+- [ ] Press **Test next (no buying)** once per enabled mission and confirm it
+      advances through the list instead of reopening the first mission.
+- [ ] Trigger a loud test alarm, select **Silence**, and confirm the alarm bar
+      disappears. Trigger an away digest, select **Dismiss**, and confirm that
+      bar disappears too. Relaunching must not replay persisted feed entries as
+      a new alarm.
 - [ ] Before a high-stakes multi-drop window, give two or three harmless
       same-store test missions the same near-future **Open at** time and confirm
       each page opens exactly once, one second apart. Press **Stop everything**
-      during a second supervised test and confirm the remaining pages do not
-      open. Do not try to manufacture or repeatedly refresh a retailer queue.
+      during a spacing wait in a second supervised test and confirm the wait
+      ends immediately and the remaining pages do not open. Do not try to
+      manufacture or repeatedly refresh a retailer queue.
+- [ ] With Autopilot on and a tab-less Target or Walmart mission checking in the
+      background, press **Stop everything** while a check is in flight. Confirm
+      it cannot add a feed event, reopen Chrome, or lift the `STOPPED` state
+      after its network response or timeout arrives.
 - [ ] When Walmart naturally serves `/qp`, confirm the first queued mission
       produces only one fan-out for that Autopilot run and that every queued tab
       then stays still until Walmart admits it.
@@ -168,9 +180,11 @@ Run these supervised before relying on signal-triggered purchasing:
 - [ ] Post or wait for one new signal for a known mission and confirm the inbox
       marks it **Desired** by the exact retailer + SKU. A different SKU with a
       similar title must remain **New**.
-- [ ] With **Stop everything** active, confirm new signals are recorded but do
-      not open pages. Then use the manual **Product** button and confirm it lifts
-      the pause only because you explicitly opened it.
+- [ ] With **Stop everything** active, confirm the Discord last-poll time and
+      inbox do not change. Then use an explicit Arm, Test, or Open action and
+      confirm polling resumes; a signal that became stale while stopped must
+      not auto-open. The manual **Product** button may lift the pause because it
+      is itself an explicit Open action.
 - [ ] For Walmart Buy Now, confirm the retained link is exactly
       `https://www.walmart.com/affil/cart/buynow?items=<configured item ID>` and
       that affiliate/tracking parameters disappeared. Verify the resulting cart

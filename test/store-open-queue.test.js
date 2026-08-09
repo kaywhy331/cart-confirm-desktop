@@ -69,6 +69,28 @@ test("cancelPending stops queued openings before their action runs", async () =>
   assert.equal(second.cancelled, true);
 });
 
+test("cancelPending wakes an active spacing wait immediately", async () => {
+  let waitStarted;
+  const started = new Promise((resolve) => { waitStarted = resolve; });
+  const queue = createStoreOpenQueue({
+    now: () => 1_000,
+    intervalMs: () => 20_000,
+    wait: () => {
+      waitStarted();
+      return new Promise(() => {});
+    }
+  });
+
+  await queue.enqueue("target", async () => ({ via: "chrome" }));
+  const waiting = queue.enqueue("target", async () => {
+    assert.fail("a cancelled opening must not run");
+  });
+  await started;
+  queue.cancelPending();
+
+  assert.equal((await waiting).cancelled, true);
+});
+
 test("a cooldown arriving during a queued wait extends the opening time", async () => {
   let clock = 1_000;
   let cooldownUntil = 0;

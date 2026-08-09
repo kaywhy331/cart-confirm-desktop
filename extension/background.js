@@ -54,10 +54,15 @@ async function setBadge(config) {
     return;
   }
   const armed = Boolean(config.automationEnabled);
-  await chrome.action.setBadgeText({ text: armed ? "ARM" : "IDLE" });
-  await chrome.action.setBadgeBackgroundColor({ color: armed ? "#991b1b" : "#075985" });
+  const paused = Boolean(config.monitoringPaused);
+  await chrome.action.setBadgeText({ text: armed ? "ARM" : paused ? "STOP" : "IDLE" });
+  await chrome.action.setBadgeBackgroundColor({ color: armed ? "#991b1b" : paused ? "#475569" : "#075985" });
   await chrome.action.setTitle({
-    title: armed ? "Cart Confirm automation is armed" : "Cart Confirm is connected and disarmed"
+    title: armed
+      ? "Cart Confirm automation is armed"
+      : paused
+        ? "Cart Confirm is stopped; monitoring is paused"
+        : "Cart Confirm is connected and monitoring without buying"
   });
 }
 
@@ -146,6 +151,10 @@ function publicConfig(config) {
     configVersion: config.configVersion,
     appVersion: config.appVersion
   };
+}
+
+function automationActive(config) {
+  return Boolean(config?.automationEnabled) && config.monitoringPaused !== true;
 }
 
 function retailerFromUrl(value) {
@@ -282,7 +291,7 @@ function withTrafficStateLock(action) {
 
 async function reserveNavigation(message, sender) {
   const config = await discoverConfig(true);
-  if (!config?.automationEnabled) return { ok: false, reason: "disarmed" };
+  if (!automationActive(config)) return { ok: false, reason: "disarmed" };
   const product = configuredProduct(config, String(message.productId || ""));
   const retailer = String(message.retailer || "");
   if (!product || product.retailer !== retailer) return { ok: false, reason: "product-disabled" };
@@ -314,7 +323,7 @@ async function reserveNavigation(message, sender) {
 
 async function revalidateNavigation(message, sender) {
   const config = await discoverConfig(true);
-  if (!config?.automationEnabled) return { ok: false, reason: "disarmed" };
+  if (!automationActive(config)) return { ok: false, reason: "disarmed" };
   const product = configuredProduct(config, String(message.productId || ""));
   const retailer = String(message.retailer || "");
   if (!product || product.retailer !== retailer) return { ok: false, reason: "product-disabled" };
@@ -498,6 +507,8 @@ async function reuseTabForOpenRequest(config, request) {
   const tab = OpenRequestTabs.chooseReusableTab(config, request, tabs);
   const claimed = await claimOpenRequest(config, String(request.id || ""));
   if (!claimed) return;
+  const current = await discoverConfig(true);
+  if (!current || current.monitoringPaused) return;
 
   const createContextTab = async (destination = url) => {
     let created = null;
@@ -540,7 +551,7 @@ async function reuseTabForOpenRequest(config, request) {
 }
 
 async function processOpenRequests(config) {
-  if (openRequestsInFlight || !config) return;
+  if (openRequestsInFlight || !config || config.monitoringPaused) return;
   openRequestsInFlight = true;
   try {
     const response = await fetchWithTimeout(`${config.baseUrl}/open-requests`, {
@@ -601,7 +612,7 @@ async function discoverConfig(force = false) {
       void sendCompanionHello(baseUrl, config.token, "");
       cached = { ...config, baseUrl, fetchedAt: Date.now() };
       await setBadge(cached);
-      await applyFastMode(cached.fastMode).catch(() => {});
+      await applyFastMode(cached.fastMode && !cached.monitoringPaused).catch(() => {});
       void syncActiveTrafficCooldowns(cached).catch(() => {});
       void processOpenRequests(cached).catch(() => {});
       return cached;
@@ -659,7 +670,7 @@ async function postEvent(payload) {
 
 async function reserveStoreAction(productId, kind) {
   let config = await discoverConfig(true);
-  if (!config?.automationEnabled) return { ok: false, reason: "disarmed" };
+  if (!automationActive(config)) return { ok: false, reason: "disarmed" };
   const product = configuredProduct(config, productId);
   if (!product) return { ok: false, reason: "product-disabled" };
   const trafficState = await readTrafficState(config);
@@ -715,7 +726,7 @@ function configuredProduct(config, productId) {
 
 async function claimProduct(productId, ownerId) {
   const config = await discoverConfig(true);
-  if (!config?.automationEnabled) return { ok: false, reason: "disarmed" };
+  if (!automationActive(config)) return { ok: false, reason: "disarmed" };
   const product = configuredProduct(config, productId);
   if (!product) return { ok: false, reason: "product-disabled" };
   return withAutomationStateLock(async () => {
@@ -735,7 +746,7 @@ async function getProductState(productId) {
   const productState = AutomationState.productState(state, product, Date.now());
   return {
     ok: true,
-    armed: Boolean(config.automationEnabled),
+    armed: automationActive(config),
     ...productState
   };
 }
@@ -755,7 +766,7 @@ async function completeProduct(productId) {
 
 async function recordProductAttempt(productId) {
   const config = await discoverConfig(true);
-  if (!config?.automationEnabled) return { ok: false, reason: "disarmed" };
+  if (!automationActive(config)) return { ok: false, reason: "disarmed" };
   const product = configuredProduct(config, productId);
   if (!product) return { ok: false, reason: "product-disabled" };
   return withAutomationStateLock(async () => {
@@ -768,7 +779,7 @@ async function recordProductAttempt(productId) {
 
 async function saveProductProof(productId, proof) {
   const config = await discoverConfig(true);
-  if (!config?.automationEnabled) return { ok: false, reason: "disarmed" };
+  if (!automationActive(config)) return { ok: false, reason: "disarmed" };
   const product = configuredProduct(config, productId);
   if (!product) return { ok: false, reason: "product-disabled" };
   return withAutomationStateLock(async () => {
@@ -781,7 +792,7 @@ async function saveProductProof(productId, proof) {
 
 async function beginProductSubmission(productId, ownerId, evidenceHash) {
   const config = await discoverConfig(true);
-  if (!config?.automationEnabled) return { ok: false, reason: "disarmed" };
+  if (!automationActive(config)) return { ok: false, reason: "disarmed" };
   const product = configuredProduct(config, productId);
   if (!product) return { ok: false, reason: "product-disabled" };
   return withAutomationStateLock(async () => {

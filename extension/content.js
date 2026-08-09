@@ -82,6 +82,20 @@
     return response.ok ? response.config : null;
   }
 
+  async function automationStillActive(product) {
+    const next = await requestConfig(true);
+    if (!next) return false;
+    config = next;
+    const enabled = (next.products || []).some((candidate) => (
+      candidate.id === product?.id && candidate.enabled
+    ));
+    if (!next.automationEnabled || next.monitoringPaused || !enabled) {
+      clearRetry();
+      return false;
+    }
+    return true;
+  }
+
   function storeProducts() {
     return (config?.products || []).filter((product) => product.retailer === retailer);
   }
@@ -320,7 +334,11 @@
         return;
       }
       const nextConfig = await requestConfig(true);
-      if (!nextConfig?.automationEnabled) return;
+      if (
+        !nextConfig?.automationEnabled
+        || nextConfig.monitoringPaused
+        || !(nextConfig.products || []).some((candidate) => candidate.id === product.id && candidate.enabled)
+      ) return;
       config = nextConfig;
       const nextState = await productAutomationState(product);
       if (!nextState.ok || nextState.completed || adapter.securityChallenge(document)) return;
@@ -331,12 +349,17 @@
     retryTimer = setTimeout(navigateWhenAllowed, reservation.waitMs);
   }
 
-  async function clickAction(element, beforeClick = null) {
+  async function clickAction(element, product, beforeClick = null) {
     if (!Retailers.isActionable(element)) return false;
     element.scrollIntoView?.({ block: "center", inline: "nearest" });
     element.focus?.({ preventScroll: true });
     await sleep(80);
     if (!Retailers.isActionable(element) || adapter.securityChallenge(document)) return false;
+    // Stop can arrive while a scan is between awaits. Re-read the desktop
+    // gate at the final click boundary so stale in-tab state cannot act.
+    if (!await automationStillActive(product)) return false;
+    // A final-submit callback ends by creating its durable intent. Keep that
+    // response directly adjacent to the click instead of adding another await.
     if (beforeClick && !await beforeClick()) return false;
     if (!Retailers.isActionable(element) || adapter.securityChallenge(document)) return false;
     try {
@@ -365,6 +388,7 @@
       const option = [...select.options].find((candidate) => Number.parseInt(candidate.value || candidate.textContent, 10) === desired);
       if (!option) return { ok: false, reason: "quantity-unavailable" };
       if (!await requireStoreAction(product, "quantity-change")) return { ok: false, blocked: true };
+      if (!await automationStillActive(product)) return { ok: false, blocked: true };
       select.value = option.value;
       select.dispatchEvent(new Event("input", { bubbles: true }));
       select.dispatchEvent(new Event("change", { bubbles: true }));
@@ -374,6 +398,7 @@
 
     if (input) {
       if (!await requireStoreAction(product, "quantity-change")) return { ok: false, blocked: true };
+      if (!await automationStillActive(product)) return { ok: false, blocked: true };
       setNativeValue(input, String(desired));
       input.blur?.();
       await sleep(900);
@@ -382,12 +407,12 @@
 
     if (Number.isInteger(line.quantity) && line.quantity < desired && increase) {
       if (!await requireStoreAction(product, "quantity-increase")) return { ok: false, blocked: true };
-      await clickAction(increase);
+      await clickAction(increase, product);
       return { ok: false, pending: true, reason: "quantity-unavailable" };
     }
     if (Number.isInteger(line.quantity) && line.quantity > desired && decrease) {
       if (!await requireStoreAction(product, "quantity-decrease")) return { ok: false, blocked: true };
-      await clickAction(decrease);
+      await clickAction(decrease, product);
       return { ok: false, pending: true, reason: "quantity-unavailable" };
     }
     return { ok: false, reason: "quantity-unavailable" };
@@ -522,7 +547,7 @@
     if (!await requireStoreAction(product, "add-to-cart")) return;
     const attempt = await requireAttempt(product);
     if (attempt === null) return;
-    const clicked = await clickAction(offer.addButton);
+    const clicked = await clickAction(offer.addButton, product);
     if (!clicked) {
       await send("store-error", product, {
         attempt,
@@ -545,6 +570,7 @@
     await sleep(2_200);
     if (await handleChallenge(product)) return;
     if (!await requireStoreAction(product, "cart-navigation")) return;
+    if (!await automationStillActive(product)) return;
     location.assign(adapter.cartUrl);
   }
 
@@ -674,7 +700,7 @@
     if (!await requireStoreAction(product, "checkout")) return;
     const attempt = await requireAttempt(product);
     if (attempt === null) return;
-    if (await clickAction(checkoutButton)) {
+    if (await clickAction(checkoutButton, product)) {
       await send("checkout-clicked", product, { attempt }, `checkout-clicked:${product.id}:${attempt}`, 0);
     } else {
       await scheduleRetry(product, "Checkout was not actionable.", "reload", true);
@@ -781,6 +807,7 @@
     // its sole line, quantity, seller and price, then return through checkout.
     if (hasDirectEntryContext(product) && !await proofFor(product)) {
       if (!await requireStoreAction(product, "direct-entry-cart-verification")) return;
+      if (!await automationStillActive(product)) return;
       location.assign(adapter.cartUrl);
       return;
     }
@@ -836,7 +863,7 @@
     const expectedHash = reviewEvidenceHash(product, review);
     let intentCreated = false;
     let attempt = 0;
-    const clicked = await clickAction(submitButton, async () => {
+    const clicked = await clickAction(submitButton, product, async () => {
       if (!await requireStoreAction(product, "order-submit")) return false;
       attempt = await requireAttempt(product);
       if (attempt === null) return false;
@@ -916,6 +943,10 @@
 
   function scheduleScan(delay = 150) {
     clearTimeout(scanTimer);
+    if (config?.monitoringPaused) {
+      scanTimer = null;
+      return;
+    }
     scanTimer = setTimeout(() => void scan(), delay);
   }
 
@@ -925,6 +956,7 @@
     const fingerprint = JSON.stringify({
       run: next.automationRunId,
       armed: next.automationEnabled,
+      paused: next.monitoringPaused,
       version: next.configVersion,
       products: next.products
     });
@@ -933,7 +965,7 @@
     configFingerprint = fingerprint;
     if (changed) {
       seen.clear();
-      if (!config.automationEnabled) clearRetry();
+      if (!config.automationEnabled || config.monitoringPaused) clearRetry();
     }
     const context = await runtimeMessage({ type: "CART_CONFIRM_GET_TAB_PRODUCT_CONTEXT" });
     backgroundActiveProductId = context.ok ? String(context.productId || "") : "";
@@ -968,7 +1000,7 @@
   void refreshConfig(true);
   setInterval(() => void refreshConfig(false), CONFIG_REFRESH_MS);
   setInterval(() => {
-    const product = activeProduct();
+    const product = config?.monitoringPaused ? null : activeProduct();
     void send("heartbeat", product, {}, `heartbeat:${Date.now()}`, 0);
     if (!config) void refreshConfig(true);
   }, HEARTBEAT_MS);
