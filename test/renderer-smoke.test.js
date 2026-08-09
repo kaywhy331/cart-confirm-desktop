@@ -8,6 +8,7 @@ const { JSDOM } = require("jsdom");
 
 const html = fs.readFileSync(path.join(__dirname, "..", "src", "index.html"), "utf8");
 const rendererSource = fs.readFileSync(path.join(__dirname, "..", "src", "renderer.js"), "utf8");
+const stylesSource = fs.readFileSync(path.join(__dirname, "..", "src", "styles.css"), "utf8");
 
 function snapshotFixture() {
   return {
@@ -30,6 +31,7 @@ function snapshotFixture() {
         enabled: true
       }],
       automationEnabled: false,
+      monitoringPaused: true,
       automationRunId: "",
       fastMode: true,
       retryIntervalSeconds: 15,
@@ -72,11 +74,23 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   const dom = new JSDOM(html, { url: "file:///app/index.html", runScripts: "outside-only" });
   const { window } = dom;
   let pushUpdate = null;
+  let openProductCalls = 0;
+  let testEventCalls = 0;
+  const savedSettingsInputs = [];
   const copiedAffiliateUrls = [];
+  const style = window.document.createElement("style");
+  style.textContent = stylesSource;
+  window.document.head.append(style);
   window.cartAssist = {
     getSnapshot: async () => snapshotFixture(),
-    saveSettings: async () => snapshotFixture(),
-    openProduct: async () => ({ productId: "target:95298172", via: "companion-tab" }),
+    saveSettings: async (input) => {
+      savedSettingsInputs.push(input);
+      return snapshotFixture();
+    },
+    openProduct: async () => {
+      openProductCalls += 1;
+      return { productId: "target:95298172", via: "companion-tab" };
+    },
     openBuyList: async () => ({ count: 1, reused: 1, deduped: 0, armed: false }),
     openCart: async () => "",
     openOrders: async () => "",
@@ -93,7 +107,10 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
     copyExtensionPath: async () => "",
     clearEvents: async () => snapshotFixture(),
     stopAll: async () => snapshotFixture(),
-    testEvent: async () => ({ ok: true }),
+    testEvent: async () => {
+      testEventCalls += 1;
+      return { productId: "target:95298172", via: "companion-tab" };
+    },
     onUpdate: (callback) => {
       pushUpdate = callback;
       return () => {};
@@ -104,20 +121,25 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   await new Promise((resolve) => setTimeout(resolve, 20));
   const doc = window.document;
 
-  // Connected boot: setup card hidden, one mission view card, autopilot OFF.
+  // Connected boot: setup card hidden, one mission view card, fully stopped.
   assert.equal(doc.getElementById("connectCard").hidden, true);
   const card = doc.querySelector(".mission-card");
   assert.ok(card, "expected a mission view card");
   assert.equal(card.querySelector(".status-title").textContent, "Booster Box");
   assert.equal(card.querySelector(".action-chip").textContent, "Add only");
   assert.match(card.querySelector(".mission-sub").textContent, /\$40\.00 cap/);
-  assert.equal(doc.getElementById("autopilotState").textContent, "OFF");
+  assert.equal(doc.getElementById("autopilotState").textContent, "STOPPED");
   assert.match(doc.getElementById("worstCase").textContent, /\$40/);
   assert.equal(doc.getElementById("alarmBar").hidden, true);
+  assert.equal(window.getComputedStyle(doc.getElementById("alarmBar")).display, "none");
   assert.ok(
     doc.getElementById("testButton").closest(".topbar-controls"),
     "Test lives in the header next to Autopilot"
   );
+  doc.getElementById("testButton").click();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(testEventCalls, 1);
+  assert.equal(openProductCalls, 0, "the backend owns Test rotation and opening as one atomic action");
 
   // Edit flow: inline editor with values, cancel restores the view card.
   card.querySelector(".mission-edit").click();
@@ -212,6 +234,7 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   // Armed snapshot: autopilot ON, and editing pauses instead of locking.
   const armed = snapshotFixture();
   armed.settings.automationEnabled = true;
+  armed.settings.monitoringPaused = false;
   pushUpdate(armed);
   assert.equal(doc.getElementById("autopilotState").textContent, "ON");
   assert.equal(doc.querySelector(".mission-card .mission-edit").disabled, false);
@@ -223,6 +246,21 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   pausedEditor.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
   await new Promise((resolve) => setTimeout(resolve, 10));
   assert.equal(doc.querySelector(".mission-edit-card"), null);
+
+  // A hard Stop during an armed edit cancels the editor's deferred re-arm.
+  pushUpdate(armed);
+  const stopDuringEditStart = savedSettingsInputs.length;
+  doc.querySelector(".mission-card .mission-edit").click();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  doc.getElementById("disarmButton").click();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  doc.querySelector(".mission-edit-card").dispatchEvent(new window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(
+    savedSettingsInputs.slice(stopDuringEditStart).some((input) => input?.automationEnabled === true),
+    false,
+    "finishing an interrupted edit must not undo Stop"
+  );
 
   // Disconnected snapshot: the setup card returns with a diagnosis label.
   const waiting = snapshotFixture();
@@ -275,8 +313,46 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   assert.equal(doc.getElementById("enableScheduledButton").hidden, false);
   assert.match(doc.querySelector(".schedule-chip").className, /off/);
 
+  // Persisted eligible events do not replay as alarms. A genuinely new event
+  // does, and Silence/Dismiss hide their bars at the CSS rendering layer.
+  const historicalAlarm = snapshotFixture();
+  historicalAlarm.settings.monitoringPaused = false;
+  historicalAlarm.settings.products[0].alertLevel = "alarm";
+  historicalAlarm.events = [{
+    eventType: "offer-observed",
+    productId: "target:95298172",
+    retailer: "target",
+    sku: "95298172",
+    eligible: true,
+    firstParty: true,
+    price: 31.99,
+    timestamp: "2020-01-01T00:00:00.000Z",
+    message: "Historical offer"
+  }];
+  pushUpdate(historicalAlarm);
+  assert.equal(doc.getElementById("alarmBar").hidden, true);
+
+  const freshAlarm = structuredClone(historicalAlarm);
+  freshAlarm.events[0].timestamp = new Date(Date.now() + 1_000).toISOString();
+  freshAlarm.events[0].message = "Fresh offer";
+  pushUpdate(freshAlarm);
+  assert.equal(doc.getElementById("alarmBar").hidden, false);
+  doc.getElementById("silenceAlarmButton").click();
+  assert.equal(doc.getElementById("alarmBar").hidden, true);
+  assert.equal(window.getComputedStyle(doc.getElementById("alarmBar")).display, "none");
+
   // The digest bar exists and stays hidden until a real away period ends.
   assert.equal(doc.getElementById("digestBar").hidden, true);
+  assert.equal(window.getComputedStyle(doc.getElementById("digestBar")).display, "none");
+
+  // Stop hides either bar immediately and renders the hard-paused state.
+  doc.getElementById("alarmBar").hidden = false;
+  doc.getElementById("digestBar").hidden = false;
+  doc.getElementById("disarmButton").click();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(doc.getElementById("alarmBar").hidden, true);
+  assert.equal(doc.getElementById("digestBar").hidden, true);
+  assert.equal(doc.getElementById("autopilotState").textContent, "STOPPED");
 
   // An empty mission list shows a create CTA, and Escape closes the editor.
   const emptySnapshot = snapshotFixture();

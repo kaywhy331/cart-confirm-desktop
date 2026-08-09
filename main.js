@@ -39,6 +39,13 @@ const { createStoreOpenQueue } = require("./lib/store-open-queue");
 const { createOpenRequestStore } = require("./lib/open-requests");
 const { findChrome } = require("./lib/chrome-launcher");
 const { checkProductPage } = require("./lib/quiet-monitor");
+const {
+  companionEventAllowed,
+  createAbortRegistry,
+  monitoringActive,
+  monitoringOperationActive,
+  nextEnabledProduct
+} = require("./lib/monitoring-control");
 const { QUEUE_FANOUT_SPACING_MS, planQueueFanout } = require("./lib/queue-fanout");
 const {
   DiscordApiError,
@@ -106,11 +113,13 @@ let serverDiagnostics = {
 };
 let lastDiagnosticsBroadcastAt = 0;
 let stopEpoch = 0;
+let lastTestProductId = "";
 const lastNotificationAt = new Map();
 const storeOverloadUntil = new Map();
 const retailerTabSeenAt = new Map();
 const productTabSeenAt = new Map();
 const pendingNavigationKeys = new Set();
+const quietAbortRegistry = createAbortRegistry();
 const openRequests = createOpenRequestStore();
 const storeOpenQueue = createStoreOpenQueue({
   intervalMs: () => Number(settings?.storeNavigationIntervalSeconds || 20) * 1000,
@@ -177,9 +186,9 @@ function loadSettings() {
   }
 
   startupWasDisarmed = settings.automationEnabled;
-  if (startupWasDisarmed) {
-    settings = { ...settings, automationEnabled: false };
-  }
+  // Every process launch starts inert. Only an explicit Arm, Test, Open, or
+  // Open-all action may lift this pause after the operator sees the dashboard.
+  settings = { ...settings, automationEnabled: false, monitoringPaused: true };
 
   resetProductStatuses();
   persistSettings();
@@ -198,7 +207,12 @@ function loadPersistedRuntimeState() {
   if (startupWasDisarmed) {
     status = {
       ...status,
-      lastMessage: "Automation was disarmed when Cart Confirm started. Review the current run and arm it again explicitly."
+      lastMessage: "Automation was disarmed and monitoring paused when Cart Confirm started. Review the current run and arm it again explicitly."
+    };
+  } else {
+    status = {
+      ...status,
+      lastMessage: "Monitoring is paused after startup. Choose Autopilot, Test, Open, or Open all enabled to begin."
     };
   }
 }
@@ -436,6 +450,8 @@ function resumeMonitoring() {
   persistSettings();
   configVersion += 1;
   broadcast();
+  discordNextPollAt = 0;
+  void pollDiscordSignals();
 }
 
 async function openProduct(productId, options = {}) {
@@ -449,7 +465,17 @@ async function openProduct(productId, options = {}) {
   if (requested.retailer !== product.retailer || requestedSku !== product.sku) {
     throw new Error("The requested signal entry does not match this mission's store and product ID.");
   }
-  resumeMonitoring();
+  if (options.resumeMonitoring === false) {
+    if (
+      settings.monitoringPaused
+      || !settings.automationEnabled
+      || (options.stopEpoch !== undefined && options.stopEpoch !== stopEpoch)
+    ) {
+      return { productId: product.id, via: "cancelled", entry: "product", directFallback: false };
+    }
+  } else {
+    resumeMonitoring();
+  }
   const directEntry = requested.parsed.href !== product.productUrl;
   const opened = await openExternalRetailer(requested.parsed.href, {
     ...options,
@@ -491,6 +517,7 @@ async function openBuyList(retailer = "", options = {}) {
 async function openStorePage(retailer, type) {
   const url = storeUrl(String(retailer || ""), type);
   if (!url) throw new Error("Choose a supported store.");
+  resumeMonitoring();
   await openExternalRetailer(url);
   return url;
 }
@@ -601,9 +628,12 @@ function triggerQueueFanout(event) {
   };
 
   const runId = settings.automationRunId;
+  const taskEpoch = stopEpoch;
   void Promise.allSettled(decision.productIds.map((productId) => openProduct(productId, {
     spacingMs: decision.spacingMs,
-    actionKind: "official-queue-fanout"
+    actionKind: "official-queue-fanout",
+    resumeMonitoring: false,
+    stopEpoch: taskEpoch
   }))).then((results) => {
     const unsuccessful = results.filter((result) => (
       result.status === "rejected"
@@ -693,10 +723,13 @@ function handleDiscordSignal(signal, historical) {
           : "Walmart Buy Now"}.`,
     true
   );
+  const taskEpoch = stopEpoch;
   void openProduct(route.product.id, {
     urlOverride: route.url,
     spacingMs: QUEUE_FANOUT_SPACING_MS,
-    actionKind: `discord-signal-${route.entry}`
+    actionKind: `discord-signal-${route.entry}`,
+    resumeMonitoring: false,
+    stopEpoch: taskEpoch
   }).then((result) => {
     if (result.via === "cancelled") {
       updateSignalRecord(signal.id, {
@@ -738,6 +771,7 @@ async function pollDiscordSignals(options = {}) {
   if (
     discordPollInFlight
     || !settings?.discordEnabled
+    || settings.monitoringPaused
     || !discordToken
     || Date.now() < discordNextPollAt
   ) return;
@@ -840,6 +874,9 @@ async function openSignal(signalId, requestedEntry = "product") {
 
 function handleCompanionEvent(rawEvent) {
   const validated = validateEvent(rawEvent);
+  if (!companionEventAllowed(settings, validated.eventType)) {
+    return { accepted: false, reason: "monitoring-paused" };
+  }
   const result = validateProductEvent(validated);
   if (result.error) return { accepted: false, reason: result.error };
 
@@ -1030,7 +1067,9 @@ function startServerOnPort(port) {
           writeJson(req, res, 401, { error: "invalid-token" });
           return;
         }
-        writeJson(req, res, 200, { requests: openRequests.pending() });
+        writeJson(req, res, 200, {
+          requests: settings.monitoringPaused ? [] : openRequests.pending()
+        });
         return;
       }
 
@@ -1040,6 +1079,12 @@ function startServerOnPort(port) {
           return;
         }
         readJsonRequest(req, res, (body) => {
+          if (settings.monitoringPaused) {
+            return {
+              statusCode: 409,
+              payload: { ok: false, reason: "monitoring-paused" }
+            };
+          }
           const result = openRequests.claim(String(body?.id || ""));
           return { statusCode: result.ok ? 200 : 409, payload: result };
         });
@@ -1052,6 +1097,12 @@ function startServerOnPort(port) {
           return;
         }
         readJsonRequest(req, res, (body) => {
+          if (!monitoringActive(settings)) {
+            return {
+              statusCode: 409,
+              payload: { allowed: false, reason: "disarmed" }
+            };
+          }
           const retailer = String(body?.retailer || "");
           const kind = String(body?.kind || "automatic-action").slice(0, 80);
           const result = reserveStoreAction(retailer, kind);
@@ -1161,6 +1212,9 @@ function registerIpc() {
 
   ipcMain.handle("cart-assist:stop-all", () => {
     stopEpoch += 1;
+    discordConnectionEpoch += 1;
+    discordNextPollAt = 0;
+    quietAbortRegistry.abortAll();
     storeOpenQueue.cancelPending();
     openRequests.cancelAll();
     settings = {
@@ -1296,8 +1350,11 @@ function registerIpc() {
   });
   ipcMain.handle("cart-assist:test-event", () => {
     if (!companionPort) throw new Error("The local companion server is not running.");
-    resumeMonitoring();
-    return { ok: true, companionPort };
+    if (settings.automationEnabled) throw new Error("Switch Autopilot off before testing.");
+    const product = nextEnabledProduct(settings.products, lastTestProductId);
+    if (!product) throw new Error("Enable at least one product first.");
+    lastTestProductId = product.id;
+    return openProduct(product.id);
   });
 }
 
@@ -1324,7 +1381,8 @@ const quietState = {
   disabledStores: new Set()
 };
 
-function recordQuietEvent(rawEvent) {
+function recordQuietEvent(rawEvent, taskEpoch) {
+  if (!monitoringOperationActive(settings, taskEpoch, stopEpoch)) return;
   try {
     const event = validateEvent(rawEvent);
     const product = settings.products.find((candidate) => candidate.id === event.productId);
@@ -1341,24 +1399,21 @@ function recordQuietEvent(rawEvent) {
   }
 }
 
-async function quietCheck(product) {
+async function quietCheck(product, taskEpoch) {
   const retailer = product.retailer;
+  if (!monitoringOperationActive(settings, taskEpoch, stopEpoch)) return;
+  const controller = quietAbortRegistry.create();
+  const timer = setTimeout(() => controller.abort(), QUIET_FETCH_TIMEOUT_MS);
   try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), QUIET_FETCH_TIMEOUT_MS);
-    let response;
-    try {
-      response = await fetch(product.productUrl, {
-        signal: controller.signal,
-        redirect: "follow",
-        headers: {
-          "User-Agent": QUIET_USER_AGENT,
-          Accept: "text/html,application/xhtml+xml"
-        }
-      });
-    } finally {
-      clearTimeout(timer);
-    }
+    const response = await fetch(product.productUrl, {
+      signal: controller.signal,
+      redirect: "follow",
+      headers: {
+        "User-Agent": QUIET_USER_AGENT,
+        Accept: "text/html,application/xhtml+xml"
+      }
+    });
+    if (!monitoringOperationActive(settings, taskEpoch, stopEpoch)) return;
     if (!response.ok) {
       if ([429, 502, 503, 504].includes(response.status)) {
         storeOverloadUntil.set(retailer, Date.now() + settings.overloadCooldownSeconds * 1000);
@@ -1366,7 +1421,9 @@ async function quietCheck(product) {
       }
       throw new Error(`status ${response.status}`);
     }
-    const outcome = checkProductPage(await response.text(), retailer, product.sku);
+    const body = await response.text();
+    if (!monitoringOperationActive(settings, taskEpoch, stopEpoch)) return;
+    const outcome = checkProductPage(body, retailer, product.sku);
     if (outcome.availability === "unknown") throw new Error("unreadable");
 
     quietState.failures.set(retailer, 0);
@@ -1382,7 +1439,7 @@ async function quietCheck(product) {
         price: outcome.price === null ? undefined : outcome.price,
         page: product.productUrl,
         timestamp: new Date().toISOString()
-      });
+      }, taskEpoch);
     }
     if (outcome.availability === "available" && previous !== "available") {
       if (Date.now() - (quietState.lastAutoOpenAt.get(product.id) || 0) > QUIET_AUTO_OPEN_COOLDOWN_MS) {
@@ -1393,10 +1450,15 @@ async function quietCheck(product) {
           `${product.title || product.sku} looks in stock — opening it in Chrome now.`,
           true
         );
-        void openProduct(product.id).catch(() => {});
+        void openProduct(product.id, {
+          actionKind: "background-stock-open",
+          resumeMonitoring: false,
+          stopEpoch: taskEpoch
+        }).catch(() => {});
       }
     }
   } catch {
+    if (!monitoringOperationActive(settings, taskEpoch, stopEpoch)) return;
     const failures = (quietState.failures.get(retailer) || 0) + 1;
     quietState.failures.set(retailer, failures);
     if (failures === QUIET_FAILURE_LIMIT) {
@@ -1407,6 +1469,9 @@ async function quietCheck(product) {
       };
       broadcast();
     }
+  } finally {
+    clearTimeout(timer);
+    quietAbortRegistry.release(controller);
   }
 }
 
@@ -1430,7 +1495,7 @@ function quietMonitorTick() {
     const budget = reserveStoreAction(retailer, "background-check");
     if (!budget.allowed) continue;
     quietState.lastCheckAt.set(retailer, now);
-    void quietCheck(mission);
+    void quietCheck(mission, stopEpoch);
   }
 }
 
@@ -1468,11 +1533,13 @@ function handleProductSchedule(decision) {
 
   status = { ...status, lastMessage: `Scheduled opening: ${label} is opening now.` };
   broadcast();
+  const taskEpoch = stopEpoch;
   void openProduct(decision.productId, {
     spacingMs: QUEUE_FANOUT_SPACING_MS,
     actionKind: "scheduled-drop"
   })
-    .then(() => {
+    .then((result) => {
+      if (taskEpoch !== stopEpoch || result?.via === "cancelled") return;
       runtimeState.productScheduleReceipts[decision.key] = {
         status: "fired",
         recordedAt: new Date().toISOString()
@@ -1486,6 +1553,7 @@ function handleProductSchedule(decision) {
       );
     })
     .catch((error) => {
+      if (taskEpoch !== stopEpoch) return;
       notifyOnce(`product-schedule-error:${decision.key}`, "Scheduled opening failed", error.message, true);
     });
 }
@@ -1501,6 +1569,10 @@ function startScheduler() {
     }
 
     quietMonitorTick();
+
+    // Startup and Stop are hard pause boundaries. Scheduled work remains
+    // pending until an explicit Arm, Test, or Open action resumes monitoring.
+    if (settings.monitoringPaused) return;
 
     for (const productDecision of evaluateProductSchedules(
       settings.products,
@@ -1542,11 +1614,13 @@ function startScheduler() {
     persistRuntimeState();
     broadcast();
 
+    const taskEpoch = stopEpoch;
     void openBuyList(scheduledRetailer, {
       spacingMs: QUEUE_FANOUT_SPACING_MS,
       actionKind: "scheduled-drop"
     })
       .then(() => {
+        if (taskEpoch !== stopEpoch) return;
         runtimeState.scheduleReceipt = {
           key: decision.key,
           status: "fired",
@@ -1561,6 +1635,7 @@ function startScheduler() {
         );
       })
       .catch((error) => {
+        if (taskEpoch !== stopEpoch) return;
         notifyOnce("scheduled-open-error", "Scheduled buy list could not open", error.message, true);
       });
   }, 1000);

@@ -182,6 +182,7 @@ h1 { font-size: 21px; letter-spacing: -0.025em; }
   font-size: 13px;
   font-weight: 600;
 }
+.alarm-bar[hidden], .digest-bar[hidden] { display: none !important; }
 
 .schedule-coverage { color: var(--subtle); font-size: 10.5px; font-weight: 700; white-space: nowrap; }
 .schedule-next-row { margin-bottom: 10px; }

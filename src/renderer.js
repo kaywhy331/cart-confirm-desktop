@@ -88,11 +88,14 @@ let resumeAutopilotAfterEdit = false;
 let awaySince = 0;
 let settingsSaveTimer = null;
 let eventFilterProductId = null;
-let lastAlarmEventStamp = "";
+// Persisted feed entries are history, not fresh alarm triggers. Only events
+// received after this renderer process starts may sound an alarm.
+let lastAlarmEventStamp = new Date().toISOString();
 const alarmLastFiredAt = new Map();
 let alarmAudio = null;
 let alarmBeepInterval = null;
 let alarmStopTimer = null;
+let stopUiEpoch = 0;
 
 // --- Small helpers ---
 
@@ -236,12 +239,15 @@ function productLabel(product) {
 }
 
 async function runAction(action, successMessage) {
+  const actionStopEpoch = stopUiEpoch;
   try {
     const result = await action();
+    if (actionStopEpoch !== stopUiEpoch) return result;
     const text = typeof successMessage === "function" ? successMessage(result) : successMessage;
     setMessage(text, "success");
     return result;
   } catch (error) {
+    if (actionStopEpoch !== stopUiEpoch) return null;
     setMessage(error.message || "The action failed.", "error");
     return null;
   }
@@ -311,12 +317,13 @@ async function resumeAutopilot() {
 // Apply per-mission enabled changes, transparently pausing and resuming
 // Autopilot when it is on (a resume starts a new run by design).
 async function setMissionsEnabled(updates) {
+  const actionStopEpoch = stopUiEpoch;
   const wasArmed = isArmed();
   if (wasArmed) await pauseAutopilot();
   await saveMissionList(savedProducts().map((product) => (
     updates.has(product.id) ? { ...product, enabled: updates.get(product.id) } : product
   )));
-  if (wasArmed) await resumeAutopilot();
+  if (wasArmed && actionStopEpoch === stopUiEpoch) await resumeAutopilot();
 }
 
 // --- Mission cards ---
@@ -440,10 +447,11 @@ function buildViewCard(product, status) {
   removeButton.addEventListener("click", () => {
     if (!window.confirm(`Remove "${productLabel(product)}"?`)) return;
     void runAction(async () => {
+      const actionStopEpoch = stopUiEpoch;
       const wasArmed = isArmed();
       if (wasArmed) await pauseAutopilot();
       await saveMissionList(savedProducts().filter((candidate) => candidate.id !== product.id));
-      if (wasArmed) await resumeAutopilot();
+      if (wasArmed && actionStopEpoch === stopUiEpoch) await resumeAutopilot();
     }, `${productLabel(product)} removed.`);
   });
   view(card, "enabled").addEventListener("change", (event) => {
@@ -620,10 +628,13 @@ async function startEdit(product, seed = null) {
     return;
   }
   if (isArmed()) {
+    const actionStopEpoch = stopUiEpoch;
     try {
       await pauseAutopilot();
-      resumeAutopilotAfterEdit = true;
-      setMessage("Autopilot paused while you edit — it resumes on Done.", "warn");
+      resumeAutopilotAfterEdit = actionStopEpoch === stopUiEpoch;
+      if (resumeAutopilotAfterEdit) {
+        setMessage("Autopilot paused while you edit — it resumes on Done.", "warn");
+      }
     } catch (error) {
       setMessage(error.message || "Could not pause Autopilot.", "error");
       return;
@@ -887,6 +898,10 @@ function startAlarm(label) {
 }
 
 function checkForAlarmEvents(events) {
+  if (currentSnapshot?.settings?.monitoringPaused) {
+    if (events.length && events[0].timestamp > lastAlarmEventStamp) lastAlarmEventStamp = events[0].timestamp;
+    return;
+  }
   const products = savedProducts();
   for (const event of events.slice(0, 20)) {
     if (!event.timestamp || event.timestamp <= lastAlarmEventStamp) break;
@@ -900,7 +915,7 @@ function checkForAlarmEvents(events) {
     startAlarm(event.message || `${productLabel(product)}: ${eventName(event.eventType)}`);
     break;
   }
-  if (events.length && events[0].timestamp) lastAlarmEventStamp = events[0].timestamp;
+  if (events.length && events[0].timestamp > lastAlarmEventStamp) lastAlarmEventStamp = events[0].timestamp;
 }
 
 // --- Feed ---
@@ -1184,8 +1199,9 @@ function render(snapshot) {
   elements.connectionPill.title = companionState.hint;
 
   const armed = Boolean(settings.automationEnabled);
+  const paused = Boolean(settings.monitoringPaused);
   elements.autopilotToggle.classList.toggle("on", armed);
-  elements.autopilotState.textContent = armed ? "ON" : "OFF";
+  elements.autopilotState.textContent = armed ? "ON" : paused ? "STOPPED" : "OFF";
 
   populateSettingsInputs(settings);
   elements.portBadge.textContent = app.companionPort ? `Port ${app.companionPort}` : "Port unavailable";
@@ -1224,10 +1240,19 @@ elements.autopilotToggle.addEventListener("click", () => runAction(async () => {
   ? "Autopilot ON. Missions act whenever their product pages are open — use Open all enabled to launch them."
   : "Autopilot OFF. Monitoring pages stay open, but nothing will be clicked.")));
 
-elements.disarmButton.addEventListener("click", () => runAction(async () => {
-  const next = await window.cartAssist.stopAll();
-  render(next);
-}, "Stopped. Autopilot off, queued page openings cancelled, and scheduled times cleared."));
+elements.disarmButton.addEventListener("click", () => {
+  stopUiEpoch += 1;
+  resumeAutopilotAfterEdit = false;
+  clearTimeout(settingsSaveTimer);
+  settingsSaveTimer = null;
+  return runAction(async () => {
+    silenceAlarm();
+    elements.digestBar.hidden = true;
+    const next = await window.cartAssist.stopAll();
+    render(next);
+    return next;
+  }, "Stopped. Autopilot off, all monitoring paused, queued page openings cancelled, and scheduled times cleared.");
+});
 
 elements.newMissionButton.addEventListener("click", () => void startEdit(null));
 
@@ -1309,21 +1334,26 @@ elements.testButton.addEventListener("click", () => runAction(async () => {
   if (isArmed()) {
     throw new Error("Switch Autopilot off before testing — Test opens the product page without buying anything.");
   }
-  await window.cartAssist.testEvent();
-  return window.cartAssist.openProduct();
-}, (result) => (result?.via === "companion-tab"
-  ? "Test started in your existing Chrome tab. Watch the mission row and feed — nothing is added while Autopilot is off."
+  return window.cartAssist.testEvent();
+}, (result) => {
+  const product = savedProducts().find((candidate) => candidate.id === result?.productId);
+  const label = product ? productLabel(product) : "mission";
+  return result?.via === "companion-tab"
+  ? `Test started for ${label} in your existing Chrome tab. The next press tests the next enabled mission; nothing is added while Autopilot is off.`
   : result?.via === "default-browser"
-    ? "Test page opened, but Chrome was not found — it used your default browser, where the companion cannot see it. Install Chrome or open the link in Chrome manually."
-    : "Test started: the product page is opening in Chrome. Watch the mission row and feed — nothing is added while Autopilot is off.")));
+    ? `${label} opened, but Chrome was not found — it used your default browser, where the companion cannot see it. Install Chrome or open the link in Chrome manually.`
+    : `Test started for ${label}: the product page is opening in Chrome. The next press tests the next enabled mission; nothing is added while Autopilot is off.`;
+}));
 
 elements.openAllButton.addEventListener("click", async () => {
   if (openRunInFlight) return;
+  const actionStopEpoch = stopUiEpoch;
   openRunInFlight = true;
   elements.openAllButton.disabled = true;
   setMessage("Opening enabled missions… multiple opens are paced to respect store limits.");
   try {
     const result = await window.cartAssist.openBuyList();
+    if (actionStopEpoch !== stopUiEpoch) return;
     const parts = [`${result.count} mission page${result.count === 1 ? "" : "s"} opened`];
     if (result.reused) parts.push(`${result.reused} reused an existing Chrome tab`);
     if (result.deduped) parts.push(`${result.deduped} already queued`);
@@ -1335,7 +1365,7 @@ elements.openAllButton.addEventListener("click", async () => {
       : "";
     setMessage(`${parts.join(", ")}. ${armNote}${browserNote}`, result.defaultBrowser ? "error" : result.armed ? "success" : "warn");
   } catch (error) {
-    setMessage(error.message || "The action failed.", "error");
+    if (actionStopEpoch === stopUiEpoch) setMessage(error.message || "The action failed.", "error");
   } finally {
     openRunInFlight = false;
     elements.openAllButton.disabled = false;
