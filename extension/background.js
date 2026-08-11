@@ -115,7 +115,7 @@ async function attemptBundledVersionReload(appVersion) {
   await chrome.storage.local.set({ [VERSION_RELOAD_STATE_KEY]: plan.state });
   await setConnectionProblemBadge(
     "UPD",
-    `Updating Cart Confirm Companion from v${extensionVersion} to v${String(appVersion || "").slice(0, 20)}`
+    `Updating Quick add from v${extensionVersion} to v${String(appVersion || "").slice(0, 20)}`
   );
   setTimeout(() => chrome.runtime.reload(), 250);
   return true;

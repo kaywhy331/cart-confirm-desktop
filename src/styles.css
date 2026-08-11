@@ -614,6 +614,36 @@ button:disabled:hover { transform: none; }
 }
 .advanced-box > summary:hover { color: var(--text); }
 
+.settings-explainer {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 8px;
+  margin-bottom: 11px;
+  padding: 10px 12px;
+  border: 1px solid rgba(125, 211, 252, 0.2);
+  border-radius: 10px;
+  background: rgba(14, 116, 144, 0.08);
+  color: var(--muted);
+  font-size: 10.5px;
+  line-height: 1.5;
+}
+.settings-explainer strong { color: #dff6ff; }
+.configuration-profiles {
+  margin-bottom: 11px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(3, 8, 17, 0.3);
+}
+.configuration-profile-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.configuration-profile-heading p { margin: 5px 0 0; color: var(--subtle); font-size: 10px; line-height: 1.45; }
+.configuration-profile-picker, .configuration-profile-save { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; }
+.configuration-profile-picker select { width: 180px; height: 34px; font-size: 11px; }
+.configuration-profile-description { min-height: 15px; margin: 9px 0; color: var(--muted); font-size: 10.5px; line-height: 1.45; }
+.configuration-profile-save { padding-top: 9px; border-top: 1px solid var(--line); }
+.configuration-profile-save label { color: var(--subtle); font-size: 10px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.06em; }
+.configuration-profile-save input { flex: 1 1 180px; min-width: 150px; height: 34px; font-size: 11px; }
+
 .automation-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -909,6 +939,8 @@ footer {
   .product-row-top { flex-wrap: wrap; }
   .title-input { flex-basis: 100%; order: 5; }
   .product-fields, .automation-grid, .discord-setup { grid-template-columns: 1fr; }
+  .settings-explainer { grid-template-columns: 1fr; }
+  .configuration-profile-heading { align-items: stretch; flex-direction: column; }
   .schedule-week { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .action-row .button { flex: 1 1 auto; }
 }

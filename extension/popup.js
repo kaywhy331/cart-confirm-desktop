@@ -5,6 +5,8 @@ const QuickAdd = globalThis.CartConfirmQuickAdd;
 const elements = {
   addButton: document.getElementById("addButton"),
   availability: document.getElementById("availability"),
+  cancelButton: document.getElementById("cancelButton"),
+  closeButton: document.getElementById("closeButton"),
   preview: document.getElementById("preview"),
   price: document.getElementById("price"),
   refreshButton: document.getElementById("refreshButton"),
@@ -118,4 +120,12 @@ elements.addButton.addEventListener("click", async () => {
 });
 
 elements.refreshButton.addEventListener("click", () => void loadPreview());
+elements.closeButton.addEventListener("click", () => window.close());
+elements.cancelButton.addEventListener("click", () => window.close());
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") window.close();
+});
+// Chrome normally dismisses an extension popup when focus moves elsewhere;
+// this makes the intended outside-click behavior explicit as well.
+window.addEventListener("blur", () => window.close());
 void loadPreview();

@@ -268,6 +268,7 @@ function publicSettings() {
     discordEnabled: settings.discordEnabled,
     discordChannelId: settings.discordChannelId,
     discordAutoOpen: settings.discordAutoOpen,
+    configurationProfiles: settings.configurationProfiles,
     firstPartyOnly: true
   };
 }

@@ -35,8 +35,9 @@ Start with **Add to cart only** until you have verified the current store select
 
 - A mission-control layout: each product is a mission card showing its caps, action, live status, and last-checked age in one row, with inline editing (Done saves immediately) and a per-mission enable switch. A header **Autopilot** toggle arms and disarms everything; the Connect Chrome setup card appears only while the companion is disconnected and names the exact blocker.
 - Up to 50 unique products across Target, Walmart, and Amazon, each with an optional display name.
-- A Chrome-toolbar **Quick add** popup that reads the exact TCIN / Walmart item ID / ASIN, retailer title, and current price from the open product page. It creates an enabled watch-only mission with that price as its maximum unit price, never changes an existing duplicate, and refuses to add when the page price is missing or non-positive.
+- A Chrome-toolbar **Quick add** popup that reads the exact TCIN / Walmart item ID / ASIN, retailer title, and current price from the open product page. It creates an enabled watch-only mission with that price as its maximum unit price, never changes an existing duplicate, and refuses to add when the page price is missing or non-positive. Either × button, Escape, or clicking away closes it.
 - A desktop **Bulk import** dialog for pasted Target, Walmart, and Amazon product URLs. It extracts and normalizes item IDs, strips tracking parameters, and skips duplicates; because a URL alone does not prove a safe current price, every imported mission starts Off as watch-only with a $0 cap for review.
+- Plain-language speed and traffic settings with **Recommended**, **Low traffic**, and **Scheduled drop** setups, plus up to 12 named custom setups saved locally. A setup stores only timing, traffic, and fast-load values—never missions, caps, quantities, actions, credentials, or Autopilot state.
 - Per-product maximum unit price, maximum final order total, quantity, fulfillment mode, enabled state, and a mission action: **Watch & alert only** (monitors and alerts at or under your cap without ever clicking), add-only, final-review, or auto-submit. Rarely used fields live behind each row's **Advanced** section.
 - Per-product alert loudness: standard ping, **loud alarm** (repeating audible alert with an on-screen Silence bar, throttled to once per five minutes per item), or silent log only.
 - A worst-case exposure line in step 4: the total if every enabled item hits its cap — automation can never exceed the caps you set.
@@ -96,13 +97,19 @@ Click **+ New mission**, then:
 
 With the desktop app connected and Autopilot off, open a supported retailer product page and select the Cart Confirm toolbar icon. The popup previews the detected store, exact item ID, retailer title, current page price, availability, and visible seller. Select **Add watch mission** to append it to Missions. The mission is enabled but watch-only, so it can alert without clicking a retailer control; the displayed current price becomes its maximum unit-price cap. Seller, stock, identity, and price are still re-validated during later monitoring.
 
-Quick add does not overwrite an existing mission or its cap. It also stays disabled if the page has not exposed a finite positive price, if the desktop app is unavailable, or while Autopilot is armed. Refresh the retailer page or the popup after dynamic page content finishes loading.
+Quick add does not overwrite an existing mission or its cap. It also stays disabled if the page has not exposed a finite positive price, if the desktop app is unavailable, or while Autopilot is armed. Refresh the retailer page or the popup after dynamic page content finishes loading. Use the top-right ×, the smaller × beside **Add watch mission**, Escape, or click anywhere outside the popup to close it without adding.
 
 ### Bulk import product URLs
 
 In the desktop app, select **Bulk import**, paste supported Target, Walmart, or Amazon product links, and select **Import URLs**. Links can be on separate lines or separated by spaces. Cart Confirm detects each TCIN / Walmart item ID / ASIN, converts it to a clean canonical product URL, removes duplicates already in Missions or in the pasted list, and reports invalid or over-capacity entries.
 
 Bulk import does not contact retailer pages or infer a price. Every imported item is therefore a disabled **Watch & alert only** mission with a $0 unit-price cap. Open each imported mission, verify its product and current retailer price, set the intended cap and action, then enable it. Importing temporarily pauses Autopilot and resumes it afterward; no imported item becomes active by itself.
+
+### Speed and traffic setups
+
+Open **Speed and traffic settings (optional)** and leave **Recommended** selected if you do not want to tune individual numbers. **Low traffic** checks less often and rests longer after overloads. **Scheduled drop** keeps ordinary watchers paced but uses the bounded faster settings after a mission's calendar release. Select **Use this setup** while Autopilot is off to apply one.
+
+To save your own setup, adjust the numbers, enter a name under **Your setup name**, and select **Save current numbers**. Selecting one of your saved setups lets you update or delete it. Up to 12 custom setups persist in the app's local settings. Applying, saving, or deleting a setup never changes the mission list, product IDs, price caps, quantities, fulfillment, actions, schedules, Discord configuration, or Autopilot state. Fixed action-count and rolling traffic limits are not profile settings and cannot be bypassed by a profile.
 
 To schedule an item for a known drop, set its **Open at** field to a future local date/time and save. Each product schedules independently. A firing receipt and the product's blitz context are persisted before the page opens, and only that firing boundary clears the time and releases Chrome automation. A time missed by more than two minutes remains calendar-owned until you clear or replace it, preventing a late purchase. Missions for the same retailer and time use the one-second drop lane; ordinary watcher retries do not. **Stop everything** clears all scheduled times and active blitz contexts.
 
@@ -204,7 +211,7 @@ Verification performs a syntax check and runs the Node test suite, including Dis
 
 ### Companion remains disconnected
 
-Step 1 in the app diagnoses this: **Waiting for Chrome** means the extension has never reported in (load it, or click its reload arrow); **Reload the extension** means its version differs from the app; **Open a store tab** means the extension is loaded and the last requirement is a Target, Walmart, or Amazon tab in that Chrome profile — "Connected ✓" appears only once a store tab is reporting.
+Step 1 in the app diagnoses this: **Waiting for Chrome** means the extension has never reported in (load it, or click its reload arrow); **Reload the extension** means its version differs from the app; **Open a store tab** means the extension is loaded and the last requirement is a Target, Walmart, or Amazon tab in that Chrome profile — "Connected ✓" appears only once a store tab is reporting. The extension is named **Quick add** in Chrome's Extensions menu.
 
 Also check:
 

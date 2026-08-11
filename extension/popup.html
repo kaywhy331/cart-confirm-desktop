@@ -13,7 +13,10 @@
         <span class="eyebrow">Cart Confirm</span>
         <h1>Quick add</h1>
       </div>
-      <button id="refreshButton" class="ghost" type="button">Refresh</button>
+      <div class="header-actions">
+        <button id="refreshButton" class="ghost" type="button">Refresh</button>
+        <button id="closeButton" class="close-button" type="button" aria-label="Close Quick add" title="Close Quick add">×</button>
+      </div>
     </header>
 
     <p id="status" class="status" role="status" aria-live="polite">Reading this product page…</p>
@@ -27,7 +30,10 @@
         <div><dt>Page state</dt><dd id="availability"></dd></div>
       </dl>
       <p id="seller" class="detail"></p>
-      <button id="addButton" class="primary" type="button">Add watch mission</button>
+      <div class="mission-actions">
+        <button id="addButton" class="primary" type="button">Add watch mission</button>
+        <button id="cancelButton" class="cancel-button" type="button" aria-label="Close without adding" title="Close without adding">×</button>
+      </div>
       <small>The current retailer price becomes the mission’s maximum unit price. Seller, stock, and price are re-verified before any later action.</small>
     </section>
   </main>

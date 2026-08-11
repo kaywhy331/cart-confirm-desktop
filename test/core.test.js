@@ -20,6 +20,7 @@ const {
   toRendererProduct,
   validateEvent
 } = require("../lib/core");
+const { BUILT_IN_PROFILES } = require("../lib/config-profiles");
 const {
   detectRetailer,
   extractSku,
@@ -125,6 +126,11 @@ test("normalizes a multi-store buy list and preserves a private token", () => {
     watcherIntervalSeconds: 90,
     blitzRetryDelayMs: 500,
     blitzWindowSeconds: 30,
+    configurationProfiles: [{
+      id: "custom:launch-night",
+      name: "Launch night",
+      configuration: BUILT_IN_PROFILES[2].configuration
+    }],
     scheduledRetailer: "amazon"
   }, existing);
 
@@ -141,6 +147,9 @@ test("normalizes a multi-store buy list and preserves a private token", () => {
   assert.equal(result.watcherIntervalSeconds, 90);
   assert.equal(result.blitzRetryDelayMs, 500);
   assert.equal(result.blitzWindowSeconds, 30);
+  assert.equal(result.configurationProfiles[0].name, "Launch night");
+  assert.equal(result.configurationProfiles[0].configuration.eligibilityRefreshIntervalSeconds, 2);
+  assert.equal(normalizeSettings({ products: PRODUCTS }, result).configurationProfiles.length, 1);
   assert.equal(result.scheduledRetailer, "amazon");
   assert.equal(result.discordEnabled, false);
   assert.equal(result.discordAutoOpen, true);

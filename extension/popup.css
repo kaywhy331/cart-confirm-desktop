@@ -10,6 +10,7 @@
 body { margin: 0; width: 360px; min-height: 240px; background: linear-gradient(145deg, #0b1729, #08111f); }
 main { padding: 18px; }
 header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.header-actions, .mission-actions { display: flex; align-items: center; gap: 7px; }
 h1 { margin: 2px 0 0; font-size: 22px; }
 .eyebrow { color: #7dd3fc; font-size: 10px; font-weight: 800; letter-spacing: .14em; text-transform: uppercase; }
 .status { min-height: 42px; margin: 16px 0 0; padding: 10px 12px; border: 1px solid #243550; border-radius: 9px; color: #b8c6d9; background: #0b1525; line-height: 1.4; }
@@ -25,7 +26,23 @@ dd { margin: 0; text-align: right; font-weight: 700; }
 .detail, small { color: #9fb0c5; font-size: 11px; line-height: 1.45; }
 button { border: 0; border-radius: 8px; padding: 9px 12px; color: #eaf5ff; cursor: pointer; font: inherit; font-weight: 750; }
 button:disabled { cursor: not-allowed; opacity: .45; }
-.primary { width: 100%; margin: 6px 0 10px; background: #0369a1; }
+.mission-actions { margin: 6px 0 10px; }
+.primary { flex: 1 1 auto; background: #0369a1; }
 .primary:hover:not(:disabled) { background: #0284c7; }
 .ghost { padding: 7px 9px; background: #18273d; color: #b9c8da; font-size: 11px; }
+.close-button, .cancel-button {
+  display: inline-grid;
+  flex: 0 0 auto;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  padding: 0;
+  border: 1px solid #334966;
+  background: #101d30;
+  color: #b9c8da;
+  font-size: 18px;
+  line-height: 1;
+}
+.close-button:hover, .cancel-button:hover { border-color: #647b99; background: #1a2b43; color: #fff; }
+.cancel-button { width: 34px; height: 34px; }
 [hidden] { display: none !important; }

@@ -117,11 +117,21 @@ For each of Target, Walmart, and Amazon you plan to automate:
 - [ ] On a product page whose price is still loading or unavailable, confirm
       Quick add shows **Not readable** and cannot add the mission. Also confirm
       Quick add is blocked while Autopilot is armed.
+- [ ] Confirm the toolbar action is named **Quick add**. Open it and verify the
+      top-right ×, the smaller × beside **Add watch mission**, Escape, and a
+      click outside the popup each close it without creating a mission.
 - [ ] In desktop **Bulk import**, paste tracked and duplicate Target, Walmart,
       and Amazon product URLs plus one unsupported line. Confirm supported IDs
       are detected once, tracking parameters are removed, and the invalid line
       is reported. Confirm every imported row starts Off as **Watch & alert
       only** with a $0 cap and remains inert until manually reviewed and enabled.
+- [ ] Open **Speed and traffic settings (optional)** and apply each ready-made
+      setup with Autopilot off. Confirm only the timing/media inputs change and
+      that all missions, caps, quantities, actions, and enabled states remain
+      identical. Confirm applying a setup is refused while Autopilot is on.
+- [ ] Save a named custom setup, restart Cart Confirm, and confirm it remains in
+      **Your saved setups**. Apply it, update it, and delete it. Confirm deleting
+      the saved copy does not change the numbers currently in use.
 
 ## 3. Per-product markup check (Add-to-cart-only dry run)
 

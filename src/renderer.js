@@ -1,5 +1,6 @@
 "use strict";
 
+const ConfigProfiles = globalThis.CartConfirmConfigProfiles;
 const elements = {
   autopilotToggle: document.getElementById("autopilotToggle"),
   autopilotState: document.getElementById("autopilotState"),
@@ -32,6 +33,12 @@ const elements = {
   openAllButton: document.getElementById("openAllButton"),
   worstCase: document.getElementById("worstCase"),
   settingsBox: document.getElementById("settingsBox"),
+  configurationProfileSelect: document.getElementById("configurationProfileSelect"),
+  configurationProfileDescription: document.getElementById("configurationProfileDescription"),
+  configurationProfileName: document.getElementById("configurationProfileName"),
+  applyConfigurationProfileButton: document.getElementById("applyConfigurationProfileButton"),
+  saveConfigurationProfileButton: document.getElementById("saveConfigurationProfileButton"),
+  deleteConfigurationProfileButton: document.getElementById("deleteConfigurationProfileButton"),
   fastMode: document.getElementById("fastMode"),
   watcherIntervalSeconds: document.getElementById("watcherIntervalSeconds"),
   retryIntervalSeconds: document.getElementById("retryIntervalSeconds"),
@@ -114,6 +121,7 @@ let editCardNode = null;
 let resumeAutopilotAfterEdit = false;
 let awaySince = 0;
 let settingsSaveTimer = null;
+let selectedConfigurationProfileId = "built-in:recommended";
 let eventFilterProductId = null;
 let bulkImportInFlight = false;
 // Persisted feed entries are history, not fresh alarm triggers. Only events
@@ -295,6 +303,65 @@ function copyAffiliateProduct(product) {
 
 // --- Saving ---
 
+function currentConfiguration() {
+  return ConfigProfiles.normalizeConfiguration({
+    fastMode: elements.fastMode.checked,
+    watcherIntervalSeconds: elements.watcherIntervalSeconds.value,
+    retryIntervalSeconds: elements.retryIntervalSeconds.value,
+    eligibilityRefreshIntervalSeconds: elements.eligibilityRefreshIntervalSeconds.value,
+    blitzRetryDelayMs: elements.blitzRetryDelayMs.value,
+    blitzWindowSeconds: elements.blitzWindowSeconds.value,
+    storeNavigationIntervalSeconds: elements.storeNavigationIntervalSeconds.value,
+    overloadCooldownSeconds: elements.overloadCooldownSeconds.value
+  });
+}
+
+function allConfigurationProfiles(settings = currentSnapshot?.settings) {
+  return [
+    ...ConfigProfiles.BUILT_IN_PROFILES,
+    ...(settings?.configurationProfiles || [])
+  ];
+}
+
+function selectedConfigurationProfile(settings = currentSnapshot?.settings) {
+  return allConfigurationProfiles(settings).find((profile) => profile.id === selectedConfigurationProfileId) || null;
+}
+
+function profileOptionGroup(label, profiles) {
+  const group = document.createElement("optgroup");
+  group.label = label;
+  for (const profile of profiles) {
+    const option = document.createElement("option");
+    option.value = profile.id;
+    option.textContent = profile.name;
+    group.append(option);
+  }
+  return group;
+}
+
+function renderConfigurationProfiles(settings) {
+  const customProfiles = settings.configurationProfiles || [];
+  const profiles = allConfigurationProfiles(settings);
+  if (!profiles.some((profile) => profile.id === selectedConfigurationProfileId)) {
+    selectedConfigurationProfileId = ConfigProfiles.BUILT_IN_PROFILES[0].id;
+  }
+  elements.configurationProfileSelect.replaceChildren(
+    profileOptionGroup("Ready-made setups", ConfigProfiles.BUILT_IN_PROFILES),
+    ...(customProfiles.length ? [profileOptionGroup("Your saved setups", customProfiles)] : [])
+  );
+  elements.configurationProfileSelect.value = selectedConfigurationProfileId;
+  const profile = selectedConfigurationProfile(settings);
+  const custom = profile?.id.startsWith("custom:");
+  elements.configurationProfileDescription.textContent = custom
+    ? "Your saved copy of these speed and traffic numbers. Select Use this setup to apply it."
+    : profile?.description || "";
+  if (document.activeElement !== elements.configurationProfileName) {
+    elements.configurationProfileName.value = custom ? profile.name : "";
+  }
+  elements.saveConfigurationProfileButton.textContent = custom ? "Update saved setup" : "Save current numbers";
+  elements.deleteConfigurationProfileButton.hidden = !custom;
+}
+
 function globalSettings(products) {
   return {
     products,
@@ -307,6 +374,7 @@ function globalSettings(products) {
     blitzWindowSeconds: Number(elements.blitzWindowSeconds.value),
     storeNavigationIntervalSeconds: Number(elements.storeNavigationIntervalSeconds.value),
     overloadCooldownSeconds: Number(elements.overloadCooldownSeconds.value),
+    configurationProfiles: currentSnapshot?.settings?.configurationProfiles || [],
     scheduledOpenEnabled: false,
     scheduledRetailer: currentSnapshot?.settings?.scheduledRetailer || "target",
     scheduledOpenAt: "",
@@ -878,7 +946,7 @@ function companionStepState() {
     return {
       done: false,
       label: "Reload the extension",
-      hint: `Chrome has companion v${hello.version} but this app is v${appVersion}. In chrome://extensions, click the reload arrow on the Cart Confirm Companion card.`
+      hint: `Chrome has companion v${hello.version} but this app is v${appVersion}. In chrome://extensions, click the reload arrow on the Quick add card.`
     };
   }
   if (hello.reason === "pairing-mismatch") {
@@ -1335,6 +1403,7 @@ function render(snapshot) {
   elements.autopilotState.textContent = armed ? "ON" : paused ? "STOPPED" : "OFF";
 
   populateSettingsInputs(settings);
+  renderConfigurationProfiles(settings);
   elements.portBadge.textContent = app.companionPort ? `Port ${app.companionPort}` : "Port unavailable";
   elements.versionText.textContent = `${app.name} v${app.version}`;
 
@@ -1609,6 +1678,77 @@ elements.blitzRetryDelayMs.addEventListener("change", scheduleSettingsSave);
 elements.blitzWindowSeconds.addEventListener("change", scheduleSettingsSave);
 elements.storeNavigationIntervalSeconds.addEventListener("change", scheduleSettingsSave);
 elements.overloadCooldownSeconds.addEventListener("change", scheduleSettingsSave);
+
+elements.configurationProfileSelect.addEventListener("change", () => {
+  selectedConfigurationProfileId = elements.configurationProfileSelect.value;
+  renderConfigurationProfiles(currentSnapshot.settings);
+});
+
+elements.applyConfigurationProfileButton.addEventListener("click", () => void runAction(async () => {
+  if (isArmed()) throw new Error("Switch Autopilot off before applying a saved setup.");
+  const profile = selectedConfigurationProfile();
+  if (!profile) throw new Error("Choose a setup first.");
+  clearTimeout(settingsSaveTimer);
+  const next = await window.cartAssist.saveSettings({
+    ...currentSnapshot.settings,
+    ...ConfigProfiles.normalizeConfiguration(profile.configuration)
+  });
+  render(next);
+  return profile.name;
+}, (name) => `${name} applied. Products, caps, quantities, and purchase actions were not changed.`));
+
+elements.saveConfigurationProfileButton.addEventListener("click", () => void runAction(async () => {
+  const name = elements.configurationProfileName.value.replace(/\s+/g, " ").trim();
+  if (!name) throw new Error("Enter a name for your setup.");
+  if (name.length > 40) throw new Error("Setup names can contain at most 40 characters.");
+  const customProfiles = [...(currentSnapshot.settings.configurationProfiles || [])];
+  const selected = selectedConfigurationProfile();
+  const selectedIndex = selected?.id.startsWith("custom:")
+    ? customProfiles.findIndex((profile) => profile.id === selected.id)
+    : -1;
+  const duplicateIndex = customProfiles.findIndex((profile, index) => (
+    index !== selectedIndex && profile.name.toLowerCase() === name.toLowerCase()
+  ));
+  if (duplicateIndex >= 0) throw new Error("That setup name is already saved. Select it to update or delete it.");
+  if (selectedIndex < 0 && customProfiles.length >= ConfigProfiles.MAX_CUSTOM_PROFILES) {
+    throw new Error(`You can save up to ${ConfigProfiles.MAX_CUSTOM_PROFILES} custom setups.`);
+  }
+
+  const profile = {
+    id: selectedIndex >= 0
+      ? customProfiles[selectedIndex].id
+      : `custom:${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`,
+    name,
+    configuration: currentConfiguration()
+  };
+  if (selectedIndex >= 0) customProfiles[selectedIndex] = profile;
+  else customProfiles.push(profile);
+  selectedConfigurationProfileId = profile.id;
+  clearTimeout(settingsSaveTimer);
+  const next = await window.cartAssist.saveSettings({
+    ...currentSnapshot.settings,
+    ...profile.configuration,
+    configurationProfiles: customProfiles
+  });
+  render(next);
+  return name;
+}, (name) => `${name} saved. It stores only the speed and traffic settings.`));
+
+elements.deleteConfigurationProfileButton.addEventListener("click", () => {
+  const profile = selectedConfigurationProfile();
+  if (!profile?.id.startsWith("custom:")) return;
+  if (!window.confirm(`Delete the saved setup "${profile.name}"?`)) return;
+  void runAction(async () => {
+    const nextProfiles = (currentSnapshot.settings.configurationProfiles || []).filter((candidate) => candidate.id !== profile.id);
+    selectedConfigurationProfileId = ConfigProfiles.BUILT_IN_PROFILES[0].id;
+    const next = await window.cartAssist.saveSettings({
+      ...currentSnapshot.settings,
+      configurationProfiles: nextProfiles
+    });
+    render(next);
+    return profile.name;
+  }, (name) => `${name} deleted. Your current settings were not changed.`);
+});
 
 elements.openCartButton.addEventListener("click", () => runAction(
   () => window.cartAssist.openCart(elements.storeShortcut.value),

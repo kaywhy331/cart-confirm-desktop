@@ -7,6 +7,7 @@ const path = require("node:path");
 const { JSDOM } = require("jsdom");
 
 const html = fs.readFileSync(path.join(__dirname, "..", "src", "index.html"), "utf8");
+const configProfilesSource = fs.readFileSync(path.join(__dirname, "..", "lib", "config-profiles.js"), "utf8");
 const rendererSource = fs.readFileSync(path.join(__dirname, "..", "src", "renderer.js"), "utf8");
 const stylesSource = fs.readFileSync(path.join(__dirname, "..", "src", "styles.css"), "utf8");
 
@@ -48,6 +49,7 @@ function snapshotFixture() {
       discordEnabled: false,
       discordChannelId: "",
       discordAutoOpen: true,
+      configurationProfiles: [],
       firstPartyOnly: true
     },
     status: {
@@ -166,6 +168,7 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
     }
   };
 
+  window.eval(configProfilesSource);
   window.eval(rendererSource);
   await new Promise((resolve) => setTimeout(resolve, 20));
   const doc = window.document;
@@ -203,6 +206,47 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   doc.getElementById("watcherIntervalSeconds").dispatchEvent(new window.Event("change", { bubbles: true }));
   await new Promise((resolve) => setTimeout(resolve, 650));
   assert.equal(savedSettingsInputs.at(-1).watcherIntervalSeconds, 90);
+
+  // Ready-made setups explain and apply only global timing/media settings.
+  const profileSelect = doc.getElementById("configurationProfileSelect");
+  assert.deepEqual([...profileSelect.options].map((option) => option.textContent), [
+    "Recommended",
+    "Low traffic",
+    "Scheduled drop"
+  ]);
+  assert.match(doc.querySelector(".settings-explainer").textContent, /never change products, price caps, quantities, or purchase actions/i);
+  profileSelect.value = "built-in:low-traffic";
+  profileSelect.dispatchEvent(new window.Event("change", { bubbles: true }));
+  doc.getElementById("applyConfigurationProfileButton").click();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(savedSettingsInputs.at(-1).watcherIntervalSeconds, 300);
+  assert.equal(savedSettingsInputs.at(-1).storeNavigationIntervalSeconds, 60);
+  assert.equal(savedSettingsInputs.at(-1).products[0].maxPrice, 40);
+
+  // A named custom setup persists its allowlisted numbers, can be applied,
+  // and can be deleted without changing the currently applied values.
+  doc.getElementById("watcherIntervalSeconds").value = "90";
+  doc.getElementById("configurationProfileName").value = "Friday night drop";
+  doc.getElementById("saveConfigurationProfileButton").click();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  const savedProfile = savedSettingsInputs.at(-1).configurationProfiles[0];
+  assert.equal(savedProfile.name, "Friday night drop");
+  assert.equal(savedProfile.configuration.watcherIntervalSeconds, 90);
+  assert.equal("products" in savedProfile.configuration, false);
+  assert.equal(profileSelect.value, savedProfile.id);
+  assert.equal(doc.getElementById("deleteConfigurationProfileButton").hidden, false);
+
+  doc.getElementById("watcherIntervalSeconds").value = "120";
+  doc.getElementById("applyConfigurationProfileButton").click();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(savedSettingsInputs.at(-1).watcherIntervalSeconds, 90);
+
+  window.confirm = () => true;
+  doc.getElementById("deleteConfigurationProfileButton").click();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(savedSettingsInputs.at(-1).configurationProfiles.length, 0);
+  assert.equal(profileSelect.options.length, 3);
+  assert.equal(doc.getElementById("deleteConfigurationProfileButton").hidden, true);
 
   // Discord stays out of the dashboard until requested, then opens as the
   // bottom card and shares the Missions/Activity minimize behavior.
