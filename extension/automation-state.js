@@ -3,8 +3,43 @@
 (() => {
   const STATE_VERSION = 3;
   const LOCK_MS = 10 * 60_000;
-  const MAX_RUN_MS = 4 * 60 * 60_000;
-  const MAX_PRODUCT_ATTEMPTS = 100;
+  const TARGET_PERSISTENCE_WINDOW_MS = 20_000;
+  const MIN_TARGET_PERSISTENCE_WINDOW_MS = 5_000;
+  const MAX_TARGET_PERSISTENCE_WINDOW_MS = 120_000;
+  const TARGET_PERSISTENCE_LIMITS = Object.freeze({
+    add: 16,
+    quantity: 12,
+    cart: 10,
+    checkout: 8,
+    submit: 3
+  });
+
+  function emptyTargetPersistence() {
+    return Object.fromEntries(
+      Object.keys(TARGET_PERSISTENCE_LIMITS).map((kind) => [kind, {
+        attempts: 0,
+        startedAt: 0,
+        updatedAt: 0
+      }])
+    );
+  }
+
+  function normalizeTargetPersistence(input) {
+    const normalized = emptyTargetPersistence();
+    for (const kind of Object.keys(TARGET_PERSISTENCE_LIMITS)) {
+      const value = input?.[kind] || {};
+      normalized[kind] = {
+        attempts: Number.isInteger(value.attempts) && value.attempts >= 0 ? value.attempts : 0,
+        startedAt: Number.isFinite(Number(value.startedAt)) && Number(value.startedAt) >= 0
+          ? Number(value.startedAt)
+          : 0,
+        updatedAt: Number.isFinite(Number(value.updatedAt)) && Number(value.updatedAt) >= 0
+          ? Number(value.updatedAt)
+          : 0
+      };
+    }
+    return normalized;
+  }
 
   function createState(runId, now = Date.now()) {
     return {
@@ -37,9 +72,14 @@
     state.products[key] ||= {
       attempts: 0,
       proof: null,
-      submission: { phase: "idle", updatedAt: 0, evidenceHash: "" }
+      submission: { phase: "idle", updatedAt: 0, evidenceHash: "" },
+      addAction: { phase: "idle", ownerId: "", updatedAt: 0 },
+      targetPersistence: emptyTargetPersistence()
     };
-    return state.products[key];
+    const record = state.products[key];
+    record.addAction ||= { phase: "idle", ownerId: "", updatedAt: 0 };
+    record.targetPersistence = normalizeTargetPersistence(record.targetPersistence);
+    return record;
   }
 
   // Every product gets its own lock so duplicate tabs cannot double-process
@@ -52,9 +92,10 @@
     return keys;
   }
 
-  function budgetReason(state, product, now = Date.now()) {
-    if (now - state.runStartedAt > MAX_RUN_MS) return "run-expired";
-    if (recordFor(state, product.id).attempts >= MAX_PRODUCT_ATTEMPTS) return "attempt-budget-exhausted";
+  // An explicitly armed watcher has no wall-clock or per-product attempt
+  // expiry. Stop/disarm is its termination boundary; the separate rolling
+  // per-store action budget still governs every retailer mutation/navigation.
+  function budgetReason() {
     return "";
   }
 
@@ -65,6 +106,12 @@
     const record = recordFor(state, product.id);
     if (["intent", "uncertain"].includes(record.submission?.phase)) {
       return { ok: false, reason: "submission-uncertain" };
+    }
+    if (["reserved", "clicked"].includes(record.addAction?.phase)) {
+      return { ok: false, reason: "add-in-flight" };
+    }
+    if (record.addAction?.phase === "confirmed" && record.addAction.ownerId !== ownerId) {
+      return { ok: false, reason: "cart-confirmed" };
     }
     const keys = lockKeys(product);
     for (const key of keys) {
@@ -105,6 +152,9 @@
     if (["intent", "uncertain"].includes(record.submission?.phase)) {
       return { ok: false, reason: "submission-uncertain", released: false };
     }
+    if (record.addAction?.phase === "clicked") {
+      return { ok: false, reason: "add-uncertain", released: false };
+    }
     let released = false;
     for (const [key, lock] of Object.entries(state.locks)) {
       if (lock?.productId === product.id && lock.ownerId === ownerId) {
@@ -133,6 +183,138 @@
       verifiedAt: now
     };
     return { ok: true, proof: record.proof };
+  }
+
+  function reserveTargetPersistence(state, product, ownerId, kind, policyOrNow = {}, requestedNow = Date.now()) {
+    const legacyNow = typeof policyOrNow === "number" ? policyOrNow : requestedNow;
+    const policy = typeof policyOrNow === "number" ? {} : policyOrNow;
+    const configuredWindowMs = Number(policy?.windowMs);
+    const windowMs = Number.isFinite(configuredWindowMs)
+      && configuredWindowMs >= MIN_TARGET_PERSISTENCE_WINDOW_MS
+      && configuredWindowMs <= MAX_TARGET_PERSISTENCE_WINDOW_MS
+      ? configuredWindowMs
+      : TARGET_PERSISTENCE_WINDOW_MS;
+    const now = Number(legacyNow);
+    const normalizedKind = String(kind || "");
+    const limit = TARGET_PERSISTENCE_LIMITS[normalizedKind];
+    if (product.retailer !== "target") return { ok: false, reason: "target-only" };
+    if (product.executionMode !== "blitz") return { ok: false, reason: "blitz-required" };
+    if (!limit) return { ok: false, reason: "invalid-persistence-kind" };
+    if (state.completed[product.id]) return { ok: false, reason: "completed" };
+    const budget = budgetReason(state, product, now);
+    if (budget) return { ok: false, reason: budget };
+
+    const record = recordFor(state, product.id);
+    const lock = state.locks[`product:${product.id}`];
+    const knownOwner = String(record.addAction?.ownerId || lock?.ownerId || "");
+    if (knownOwner && knownOwner !== ownerId) {
+      return { ok: false, reason: "product-busy" };
+    }
+
+    const current = record.targetPersistence[normalizedKind];
+    const startedAt = current.attempts > 0 ? current.startedAt : now;
+    if (now - startedAt > windowMs || current.attempts >= limit) {
+      return {
+        ok: false,
+        reason: "target-persistence-exhausted",
+        kind: normalizedKind,
+        attempts: current.attempts,
+        limit,
+        expiresAt: startedAt + windowMs
+      };
+    }
+
+    record.targetPersistence[normalizedKind] = {
+      attempts: current.attempts + 1,
+      startedAt,
+      updatedAt: now
+    };
+    return {
+      ok: true,
+      kind: normalizedKind,
+      attempt: current.attempts + 1,
+      remaining: limit - current.attempts - 1,
+      expiresAt: startedAt + windowMs,
+      windowMs,
+      targetPersistence: record.targetPersistence
+    };
+  }
+
+  function beginAddAction(state, product, ownerId, now = Date.now()) {
+    const record = recordFor(state, product.id);
+    if (record.addAction.phase !== "idle") {
+      return {
+        ok: false,
+        reason: record.addAction.phase === "confirmed" ? "cart-confirmed" : "add-in-flight",
+        addAction: record.addAction
+      };
+    }
+    for (const key of lockKeys(product)) {
+      const lock = state.locks[key];
+      if (!lock || lock.productId !== product.id || lock.ownerId !== ownerId) {
+        return { ok: false, reason: key.startsWith("store:") ? "store-busy" : "product-busy" };
+      }
+    }
+    record.addAction = {
+      phase: "reserved",
+      ownerId: String(ownerId || ""),
+      updatedAt: now
+    };
+    return { ok: true, addAction: record.addAction };
+  }
+
+  function markAddAction(state, product, ownerId, outcome, now = Date.now()) {
+    const record = recordFor(state, product.id);
+    const action = record.addAction;
+    if (action.ownerId && action.ownerId !== ownerId) {
+      return { ok: false, reason: "product-busy", addAction: action };
+    }
+    if (outcome === "clicked") {
+      if (action.phase !== "reserved") return { ok: false, reason: "add-in-flight", addAction: action };
+      record.addAction = { ...action, phase: "clicked", updatedAt: now };
+      for (const key of lockKeys(product)) {
+        if (state.locks[key]?.productId === product.id) {
+          state.locks[key] = {
+            ...state.locks[key],
+            hold: true,
+            expiresAt: Number.MAX_SAFE_INTEGER
+          };
+        }
+      }
+      return { ok: true, addAction: record.addAction };
+    }
+    if (outcome === "confirmed") {
+      if (action.phase !== "clicked") return { ok: false, reason: "add-not-clicked", addAction: action };
+      record.addAction = { ...action, phase: "confirmed", updatedAt: now };
+      for (const key of lockKeys(product)) {
+        if (state.locks[key]?.productId === product.id) {
+          state.locks[key] = {
+            ...state.locks[key],
+            hold: false,
+            expiresAt: now + LOCK_MS
+          };
+        }
+      }
+      return { ok: true, addAction: record.addAction };
+    }
+    if (["canceled", "failed"].includes(outcome)) {
+      if (action.phase === "clicked" && outcome !== "failed") {
+        return { ok: false, reason: "add-uncertain", addAction: action };
+      }
+      record.addAction = { phase: "idle", ownerId: "", updatedAt: now };
+      record.proof = null;
+      for (const key of lockKeys(product)) {
+        if (state.locks[key]?.productId === product.id) {
+          state.locks[key] = {
+            ...state.locks[key],
+            hold: false,
+            expiresAt: now + LOCK_MS
+          };
+        }
+      }
+      return { ok: true, addAction: record.addAction };
+    }
+    return { ok: false, reason: "invalid-outcome", addAction: action };
   }
 
   function beginSubmission(state, product, ownerId, evidenceHash, now = Date.now()) {
@@ -212,6 +394,8 @@
       attempts: record.attempts,
       proof: record.proof,
       submission: record.submission,
+      addAction: record.addAction,
+      targetPersistence: record.targetPersistence,
       budgetReason: budgetReason(state, product, now),
       lock: state.locks[`product:${product.id}`] || null
     };
@@ -219,18 +403,23 @@
 
   const api = Object.freeze({
     LOCK_MS,
-    MAX_PRODUCT_ATTEMPTS,
-    MAX_RUN_MS,
+    MAX_TARGET_PERSISTENCE_WINDOW_MS,
+    MIN_TARGET_PERSISTENCE_WINDOW_MS,
     STATE_VERSION,
+    TARGET_PERSISTENCE_LIMITS,
+    TARGET_PERSISTENCE_WINDOW_MS,
+    beginAddAction,
     beginSubmission,
     claim,
     complete,
     createState,
+    markAddAction,
     markSubmission,
     normalizeState,
     productState,
     recordAttempt,
     release,
+    reserveTargetPersistence,
     saveProof
   });
 

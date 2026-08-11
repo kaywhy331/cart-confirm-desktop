@@ -2,7 +2,21 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { ACTION_BUDGET_WINDOW_MS, consumeStoreAction } = require("../lib/action-budget");
+const {
+  ACTION_BUDGET_WINDOW_MS,
+  canBypassStoreOverload,
+  consumeStoreAction
+} = require("../lib/action-budget");
+
+test("only the bounded Target persistence lane may ignore an overload deadline", () => {
+  assert.equal(canBypassStoreOverload("target", "target-persistence:add"), true);
+  assert.equal(canBypassStoreOverload("target", "target-persistence:quantity"), true);
+  assert.equal(canBypassStoreOverload("target", "target-persistence:cart"), true);
+  assert.equal(canBypassStoreOverload("target", "target-persistence:checkout"), true);
+  assert.equal(canBypassStoreOverload("target", "target-persistence:submit"), true);
+  assert.equal(canBypassStoreOverload("target", "navigation"), false);
+  assert.equal(canBypassStoreOverload("amazon", "target-persistence:add"), false);
+});
 
 test("the shared store budget hard-stops after its hourly limit", () => {
   const now = 2 * ACTION_BUDGET_WINDOW_MS;

@@ -48,3 +48,15 @@ test("rapid retries collapse without hiding cadence or failure changes", () => {
   }), true);
   assert.equal(shouldRecordActivity([retry], { ...base, eventType: "store-error", reason: "store-error" }), true);
 });
+
+test("an unchanged overload cooldown is recorded once", () => {
+  const overload = {
+    eventType: "traffic-overload",
+    productId: "",
+    retailer: "target",
+    reason: "traffic-overload",
+    cooldownUntil: 123_000
+  };
+  assert.equal(shouldRecordActivity([overload], { ...overload, timestamp: new Date().toISOString() }), false);
+  assert.equal(shouldRecordActivity([overload], { ...overload, cooldownUntil: 456_000 }), true);
+});

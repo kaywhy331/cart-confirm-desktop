@@ -22,13 +22,22 @@ const elements = {
   missionViewTemplate: document.getElementById("missionViewTemplate"),
   missionEditTemplate: document.getElementById("missionEditTemplate"),
   newMissionButton: document.getElementById("newMissionButton"),
+  bulkImportButton: document.getElementById("bulkImportButton"),
+  bulkImportDialog: document.getElementById("bulkImportDialog"),
+  bulkImportText: document.getElementById("bulkImportText"),
+  bulkImportResult: document.getElementById("bulkImportResult"),
+  bulkImportSubmitButton: document.getElementById("bulkImportSubmitButton"),
+  bulkImportCancelButton: document.getElementById("bulkImportCancelButton"),
   testButton: document.getElementById("testButton"),
   openAllButton: document.getElementById("openAllButton"),
   worstCase: document.getElementById("worstCase"),
   settingsBox: document.getElementById("settingsBox"),
   fastMode: document.getElementById("fastMode"),
+  watcherIntervalSeconds: document.getElementById("watcherIntervalSeconds"),
   retryIntervalSeconds: document.getElementById("retryIntervalSeconds"),
   eligibilityRefreshIntervalSeconds: document.getElementById("eligibilityRefreshIntervalSeconds"),
+  blitzRetryDelayMs: document.getElementById("blitzRetryDelayMs"),
+  blitzWindowSeconds: document.getElementById("blitzWindowSeconds"),
   storeNavigationIntervalSeconds: document.getElementById("storeNavigationIntervalSeconds"),
   overloadCooldownSeconds: document.getElementById("overloadCooldownSeconds"),
   storeShortcut: document.getElementById("storeShortcut"),
@@ -77,8 +86,6 @@ const BLOCKING_REASONS = new Set([
   "total-unavailable",
   "traffic-overload",
   "traffic-budget-exhausted",
-  "attempt-budget-exhausted",
-  "run-expired",
   "unmatched-product"
 ]);
 
@@ -108,6 +115,7 @@ let resumeAutopilotAfterEdit = false;
 let awaySince = 0;
 let settingsSaveTimer = null;
 let eventFilterProductId = null;
+let bulkImportInFlight = false;
 // Persisted feed entries are history, not fresh alarm triggers. Only events
 // received after this renderer process starts may sound an alarm.
 let lastAlarmEventStamp = new Date().toISOString();
@@ -292,8 +300,11 @@ function globalSettings(products) {
     products,
     automationEnabled: isArmed(),
     fastMode: elements.fastMode.checked,
+    watcherIntervalSeconds: Number(elements.watcherIntervalSeconds.value),
     retryIntervalSeconds: Number(elements.retryIntervalSeconds.value),
     eligibilityRefreshIntervalSeconds: Number(elements.eligibilityRefreshIntervalSeconds.value),
+    blitzRetryDelayMs: Number(elements.blitzRetryDelayMs.value),
+    blitzWindowSeconds: Number(elements.blitzWindowSeconds.value),
     storeNavigationIntervalSeconds: Number(elements.storeNavigationIntervalSeconds.value),
     overloadCooldownSeconds: Number(elements.overloadCooldownSeconds.value),
     scheduledOpenEnabled: false,
@@ -408,6 +419,11 @@ function buildViewCard(product, status) {
   if (product.openAt) {
     subParts.push(`opens ${new Date(product.openAt).toLocaleString([], { dateStyle: "medium", timeStyle: "short" })}`);
   }
+  subParts.push(product.openAt
+    ? "calendar-gated → blitz"
+    : product.executionMode === "blitz"
+      ? "calendar blitz"
+      : "continuous watcher");
   if (product.alertLevel === "alarm") subParts.push("🔔 alarm");
   subParts.push(product.signalAutoOpen === false
     ? "signals record only"
@@ -677,6 +693,84 @@ async function startEdit(product, seed = null) {
   editCardNode = buildEditCard(product || seed);
   renderMissions();
   editCardNode.querySelector("[data-field='productUrl']").focus();
+}
+
+function setBulkImportResult(text, kind = "") {
+  elements.bulkImportResult.textContent = text;
+  elements.bulkImportResult.className = `bulk-import-result ${kind}`.trim();
+}
+
+function closeBulkImportDialog() {
+  if (bulkImportInFlight) return;
+  if (typeof elements.bulkImportDialog.close === "function") elements.bulkImportDialog.close();
+  else elements.bulkImportDialog.removeAttribute("open");
+}
+
+function openBulkImportDialog() {
+  if (editingId) {
+    setMessage("Finish the open mission editor before importing URLs.", "error");
+    return;
+  }
+  elements.bulkImportText.value = "";
+  setBulkImportResult("");
+  if (typeof elements.bulkImportDialog.showModal === "function") elements.bulkImportDialog.showModal();
+  else elements.bulkImportDialog.setAttribute("open", "");
+  elements.bulkImportText.focus();
+}
+
+function bulkImportSummaryText(summary = {}) {
+  const parts = [];
+  if (summary.imported) parts.push(`${summary.imported} imported Off for review`);
+  if (summary.duplicates) parts.push(`${summary.duplicates} duplicate${summary.duplicates === 1 ? "" : "s"} skipped`);
+  if (summary.invalid) parts.push(`${summary.invalid} invalid line${summary.invalid === 1 ? "" : "s"}`);
+  if (summary.overCapacity) parts.push(`${summary.overCapacity} over the 50-mission limit`);
+  return parts.join(" · ") || "No product URLs were found.";
+}
+
+async function submitBulkImport() {
+  if (bulkImportInFlight) return;
+  const text = elements.bulkImportText.value.trim();
+  if (!text) {
+    setBulkImportResult("Paste at least one product URL.", "error");
+    elements.bulkImportText.focus();
+    return;
+  }
+
+  const actionStopEpoch = stopUiEpoch;
+  const wasArmed = isArmed();
+  bulkImportInFlight = true;
+  elements.bulkImportSubmitButton.disabled = true;
+  elements.bulkImportCancelButton.disabled = true;
+  setBulkImportResult("Validating and deduplicating URLs…");
+  try {
+    if (wasArmed) await pauseAutopilot();
+    const result = await window.cartAssist.bulkImportMissions(text);
+    render(result.snapshot);
+    const summaryText = bulkImportSummaryText(result.summary);
+    const issueText = (result.issues || []).map((issue) => `Line ${issue.line}: ${issue.reason}`).join(" ");
+    if (result.summary?.imported > 0) {
+      bulkImportInFlight = false;
+      closeBulkImportDialog();
+      if (wasArmed && actionStopEpoch === stopUiEpoch) await resumeAutopilot();
+      setMessage(`${summaryText}. Review each imported mission before enabling it.`, "success");
+      return;
+    }
+    setBulkImportResult(`${summaryText}${issueText ? ` ${issueText}` : ""}`, "error");
+    if (wasArmed && actionStopEpoch === stopUiEpoch) await resumeAutopilot();
+  } catch (error) {
+    setBulkImportResult(error.message || "The URL import failed.", "error");
+    if (wasArmed && actionStopEpoch === stopUiEpoch) {
+      try {
+        await resumeAutopilot();
+      } catch {
+        setMessage("Import failed and Autopilot could not be resumed. Review the header state.", "error");
+      }
+    }
+  } finally {
+    bulkImportInFlight = false;
+    elements.bulkImportSubmitButton.disabled = false;
+    elements.bulkImportCancelButton.disabled = false;
+  }
 }
 
 function renderMissions() {
@@ -1206,8 +1300,11 @@ function renderSignals(signals = []) {
 
 function populateSettingsInputs(settings) {
   const map = [
+    [elements.watcherIntervalSeconds, settings.watcherIntervalSeconds],
     [elements.retryIntervalSeconds, settings.retryIntervalSeconds],
     [elements.eligibilityRefreshIntervalSeconds, settings.eligibilityRefreshIntervalSeconds],
+    [elements.blitzRetryDelayMs, settings.blitzRetryDelayMs],
+    [elements.blitzWindowSeconds, settings.blitzWindowSeconds],
     [elements.storeNavigationIntervalSeconds, settings.storeNavigationIntervalSeconds],
     [elements.overloadCooldownSeconds, settings.overloadCooldownSeconds]
   ];
@@ -1267,31 +1364,37 @@ elements.autopilotToggle.addEventListener("click", async () => {
       const autoSubmitCount = saved.products.filter((product) => product.enabled && product.action === "checkout").length;
       if (
         autoSubmitCount > 0
-        && !window.confirm(`${autoSubmitCount} enabled mission${autoSubmitCount === 1 ? "" : "s"} may submit a real order. Re-arming starts a new run. Every enabled mission without a calendar time will open now; scheduled missions wait for their exact time. Verify retailer order history first. "Prepare checkout, I submit" is safer. Switch Autopilot on anyway?`)
+        && !window.confirm(`${autoSubmitCount} enabled mission${autoSubmitCount === 1 ? "" : "s"} may submit a real order. Re-arming starts a new run. Unscheduled Target and Walmart missions start as quiet background watchers and open Chrome only after a likely stock signal; Amazon must open now. Scheduled missions wait for their exact time. Verify retailer order history first. "Prepare checkout, I submit" is safer. Switch Autopilot on anyway?`)
       ) {
         throw new Error("Autopilot was not switched on.");
       }
       const next = await window.cartAssist.saveSettings({ ...saved, automationEnabled: true });
       render(next);
-      setMessage("Autopilot ON. Opening every due enabled mission… same-store pages are paced for safety.");
+      setMessage("Autopilot ON. Starting Target and Walmart background watchers; opening only missions that require a browser now…");
       try {
-        const launch = await window.cartAssist.openBuyList();
+        const launch = await window.cartAssist.openBuyList({ backgroundFirst: true });
         return { armed: true, ...launch };
       } catch (error) {
-        throw new Error(`Autopilot is ON, but its mission pages could not open: ${error.message || "unknown opening error"}`);
+        throw new Error(`Autopilot is ON, but its watchers or required browser pages could not start: ${error.message || "unknown opening error"}`);
       }
     }, (result) => {
       if (!result?.armed) return "Autopilot OFF. Monitoring pages stay open, but nothing will be clicked.";
       const count = Number(result.count || 0);
+      const background = Number(result.background || 0);
       const scheduled = Number(result.scheduled || 0);
-      const parts = [`Autopilot ON. ${count} due mission page${count === 1 ? "" : "s"} opened`];
+      const parts = ["Autopilot ON"];
+      if (background) {
+        parts.push(`${background} Target/Walmart watcher${background === 1 ? "" : "s"} armed background-first`);
+      }
+      if (count) parts.push(`${count} browser-required mission page${count === 1 ? "" : "s"} opened`);
+      if (!background && !count && !scheduled) parts.push("no due missions needed a browser page");
       if (result.reused) parts.push(`${result.reused} reused an existing Chrome tab`);
       if (result.deduped) parts.push(`${result.deduped} already queued`);
       if (scheduled) parts.push(`${scheduled} waiting for ${scheduled === 1 ? "its" : "their"} calendar time`);
       const browserNote = result.defaultBrowser
         ? " Chrome was not found, so some pages used your default browser; Autopilot only works inside Chrome."
         : "";
-      return `${parts.join(", ")}. Each due mission acts as its page loads.${browserNote}`;
+      return `${parts.join(", ")}. A likely stock signal opens Chrome for authoritative validation and the configured action. Review missions remain on checkout review; a successful auto-submit remains on Target's confirmation page.${browserNote}`;
     });
   } finally {
     setMissionOpenBusy(false);
@@ -1313,6 +1416,18 @@ elements.disarmButton.addEventListener("click", () => {
 });
 
 elements.newMissionButton.addEventListener("click", () => void startEdit(null));
+elements.bulkImportButton.addEventListener("click", openBulkImportDialog);
+elements.bulkImportSubmitButton.addEventListener("click", () => void submitBulkImport());
+elements.bulkImportCancelButton.addEventListener("click", closeBulkImportDialog);
+elements.bulkImportDialog.addEventListener("cancel", (event) => {
+  if (bulkImportInFlight) event.preventDefault();
+});
+elements.bulkImportText.addEventListener("keydown", (event) => {
+  if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+    event.preventDefault();
+    void submitBulkImport();
+  }
+});
 
 elements.showDiscordButton.addEventListener("click", () => {
   elements.discordLauncher.hidden = true;
@@ -1469,8 +1584,11 @@ function scheduleSettingsSave() {
         : ""
     );
     for (const input of [
+      elements.watcherIntervalSeconds,
       elements.retryIntervalSeconds,
       elements.eligibilityRefreshIntervalSeconds,
+      elements.blitzRetryDelayMs,
+      elements.blitzWindowSeconds,
       elements.storeNavigationIntervalSeconds,
       elements.overloadCooldownSeconds
     ]) {
@@ -1484,8 +1602,11 @@ function scheduleSettingsSave() {
 }
 
 elements.fastMode.addEventListener("change", scheduleSettingsSave);
+elements.watcherIntervalSeconds.addEventListener("change", scheduleSettingsSave);
 elements.retryIntervalSeconds.addEventListener("change", scheduleSettingsSave);
 elements.eligibilityRefreshIntervalSeconds.addEventListener("change", scheduleSettingsSave);
+elements.blitzRetryDelayMs.addEventListener("change", scheduleSettingsSave);
+elements.blitzWindowSeconds.addEventListener("change", scheduleSettingsSave);
 elements.storeNavigationIntervalSeconds.addEventListener("change", scheduleSettingsSave);
 elements.overloadCooldownSeconds.addEventListener("change", scheduleSettingsSave);
 

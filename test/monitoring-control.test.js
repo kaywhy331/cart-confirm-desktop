@@ -52,11 +52,33 @@ test("the desktop Stop path aborts quiet checks and internal stock opens cannot 
 test("Test all opens every enabled mission while remaining disarmed", () => {
   const source = fs.readFileSync(path.join(__dirname, "..", "main.js"), "utf8");
   assert.match(source, /cart-assist:test-event[\s\S]*?if \(settings\.automationEnabled\)[\s\S]*?return openBuyList\(\);/);
-  assert.match(source, /async function openBuyList[\s\S]*?planImmediateProductOpenings\(settings, retailer\)[\s\S]*?Promise\.all\(plan\.ready\.map/);
+  assert.match(source, /async function openBuyList[\s\S]*?browserProducts = plan\.ready\.filter[\s\S]*?Promise\.all\(browserProducts\.map/);
 });
 
-test("arming Autopilot launches the due mission sweep automatically", () => {
-  const source = fs.readFileSync(path.join(__dirname, "..", "src", "renderer.js"), "utf8");
-  assert.match(source, /autopilotToggle[\s\S]*?saveSettings\(\{ \.\.\.saved, automationEnabled: true \}\)[\s\S]*?openBuyList\(\)/);
-  assert.match(source, /waiting for[\s\S]*?calendar time/);
+test("arming Autopilot starts Target and Walmart background-first without changing manual opens", () => {
+  const mainSource = fs.readFileSync(path.join(__dirname, "..", "main.js"), "utf8");
+  const rendererSource = fs.readFileSync(path.join(__dirname, "..", "src", "renderer.js"), "utf8");
+  const openBuyList = mainSource.slice(
+    mainSource.indexOf("async function openBuyList"),
+    mainSource.indexOf("async function openStorePage")
+  );
+  assert.match(rendererSource, /autopilotToggle[\s\S]*?saveSettings\(\{ \.\.\.saved, automationEnabled: true \}\)[\s\S]*?openBuyList\(\{ backgroundFirst: true \}\)/);
+  assert.match(rendererSource, /waiting for[\s\S]*?calendar time/);
+  assert.match(rendererSource, /openAllButton[\s\S]*?openBuyList\(\)/);
+  assert.match(openBuyList, /backgroundFirst[\s\S]*?QUIET_STORES\.includes\(product\.retailer\)[\s\S]*?productExecutionMode[\s\S]*?=== "watcher"/);
+  assert.match(openBuyList, /backgroundIds[\s\S]*?browserProducts/);
+  assert.match(openBuyList, /background: backgroundProducts\.length/);
+});
+
+test("calendar-owned missions stay out of quiet checks and missed schedules stay locked", () => {
+  const source = fs.readFileSync(path.join(__dirname, "..", "main.js"), "utf8");
+  const backgroundSource = fs.readFileSync(path.join(__dirname, "..", "extension", "background.js"), "utf8");
+  const scheduleHandler = source.slice(
+    source.indexOf("function handleProductSchedule"),
+    source.indexOf("function startScheduler")
+  );
+  assert.match(source, /function extensionConfig[\s\S]*?calendarOwned: productCalendarOwned\(settings, product\)/);
+  assert.match(source, /function quietMonitorTick[\s\S]*?!productCalendarOwned\(settings, product\)/);
+  assert.match(scheduleHandler, /if \(decision\.action === "missed"\)[\s\S]*?return;[\s\S]*?clearProductOpenAt\(decision\.productId\)/);
+  assert.match(backgroundSource, /function configuredProduct[\s\S]*?!ScheduleGate\.calendarOwned\(product\)/);
 });

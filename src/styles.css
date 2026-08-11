@@ -717,6 +717,39 @@ button:disabled:hover { transform: none; }
 .button.compact { min-height: 32px; padding: 0 11px; font-size: 10.5px; }
 .button:focus-visible { outline: 3px solid rgba(56, 189, 248, 0.22); outline-offset: 2px; }
 
+/* URL-only mission import */
+.bulk-import-dialog {
+  width: min(680px, calc(100vw - 36px));
+  max-height: calc(100vh - 48px);
+  padding: 22px;
+  overflow: auto;
+  border: 1px solid var(--line-strong);
+  border-radius: 16px;
+  background: #0f172a;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.55);
+  color: var(--text);
+}
+.bulk-import-dialog::backdrop { background: rgba(2, 6, 23, 0.78); backdrop-filter: blur(3px); }
+.bulk-import-dialog .dialog-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.bulk-import-dialog h2 { margin: 4px 0 0; font-size: 19px; }
+.bulk-import-dialog > p { color: var(--muted); font-size: 12px; line-height: 1.5; }
+.bulk-import-dialog textarea {
+  width: 100%;
+  min-height: 220px;
+  resize: vertical;
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  padding: 13px;
+  background: #091221;
+  color: var(--text);
+  font: 11.5px/1.55 ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+.bulk-import-dialog textarea:focus { border-color: var(--accent); outline: 3px solid rgba(56, 189, 248, 0.13); }
+.bulk-import-dialog .bulk-import-safety { color: var(--warning); }
+.bulk-import-result { min-height: 22px; margin: 10px 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
+.bulk-import-result.error { color: var(--danger); }
+.dialog-actions { display: flex; justify-content: flex-end; }
+
 /* Toast messages */
 .message {
   position: fixed;

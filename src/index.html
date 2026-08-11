@@ -79,6 +79,7 @@
             <h2>Missions</h2>
             <div class="action-row">
               <button class="button ghost compact" id="openAllButton" type="button">Open all due</button>
+              <button class="button secondary compact" id="bulkImportButton" type="button">Bulk import</button>
               <button class="button primary compact" id="newMissionButton" type="button">+ New mission</button>
               <button class="button ghost compact panel-toggle" type="button" aria-controls="missionsPanelBody" aria-expanded="true">Minimize</button>
             </div>
@@ -101,20 +102,44 @@
               <small>HTML, scripts, sign-in, and store security controls still load normally.</small>
             </label>
             <label class="control-card field compact-field">
-              <span class="control-title">Retry interval</span>
+              <span class="control-title">Watcher interval</span>
+              <span class="number-suffix">
+                <input id="watcherIntervalSeconds" type="number" min="30" max="3600" step="1" inputmode="numeric" required>
+                <span>seconds</span>
+              </span>
+              <small>Unscheduled missions check continuously at this cadence until you press Stop. Default: 60 seconds.</small>
+            </label>
+            <label class="control-card field compact-field">
+              <span class="control-title">Blitz retry interval</span>
               <span class="number-suffix">
                 <input id="retryIntervalSeconds" type="number" min="5" max="3600" step="1" inputmode="numeric" required>
                 <span>seconds</span>
               </span>
-              <small>Retries use this minimum plus jitter and backoff after store errors.</small>
+              <small>Calendar-fired blitz retries use this minimum plus jitter and backoff after ordinary store errors.</small>
             </label>
             <label class="control-card field compact-field">
-              <span class="control-title">Pre-eligibility refresh</span>
+              <span class="control-title">Blitz stock refresh</span>
               <span class="number-suffix">
                 <input id="eligibilityRefreshIntervalSeconds" type="number" min="2" max="60" step="1" inputmode="numeric" required>
                 <span>seconds</span>
               </span>
-              <small>Until an offer becomes eligible, waiting missions share this faster per-store refresh lane.</small>
+              <small>Until an offer becomes eligible, calendar-fired blitz missions share this faster per-store refresh lane.</small>
+            </label>
+            <label class="control-card field compact-field">
+              <span class="control-title">Target blitz action delay</span>
+              <span class="number-suffix">
+                <input id="blitzRetryDelayMs" type="number" min="250" max="5000" step="50" inputmode="numeric" required>
+                <span>ms</span>
+              </span>
+              <small>Delay between bounded Target persistence actions after a calendar release. Default: 750 ms.</small>
+            </label>
+            <label class="control-card field compact-field">
+              <span class="control-title">Target blitz window</span>
+              <span class="number-suffix">
+                <input id="blitzWindowSeconds" type="number" min="5" max="120" step="1" inputmode="numeric" required>
+                <span>seconds</span>
+              </span>
+              <small>Maximum duration of each Target persistence stage. Per-stage action caps still apply. Default: 20 seconds.</small>
             </label>
             <label class="control-card field compact-field">
               <span class="control-title">Store traffic spacing</span>
@@ -237,6 +262,23 @@
       <span>First-party sellers only, always capped — enforced in code. Unofficial personal-use tool; store names and marks belong to their respective owners.</span>
     </footer>
   </div>
+
+  <dialog class="bulk-import-dialog" id="bulkImportDialog" aria-labelledby="bulkImportTitle">
+    <div class="dialog-heading">
+      <div>
+        <span class="eyebrow">Mission tools</span>
+        <h2 id="bulkImportTitle">Bulk import product links</h2>
+      </div>
+      <button class="button ghost compact" id="bulkImportCancelButton" type="button">Close</button>
+    </div>
+    <p>Paste Target, Walmart, or Amazon product URLs—one per line or separated by spaces.</p>
+    <textarea id="bulkImportText" maxlength="50000" spellcheck="false" placeholder="https://www.target.com/p/.../-/A-1011209279&#10;https://www.walmart.com/ip/.../95163305&#10;https://www.amazon.com/.../dp/B0ABC12345"></textarea>
+    <p class="bulk-import-safety">URL-only imports start <strong>Off</strong> as watch missions with a $0 cap. Review each mission’s current price before enabling it.</p>
+    <div class="bulk-import-result" id="bulkImportResult" role="status" aria-live="polite"></div>
+    <div class="dialog-actions">
+      <button class="button primary" id="bulkImportSubmitButton" type="button">Import URLs</button>
+    </div>
+  </dialog>
 
   <template id="missionViewTemplate">
     <article class="mission-card">

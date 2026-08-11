@@ -103,6 +103,26 @@ For each of Target, Walmart, and Amazon you plan to automate:
 - [ ] Empty that store's cart of anything unrelated (the README's step 2) —
       this also removes stale addresses/payment selections tied to old items.
 
+### Mission import checks
+
+- [ ] With the desktop connected and Autopilot off, use the Chrome toolbar
+      **Quick add** popup on one product page from each supported retailer.
+      Confirm the preview shows the exact TCIN / Walmart item ID / ASIN, title,
+      and current retailer-page price. Add it and confirm Missions receives an
+      enabled **Watch & alert only** row whose maximum unit price exactly matches
+      the preview, without any cart or checkout action.
+- [ ] Change an existing Quick-added mission's cap, then Quick-add the same
+      product again. Confirm the popup reports a duplicate and the existing
+      mission, cap, action, and enabled state remain unchanged.
+- [ ] On a product page whose price is still loading or unavailable, confirm
+      Quick add shows **Not readable** and cannot add the mission. Also confirm
+      Quick add is blocked while Autopilot is armed.
+- [ ] In desktop **Bulk import**, paste tracked and duplicate Target, Walmart,
+      and Amazon product URLs plus one unsupported line. Confirm supported IDs
+      are detected once, tracking parameters are removed, and the invalid line
+      is reported. Confirm every imported row starts Off as **Watch & alert
+      only** with a $0 cap and remains inert until manually reviewed and enabled.
+
 ## 3. Per-product markup check (Add-to-cart-only dry run)
 
 With automation disarmed, for every row you intend to eventually auto-submit:
@@ -117,7 +137,18 @@ With automation disarmed, for every row you intend to eventually auto-submit:
       first-party item, the safety check will misfire — flag it instead of
       proceeding.
 - [ ] Confirm the unit price read in the event log matches what's on the page.
+- [ ] Confirm Walmart and Amazon still produce only one **Add Clicked** event.
+      For an unscheduled Target watcher, confirm the rapid persistence lane is
+      not used. Then schedule a harmless Target mission and, after its calendar
+      release, trigger a supervised overload/error dialog. Confirm it is
+      dismissed and retried only inside the configured bounded persistence
+      window. An ambiguous Add must open the cart for exact-TCIN verification;
+      only an explicit rejection or a fully loaded cart proving that TCIN absent
+      may produce another Add click.
 - [ ] Confirm the quantity landed in the cart matches what you configured.
+- [ ] On Target, confirm quantity-plus retries stop immediately at the configured
+      quantity, and that the fixed per-stage and 120-actions/hour limits stop a
+      persistent error instead of looping indefinitely.
 
 ## 4. Final-review dry run (before ever enabling auto-submit)
 
@@ -140,20 +171,46 @@ for one supervised run) and manually walk the checkout to the final review page:
       or below the configured final-total cap.
 - [ ] Only after this manual pass looks correct for a given product, switch
       that row to **Submit order automatically** and re-arm.
+- [ ] On Target, verify an ambiguous **Place order** error stays durably locked.
+      In a separate supervised failure case, verify a retry occurs only when
+      the visible Target error explicitly says the order was not placed, and
+      that the complete SKU, seller, quantity, unit-price, fulfillment, and
+      final-total evidence is revalidated before that retry.
 
 ## 5. Ongoing
 
 - [ ] Press **Test all (no buying)** once and confirm every enabled mission
       without an **Open at** time is checked through the paced store queues.
       Confirm scheduled missions stay closed until their configured time.
-- [ ] Arm Autopilot once with two harmless unscheduled missions and confirm both
-      pages launch from that single action; no separate **Open all due** click
-      should be required.
-- [ ] With two harmless unavailable same-store missions, confirm the activity
-      text says the store is refreshing one waiting mission at the configured
-      **Pre-eligibility refresh** spacing. Confirm the faster lane stops for a
-      mission as soon as it reports an eligible offer; cart/checkout recovery
-      must continue using the normal **Store traffic spacing**.
+- [ ] Leave a scheduled product page open, arm Autopilot before its time, and
+      confirm the tab reports calendar waiting without page observations,
+      refreshes, cart actions, quiet checks, signal openings, or queue fan-out.
+      Confirm automation begins only after the configured time is reached. In
+      a separate supervised test, miss the time by over two minutes and confirm
+      it stays locked until you explicitly clear or reschedule **Open at**.
+- [ ] Arm one harmless unavailable mission without an **Open at** time. Confirm
+      its card says **continuous watcher**, checks at the configured Watcher
+      interval (60 seconds by default), and remains active over an extended
+      supervised period until you press **Stop everything**. The source tests
+      cover continuity beyond the former run/attempt limits; do not manufacture
+      live actions to reproduce them. If the rolling store budget fills during
+      normal use, confirm the watcher waits and later resumes.
+- [ ] Arm Autopilot once with two harmless unavailable, unscheduled Target or
+      Walmart missions and confirm neither product page opens. Confirm their
+      cards remain continuous watchers and that **Open all due** still opens
+      them immediately when explicitly selected.
+- [ ] With a supervised, low-risk in-stock Target mission set to **Watch & alert
+      only**, confirm its background stock hint opens Chrome on the canonical
+      product page and the browser independently revalidates it. Then validate
+      **Stop at final review** leaves the tab on Target checkout review; only
+      after completing section 4, validate that a successful auto-submit stays
+      on Target's confirmation/receipt page. Confirm no direct checkout or
+      synthetic receipt redirect occurs.
+- [ ] With two harmless unavailable same-store unscheduled missions, confirm
+      each uses the configured **Watcher interval** rather than the rapid lane.
+      Then schedule two harmless missions for the same near-future time and
+      confirm their cards change from calendar-gated to **calendar blitz** only
+      after release, using the configured **Blitz stock refresh** spacing.
 - [ ] Trigger a loud test alarm, select **Silence**, and confirm the alarm bar
       disappears. Trigger an away digest, select **Dismiss**, and confirm that
       bar disappears too. Relaunching must not replay persisted feed entries as

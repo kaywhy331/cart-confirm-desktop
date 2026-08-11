@@ -5,6 +5,14 @@
   const RESERVATION_GRACE_MS = 120_000;
   const OVERLOAD_DECAY_MS = 6 * 60 * 60_000;
   const MAX_COOLDOWN_MS = 24 * 60 * 60_000;
+  const ACTION_OVERLOAD_WINDOW_MS = 15_000;
+  const TARGET_PERSISTENCE_ACTIONS = new Set([
+    "target-persistence:add",
+    "target-persistence:quantity",
+    "target-persistence:cart",
+    "target-persistence:checkout",
+    "target-persistence:submit"
+  ]);
 
   function finiteTime(value, fallback = 0) {
     const number = Number(value);
@@ -151,12 +159,29 @@
     return OVERLOAD_STATUS_CODES.has(Number(status));
   }
 
+  function isRelevantOverloadSignal(resourceType, lastAuthorizedActionAt, now = Date.now()) {
+    if (resourceType === "main_frame") return true;
+    if (resourceType !== "xmlhttprequest") return false;
+    const actionAt = finiteTime(lastAuthorizedActionAt);
+    const observedAt = finiteTime(now, Date.now());
+    return actionAt > 0
+      && observedAt >= actionAt
+      && observedAt - actionAt <= ACTION_OVERLOAD_WINDOW_MS;
+  }
+
+  function canBypassOverloadCooldown(retailer, kind) {
+    return retailer === "target" && TARGET_PERSISTENCE_ACTIONS.has(String(kind || ""));
+  }
+
   const api = Object.freeze({
     OVERLOAD_STATUS_CODES,
+    ACTION_OVERLOAD_WINDOW_MS,
     MAX_COOLDOWN_MS,
     OVERLOAD_DECAY_MS,
     applyOverloadSignal,
+    canBypassOverloadCooldown,
     isOverloadStatus,
+    isRelevantOverloadSignal,
     navigationIntervalMs,
     parseRetryAfter,
     reserveNavigationSlot,

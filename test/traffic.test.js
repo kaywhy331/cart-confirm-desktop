@@ -5,12 +5,25 @@ const assert = require("node:assert/strict");
 
 const {
   applyOverloadSignal,
+  canBypassOverloadCooldown,
   isOverloadStatus,
+  isRelevantOverloadSignal,
   navigationIntervalMs,
   parseRetryAfter,
   reserveNavigationSlot,
   revalidateNavigationSlot
 } = require("../extension/traffic");
+
+test("only bounded Target persistence actions bypass an overload cooldown", () => {
+  assert.equal(canBypassOverloadCooldown("target", "target-persistence:add"), true);
+  assert.equal(canBypassOverloadCooldown("target", "target-persistence:quantity"), true);
+  assert.equal(canBypassOverloadCooldown("target", "target-persistence:cart"), true);
+  assert.equal(canBypassOverloadCooldown("target", "target-persistence:checkout"), true);
+  assert.equal(canBypassOverloadCooldown("target", "target-persistence:submit"), true);
+  assert.equal(canBypassOverloadCooldown("target", "add-to-cart"), false);
+  assert.equal(canBypassOverloadCooldown("walmart", "target-persistence:add"), false);
+  assert.equal(canBypassOverloadCooldown("target", "target-persistence:unknown"), false);
+});
 
 test("pre-eligibility navigation uses the rapid lane without accelerating normal retries", () => {
   const config = {
@@ -88,6 +101,14 @@ test("Retry-After and overload status parsing are bounded", () => {
   assert.equal(isOverloadStatus(503), true);
   assert.equal(isOverloadStatus(522), true);
   assert.equal(isOverloadStatus(500), false);
+});
+
+test("commerce XHR overloads count only near an authorized store action", () => {
+  assert.equal(isRelevantOverloadSignal("main_frame", 0, 100_000), true);
+  assert.equal(isRelevantOverloadSignal("xmlhttprequest", 90_000, 100_000), true);
+  assert.equal(isRelevantOverloadSignal("xmlhttprequest", 80_000, 100_000), false);
+  assert.equal(isRelevantOverloadSignal("xmlhttprequest", 0, 100_000), false);
+  assert.equal(isRelevantOverloadSignal("image", 99_000, 100_000), false);
 });
 
 test("repeated overload signals escalate and then decay", () => {

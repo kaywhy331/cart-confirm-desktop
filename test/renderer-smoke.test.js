@@ -28,6 +28,7 @@ function snapshotFixture() {
         fulfillmentMode: "manual",
         signalAutoOpen: true,
         signalEntry: "product",
+        executionMode: "watcher",
         enabled: true
       }],
       automationEnabled: false,
@@ -38,6 +39,9 @@ function snapshotFixture() {
       eligibilityRefreshIntervalSeconds: 2,
       storeNavigationIntervalSeconds: 20,
       overloadCooldownSeconds: 300,
+      watcherIntervalSeconds: 60,
+      blitzRetryDelayMs: 750,
+      blitzWindowSeconds: 20,
       scheduledOpenEnabled: false,
       scheduledOpenAt: "",
       scheduledRetailer: "target",
@@ -77,8 +81,10 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   let pushUpdate = null;
   let openProductCalls = 0;
   let openBuyListCalls = 0;
+  const openBuyListInputs = [];
   let testEventCalls = 0;
   const savedSettingsInputs = [];
+  const bulkImportInputs = [];
   const copiedAffiliateUrls = [];
   const style = window.document.createElement("style");
   style.textContent = stylesSource;
@@ -95,13 +101,45 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
       };
       return next;
     },
+    bulkImportMissions: async (input) => {
+      bulkImportInputs.push(input);
+      const next = snapshotFixture();
+      next.settings.products = [
+        {
+          ...next.settings.products[0],
+          action: "watch",
+          enabled: false,
+          maxPrice: 0,
+          title: "Imported Target Item"
+        },
+        {
+          ...next.settings.products[0],
+          id: "walmart:95163305",
+          retailer: "walmart",
+          productUrl: "https://www.walmart.com/ip/95163305",
+          sku: "95163305",
+          action: "watch",
+          enabled: false,
+          maxPrice: 0,
+          title: "Imported Walmart Item"
+        }
+      ];
+      return {
+        snapshot: next,
+        summary: { candidates: 2, imported: 2, duplicates: 0, invalid: 0, overCapacity: 0 },
+        issues: []
+      };
+    },
     openProduct: async () => {
       openProductCalls += 1;
       return { productId: "target:95298172", via: "companion-tab" };
     },
-    openBuyList: async () => {
+    openBuyList: async (options = {}) => {
       openBuyListCalls += 1;
-      return { count: 1, reused: 1, deduped: 0, scheduled: 0, armed: true };
+      openBuyListInputs.push(options);
+      return options.backgroundFirst
+        ? { count: 0, background: 1, reused: 0, deduped: 0, scheduled: 0, armed: true }
+        : { count: 1, background: 0, reused: 1, deduped: 0, scheduled: 0, armed: false };
     },
     openCart: async () => "",
     openOrders: async () => "",
@@ -158,11 +196,13 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   );
   assert.match(doc.getElementById("testButton").textContent, /Test all/);
   assert.equal(doc.getElementById("eligibilityRefreshIntervalSeconds").value, "2");
+  assert.equal(doc.getElementById("watcherIntervalSeconds").value, "60");
+  assert.match(card.querySelector("[data-view='sub']").textContent, /continuous watcher/);
 
-  doc.getElementById("eligibilityRefreshIntervalSeconds").value = "3";
-  doc.getElementById("eligibilityRefreshIntervalSeconds").dispatchEvent(new window.Event("change", { bubbles: true }));
+  doc.getElementById("watcherIntervalSeconds").value = "90";
+  doc.getElementById("watcherIntervalSeconds").dispatchEvent(new window.Event("change", { bubbles: true }));
   await new Promise((resolve) => setTimeout(resolve, 650));
-  assert.equal(savedSettingsInputs.at(-1).eligibilityRefreshIntervalSeconds, 3);
+  assert.equal(savedSettingsInputs.at(-1).watcherIntervalSeconds, 90);
 
   // Discord stays out of the dashboard until requested, then opens as the
   // bottom card and shares the Missions/Activity minimize behavior.
@@ -207,19 +247,30 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   assert.equal(doc.getElementById("testButton").disabled, false);
   assert.equal(doc.getElementById("openAllButton").disabled, false);
 
-  // Arming launches every due mission in the same action; it no longer waits
-  // for a separate Open all click.
+  // Arming starts Target/Walmart background-first. It does not need a separate
+  // Open all click or keep a product tab open while waiting for likely stock.
   doc.getElementById("autopilotToggle").click();
   assert.equal(doc.getElementById("autopilotToggle").disabled, true);
   await new Promise((resolve) => setTimeout(resolve, 10));
   assert.equal(openBuyListCalls, 1);
+  assert.equal(openBuyListInputs[0]?.backgroundFirst, true);
   assert.equal(savedSettingsInputs.at(-1).automationEnabled, true);
   assert.match(doc.getElementById("message").textContent, /Autopilot ON/);
-  assert.match(doc.getElementById("message").textContent, /1 due mission page opened/);
+  assert.match(doc.getElementById("message").textContent, /1 Target\/Walmart watcher armed background-first/);
+  assert.match(doc.getElementById("message").textContent, /likely stock signal opens Chrome/);
   assert.equal(doc.getElementById("autopilotToggle").disabled, false);
   doc.getElementById("autopilotToggle").click();
   await new Promise((resolve) => setTimeout(resolve, 10));
   assert.equal(openBuyListCalls, 1, "turning Autopilot off must not launch another sweep");
+
+  doc.getElementById("openAllButton").click();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(openBuyListCalls, 2);
+  assert.equal(
+    Object.keys(openBuyListInputs[1]).length,
+    0,
+    "manual Open all must keep opening due browser pages immediately"
+  );
 
   // Edit flow: inline editor with values, cancel restores the view card.
   card.querySelector(".mission-edit").click();
@@ -398,6 +449,12 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   assert.match(doc.getElementById("scheduleNext").textContent, /Next: Booster Box in/);
   assert.equal(doc.getElementById("scheduleCoverage").textContent, "1/1 enabled");
   assert.equal(doc.getElementById("enableScheduledButton").hidden, true);
+  assert.match(doc.querySelector("[data-view='sub']").textContent, /calendar-gated → blitz/);
+
+  const firedBlitz = snapshotFixture();
+  firedBlitz.settings.products[0].executionMode = "blitz";
+  pushUpdate(firedBlitz);
+  assert.match(doc.querySelector("[data-view='sub']").textContent, /calendar blitz/);
 
   const uncovered = snapshotFixture();
   uncovered.settings.products[0].openAt = new Date(Date.now() + 3_600_000).toISOString();
@@ -461,6 +518,23 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   newEditor.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
   assert.equal(doc.querySelector(".mission-edit-card"), null);
   assert.ok(doc.querySelector(".mission-empty"), "empty CTA returns after cancel");
+
+  // Bulk import accepts mixed retailer URLs and renders the backend's safe,
+  // disabled watch missions without silently enabling a $0 cap.
+  doc.getElementById("bulkImportButton").click();
+  const bulkDialog = doc.getElementById("bulkImportDialog");
+  assert.equal(bulkDialog.hasAttribute("open"), true);
+  doc.getElementById("bulkImportText").value = [
+    "https://www.target.com/p/item/-/A-1011209279",
+    "https://www.walmart.com/ip/item/95163305"
+  ].join("\n");
+  doc.getElementById("bulkImportSubmitButton").click();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(bulkImportInputs.length, 1);
+  assert.equal(bulkDialog.hasAttribute("open"), false);
+  assert.equal(doc.querySelectorAll(".mission-card").length, 2);
+  assert.equal([...doc.querySelectorAll("[data-view='enabled']")].every((input) => !input.checked), true);
+  assert.match(doc.getElementById("message").textContent, /2 imported Off for review/);
 
   window.close();
 });

@@ -18,6 +18,7 @@ const { spawn } = require("node:child_process");
 
 const {
   DEFAULT_SETTINGS,
+  MAX_PRODUCTS,
   assertSafeArmedUpdate,
   createInitialStatus,
   createProductStatus,
@@ -30,10 +31,24 @@ const {
   toRendererProduct,
   validateEvent
 } = require("./lib/core");
+const { planBulkImport, quickAddMission } = require("./lib/mission-import");
 const { migrateStoredSettings } = require("./lib/migrations");
-const { consumeStoreAction } = require("./lib/action-budget");
-const { evaluateProductSchedules, evaluateSchedule, planImmediateProductOpenings } = require("./lib/schedule");
-const { loadRuntimeState, saveRuntimeState } = require("./lib/runtime-state");
+const { canBypassStoreOverload, consumeStoreAction } = require("./lib/action-budget");
+const {
+  assertNoNewPastProductSchedules,
+  evaluateProductSchedules,
+  evaluateSchedule,
+  planImmediateProductOpenings,
+  productCalendarOwned,
+  productCalendarTime
+} = require("./lib/schedule");
+const {
+  activateBlitzExecution,
+  loadRuntimeState,
+  productExecutionMode,
+  reconcileProductExecutionContexts,
+  saveRuntimeState
+} = require("./lib/runtime-state");
 const { isAllowedExtensionOrigin, isTrustedCompanionRequest } = require("./lib/extension-identity");
 const { createStoreOpenQueue } = require("./lib/store-open-queue");
 const { createOpenRequestStore } = require("./lib/open-requests");
@@ -83,6 +98,7 @@ const COMPANION_CLAIM_TIMEOUT_MS = 7_000;
 const DESKTOP_OPEN_SPACING_MS = 3_000;
 const DISCORD_POLL_INTERVAL_MS = 2_500;
 const DISCORD_ERROR_RETRY_MS = 10_000;
+const QUIET_STORES = Object.freeze(["target", "walmart"]);
 
 let mainWindow = null;
 let companionServer = null;
@@ -231,7 +247,10 @@ function publicSettings() {
   return {
     // The renderer may copy a provisioned retailer link, but it never receives
     // the admin's Howl source URL or resolution metadata.
-    products: settings.products.map(toRendererProduct),
+    products: settings.products.map((product) => ({
+      ...toRendererProduct(product),
+      executionMode: productExecutionMode(runtimeState, product.id, settings.automationRunId)
+    })),
     automationEnabled: settings.automationEnabled,
     monitoringPaused: settings.monitoringPaused,
     automationRunId: settings.automationRunId,
@@ -240,6 +259,9 @@ function publicSettings() {
     eligibilityRefreshIntervalSeconds: settings.eligibilityRefreshIntervalSeconds,
     storeNavigationIntervalSeconds: settings.storeNavigationIntervalSeconds,
     overloadCooldownSeconds: settings.overloadCooldownSeconds,
+    watcherIntervalSeconds: settings.watcherIntervalSeconds,
+    blitzRetryDelayMs: settings.blitzRetryDelayMs,
+    blitzWindowSeconds: settings.blitzWindowSeconds,
     scheduledOpenEnabled: settings.scheduledOpenEnabled,
     scheduledOpenAt: settings.scheduledOpenAt,
     scheduledRetailer: settings.scheduledRetailer,
@@ -302,6 +324,86 @@ function broadcast() {
   }
 }
 
+function appendMissionProducts(additions, message) {
+  if (!Array.isArray(additions) || !additions.length) return snapshot();
+  if (settings.automationEnabled) {
+    throw new Error("Switch Autopilot off before adding missions.");
+  }
+  if (settings.products.length + additions.length > MAX_PRODUCTS) {
+    throw new Error(`A buy list can contain at most ${MAX_PRODUCTS} products.`);
+  }
+
+  const previousProducts = settings.products;
+  settings = {
+    ...settings,
+    products: [...previousProducts, ...additions]
+  };
+  reconcileProductExecutionContexts(
+    runtimeState,
+    previousProducts,
+    settings.products,
+    settings.automationRunId
+  );
+  for (const product of additions) {
+    productStatuses[product.id] = createProductStatus(product);
+  }
+  status = { ...status, lastMessage: String(message || "Missions added.").slice(0, 240) };
+  persistSettings();
+  persistRuntimeState();
+  configVersion += 1;
+  broadcast();
+  return snapshot();
+}
+
+function quickAddMissionRequest(input) {
+  if (settings.automationEnabled) {
+    return {
+      statusCode: 409,
+      payload: { ok: false, reason: "automation-armed", error: "Switch Autopilot off before using Quick add." }
+    };
+  }
+
+  let product;
+  try {
+    product = quickAddMission(input);
+  } catch (error) {
+    return {
+      statusCode: 400,
+      payload: { ok: false, reason: "invalid-product", error: error.message }
+    };
+  }
+  const existing = settings.products.find((candidate) => candidate.id === product.id);
+  if (existing) {
+    return {
+      statusCode: 200,
+      payload: {
+        ok: true,
+        duplicate: true,
+        product: { id: existing.id, title: existing.title, maxPrice: existing.maxPrice }
+      }
+    };
+  }
+  if (settings.products.length >= MAX_PRODUCTS) {
+    return {
+      statusCode: 409,
+      payload: { ok: false, reason: "mission-limit", error: `The mission list already contains ${MAX_PRODUCTS} products.` }
+    };
+  }
+
+  appendMissionProducts(
+    [product],
+    `${product.title || `${retailerLabel(product.retailer)} ${product.sku}`} was added from Chrome as a watch mission.`
+  );
+  return {
+    statusCode: 201,
+    payload: {
+      ok: true,
+      duplicate: false,
+      product: { id: product.id, title: product.title, maxPrice: product.maxPrice }
+    }
+  };
+}
+
 function addEvent(event) {
   if (event.eventType === "heartbeat") return;
   if (!shouldRecordActivity(events, event)) return;
@@ -328,11 +430,14 @@ function reserveStoreAction(retailer, kind = "navigation") {
     return { allowed: false, reason: "unsupported-retailer" };
   }
   const now = Date.now();
+  const overloadDeadline = canBypassStoreOverload(retailer, kind)
+    ? 0
+    : storeOverloadUntil.get(retailer) || 0;
   const result = consumeStoreAction(
     runtimeState?.storeActionHistory?.[retailer],
     now,
     undefined,
-    storeOverloadUntil.get(retailer) || 0
+    overloadDeadline
   );
   runtimeState.storeActionHistory[retailer] = result.history;
   persistRuntimeState();
@@ -501,14 +606,24 @@ async function openBuyList(retailer = "", options = {}) {
   }
 
   resumeMonitoring();
-  const results = await Promise.all(plan.ready.map((product) => (
-    openExternalRetailer(product.productUrl, { ...options, productId: product.id })
+  const { backgroundFirst = false, ...openOptions } = options;
+  const backgroundProducts = backgroundFirst
+    ? plan.ready.filter((product) => (
+        QUIET_STORES.includes(product.retailer)
+        && productExecutionMode(runtimeState, product.id, settings.automationRunId) === "watcher"
+      ))
+    : [];
+  const backgroundIds = new Set(backgroundProducts.map((product) => product.id));
+  const browserProducts = plan.ready.filter((product) => !backgroundIds.has(product.id));
+  const results = await Promise.all(browserProducts.map((product) => (
+    openExternalRetailer(product.productUrl, { ...openOptions, productId: product.id })
   )));
   return {
     count: results.filter((result) => !["already-queued", "cancelled"].includes(result.via)).length,
     reused: results.filter((result) => result.via === "companion-tab").length,
     deduped: results.filter((result) => result.via === "already-queued").length,
     defaultBrowser: results.some((result) => result.via === "default-browser"),
+    background: backgroundProducts.length,
     scheduled: plan.scheduled.length,
     armed: settings.automationEnabled
   };
@@ -984,7 +1099,12 @@ function extensionConfig() {
   return {
     // Howl source and resolved tracking URLs are sharing-only. Chrome receives
     // only the canonical purchasing fields used by the automation pipeline.
-    products: settings.products.map(toAutomationProduct),
+    products: settings.products.map((product) => ({
+      ...toAutomationProduct(product),
+      calendarOwned: productCalendarOwned(settings, product),
+      calendarOpenAt: productCalendarTime(settings, product),
+      executionMode: productExecutionMode(runtimeState, product.id, settings.automationRunId)
+    })),
     automationEnabled: settings.automationEnabled,
     monitoringPaused: settings.monitoringPaused,
     automationRunId: settings.automationRunId,
@@ -993,6 +1113,9 @@ function extensionConfig() {
     eligibilityRefreshIntervalSeconds: settings.eligibilityRefreshIntervalSeconds,
     storeNavigationIntervalSeconds: settings.storeNavigationIntervalSeconds,
     overloadCooldownSeconds: settings.overloadCooldownSeconds,
+    watcherIntervalSeconds: settings.watcherIntervalSeconds,
+    blitzRetryDelayMs: settings.blitzRetryDelayMs,
+    blitzWindowSeconds: settings.blitzWindowSeconds,
     firstPartyOnly: true,
     token: settings.companionToken,
     configVersion,
@@ -1043,6 +1166,15 @@ function startServerOnPort(port) {
           const eventResult = handleCompanionEvent(body);
           return { statusCode: eventResult.accepted ? 202 : 200, payload: eventResult };
         });
+        return;
+      }
+
+      if (req.method === "POST" && requestUrl.pathname === "/missions/quick-add") {
+        if (req.headers["x-cart-assist-token"] !== settings.companionToken) {
+          writeJson(req, res, 401, { error: "invalid-token" });
+          return;
+        }
+        readJsonRequest(req, res, (body) => quickAddMissionRequest(body));
         return;
       }
 
@@ -1171,6 +1303,7 @@ function registerIpc() {
 
   ipcMain.handle("cart-assist:save-settings", (_event, nextSettings) => {
     const wasArmed = settings.automationEnabled;
+    const previousProducts = settings.products;
     const previousDiscordChannelId = settings.discordChannelId;
     const userSettings = nextSettings && typeof nextSettings === "object"
       ? {
@@ -1189,14 +1322,16 @@ function registerIpc() {
     if (normalized.scheduledOpenEnabled && new Date(normalized.scheduledOpenAt).getTime() <= Date.now()) {
       throw new Error("Choose a future date and time for the single store schedule.");
     }
-    for (const product of normalized.products) {
-      if (product.openAt && new Date(product.openAt).getTime() <= Date.now()) {
-        throw new Error(`Choose a future opening time for ${product.title || product.sku}.`);
-      }
-    }
+    assertNoNewPastProductSchedules(normalized.products, settings.products, Date.now());
     if (normalized.automationEnabled && !wasArmed) {
       normalized = { ...normalized, automationRunId: crypto.randomUUID(), monitoringPaused: false };
     }
+    reconcileProductExecutionContexts(
+      runtimeState,
+      previousProducts,
+      normalized.products,
+      normalized.automationRunId
+    );
     settings = normalized;
     if (settings.discordChannelId !== previousDiscordChannelId) {
       resetDiscordChannel(settings.discordChannelId);
@@ -1209,6 +1344,28 @@ function registerIpc() {
     lastNotificationAt.clear();
     broadcast();
     return snapshot();
+  });
+
+  ipcMain.handle("cart-assist:bulk-import", (_event, text) => {
+    const input = String(text || "");
+    if (input.length > 50_000) {
+      throw new Error("The bulk import is too large. Paste no more than 50,000 characters.");
+    }
+    if (settings.automationEnabled) {
+      throw new Error("Switch Autopilot off before importing missions.");
+    }
+    const plan = planBulkImport(input, settings.products);
+    const nextSnapshot = plan.additions.length
+      ? appendMissionProducts(
+          plan.additions,
+          `${plan.additions.length} disabled watch mission${plan.additions.length === 1 ? "" : "s"} imported for review.`
+        )
+      : snapshot();
+    return {
+      snapshot: nextSnapshot,
+      summary: plan.summary,
+      issues: plan.issues
+    };
   });
 
   ipcMain.handle("cart-assist:stop-all", () => {
@@ -1227,7 +1384,9 @@ function registerIpc() {
         product.openAt ? { ...product, openAt: "" } : product
       ))
     };
+    runtimeState.productExecutionContexts = {};
     persistSettings();
+    persistRuntimeState();
     configVersion += 1;
     status = {
       ...status,
@@ -1238,7 +1397,9 @@ function registerIpc() {
   });
 
   ipcMain.handle("cart-assist:open-product", (_event, productId) => openProduct(productId));
-  ipcMain.handle("cart-assist:open-buy-list", () => openBuyList());
+  ipcMain.handle("cart-assist:open-buy-list", (_event, input = {}) => openBuyList("", {
+    backgroundFirst: input?.backgroundFirst === true
+  }));
   ipcMain.handle("cart-assist:open-cart", (_event, retailer) => openStorePage(retailer, "cartUrl"));
   ipcMain.handle("cart-assist:open-orders", (_event, retailer) => openStorePage(retailer, "ordersUrl"));
 
@@ -1363,7 +1524,6 @@ function registerIpc() {
 // opens the real page in Chrome, where the in-tab pipeline re-verifies
 // everything before acting. Amazon pages rarely expose structured data to
 // plain fetches, so quiet checks cover Target and Walmart.
-const QUIET_STORES = ["target", "walmart"];
 const QUIET_MIN_SPACING_MS = 30_000;
 const QUIET_TAB_FRESH_MS = 90_000;
 const QUIET_FETCH_TIMEOUT_MS = 8_000;
@@ -1384,7 +1544,7 @@ function recordQuietEvent(rawEvent, taskEpoch) {
   try {
     const event = validateEvent(rawEvent);
     const product = settings.products.find((candidate) => candidate.id === event.productId);
-    if (!product) return;
+    if (!product || productCalendarOwned(settings, product)) return;
     const current = productStatuses[product.id] || createProductStatus(product);
     productStatuses = {
       ...productStatuses,
@@ -1399,7 +1559,7 @@ function recordQuietEvent(rawEvent, taskEpoch) {
 
 async function quietCheck(product, taskEpoch) {
   const retailer = product.retailer;
-  if (!monitoringOperationActive(settings, taskEpoch, stopEpoch)) return;
+  if (!monitoringOperationActive(settings, taskEpoch, stopEpoch) || productCalendarOwned(settings, product)) return;
   const controller = quietAbortRegistry.create();
   const timer = setTimeout(() => controller.abort(), QUIET_FETCH_TIMEOUT_MS);
   try {
@@ -1421,6 +1581,8 @@ async function quietCheck(product, taskEpoch) {
     }
     const body = await response.text();
     if (!monitoringOperationActive(settings, taskEpoch, stopEpoch)) return;
+    const currentProduct = settings.products.find((candidate) => candidate.id === product.id);
+    if (!currentProduct?.enabled || productCalendarOwned(settings, currentProduct)) return;
     const outcome = checkProductPage(body, retailer, product.sku);
     if (outcome.availability === "unknown") throw new Error("unreadable");
 
@@ -1479,11 +1641,13 @@ function quietMonitorTick() {
   for (const retailer of QUIET_STORES) {
     if (quietState.disabledStores.has(retailer)) continue;
     if ((storeOverloadUntil.get(retailer) || 0) > now) continue;
-    const spacing = Math.max(QUIET_MIN_SPACING_MS, Number(settings.storeNavigationIntervalSeconds || 20) * 1000);
+    const spacing = Math.max(QUIET_MIN_SPACING_MS, Number(settings.watcherIntervalSeconds || 60) * 1000);
     if (now - (quietState.lastCheckAt.get(retailer) || 0) < spacing) continue;
     const missions = settings.products.filter((product) => (
       product.enabled
       && product.retailer === retailer
+      && !productCalendarOwned(settings, product)
+      && productExecutionMode(runtimeState, product.id, settings.automationRunId) === "watcher"
       && now - (productTabSeenAt.get(product.id) || 0) > QUIET_TAB_FRESH_MS
     ));
     if (!missions.length) continue;
@@ -1491,7 +1655,10 @@ function quietMonitorTick() {
     quietState.rotation.set(retailer, rotation);
     const mission = missions[rotation % missions.length];
     const budget = reserveStoreAction(retailer, "background-check");
-    if (!budget.allowed) continue;
+    if (!budget.allowed) {
+      quietState.lastCheckAt.set(retailer, now);
+      continue;
+    }
     quietState.lastCheckAt.set(retailer, now);
     void quietCheck(mission, stopEpoch);
   }
@@ -1512,11 +1679,19 @@ function handleProductSchedule(decision) {
   const product = settings.products.find((candidate) => candidate.id === decision.productId);
   if (!product) return;
   const label = product.title || `${retailerLabel(product.retailer)} ${product.sku}`;
+  if (decision.action === "fire") {
+    activateBlitzExecution(
+      runtimeState,
+      [product],
+      settings.automationRunId,
+      decision.key,
+      Date.now()
+    );
+  }
   runtimeState.productScheduleReceipts[decision.key] = {
     status: decision.action === "fire" ? "firing" : "missed",
     recordedAt: new Date().toISOString()
   };
-  clearProductOpenAt(decision.productId);
   persistRuntimeState();
 
   if (decision.action === "missed") {
@@ -1529,6 +1704,10 @@ function handleProductSchedule(decision) {
     return;
   }
 
+  // Clearing calendar ownership is the exact browser-release boundary. A
+  // missed schedule deliberately keeps its past openAt value so an already
+  // open tab cannot interpret "missed" as permission to run late.
+  clearProductOpenAt(decision.productId);
   status = { ...status, lastMessage: `Scheduled opening: ${label} is opening now.` };
   broadcast();
   const taskEpoch = stopEpoch;
@@ -1602,6 +1781,16 @@ function startScheduler() {
     if (decision.action !== "fire") return;
 
     const scheduledRetailer = settings.scheduledRetailer;
+    const scheduledProducts = settings.products.filter((product) => (
+      product.enabled && product.retailer === scheduledRetailer
+    ));
+    activateBlitzExecution(
+      runtimeState,
+      scheduledProducts,
+      settings.automationRunId,
+      decision.key,
+      Date.now()
+    );
     runtimeState.scheduleReceipt = {
       key: decision.key,
       status: "firing",
