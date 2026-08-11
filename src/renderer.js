@@ -33,6 +33,8 @@ const elements = {
   storeShortcut: document.getElementById("storeShortcut"),
   openCartButton: document.getElementById("openCartButton"),
   openOrdersButton: document.getElementById("openOrdersButton"),
+  discordLauncher: document.getElementById("discordLauncher"),
+  showDiscordButton: document.getElementById("showDiscordButton"),
   signalPanel: document.getElementById("signalPanel"),
   discordState: document.getElementById("discordState"),
   discordHint: document.getElementById("discordHint"),
@@ -78,6 +80,23 @@ const BLOCKING_REASONS = new Set([
   "run-expired",
   "unmatched-product"
 ]);
+
+function setPanelExpanded(toggle, expanded) {
+  const panel = toggle.closest(".collapsible-panel");
+  if (!panel) return;
+  const content = document.getElementById(toggle.getAttribute("aria-controls"));
+  panel.classList.toggle("is-collapsed", !expanded);
+  if (content) content.hidden = !expanded;
+  toggle.setAttribute("aria-expanded", String(expanded));
+  toggle.textContent = expanded ? "Minimize" : "Expand";
+}
+
+for (const toggle of document.querySelectorAll(".panel-toggle")) {
+  setPanelExpanded(toggle, toggle.getAttribute("aria-expanded") !== "false");
+  toggle.addEventListener("click", () => {
+    setPanelExpanded(toggle, toggle.getAttribute("aria-expanded") !== "true");
+  });
+}
 
 let currentSnapshot = null;
 let messageTimer = null;
@@ -1255,6 +1274,17 @@ elements.disarmButton.addEventListener("click", () => {
 });
 
 elements.newMissionButton.addEventListener("click", () => void startEdit(null));
+
+elements.showDiscordButton.addEventListener("click", () => {
+  elements.discordLauncher.hidden = true;
+  elements.signalPanel.hidden = false;
+  elements.showDiscordButton.setAttribute("aria-expanded", "true");
+  const toggle = elements.signalPanel.querySelector(".panel-toggle");
+  if (toggle) {
+    setPanelExpanded(toggle, true);
+    toggle.focus();
+  }
+});
 
 elements.discordConnectButton.addEventListener("click", () => void runAction(async () => {
   if (!elements.discordChannelId.checkValidity()) {

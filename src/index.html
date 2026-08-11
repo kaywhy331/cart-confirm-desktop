@@ -74,16 +74,19 @@
           <p class="privacy-note">The companion sends only milestone names, store/SKU, seller label, observed prices, a query-free page address, and timestamps to this computer. It never sends cookies, passwords, addresses, payment details, or order numbers, and it does not solve CAPTCHAs, bypass queues, or defeat store controls.</p>
         </section>
 
-        <section class="panel missions-panel">
+        <section class="panel missions-panel collapsible-panel" id="missionsPanel">
           <div class="panel-heading">
             <h2>Missions</h2>
             <div class="action-row">
               <button class="button ghost compact" id="openAllButton" type="button">Open all enabled</button>
               <button class="button primary compact" id="newMissionButton" type="button">+ New mission</button>
+              <button class="button ghost compact panel-toggle" type="button" aria-controls="missionsPanelBody" aria-expanded="true">Minimize</button>
             </div>
           </div>
-          <p class="step-hint worst-case" id="worstCase"></p>
-          <div class="mission-list" id="missionList"></div>
+          <div class="panel-content" id="missionsPanelBody">
+            <p class="step-hint worst-case" id="worstCase"></p>
+            <div class="mission-list" id="missionList"></div>
+          </div>
         </section>
 
         <details class="advanced-box" id="settingsBox">
@@ -138,48 +141,6 @@
       </div>
 
       <div class="monitor-column">
-        <section class="panel signal-panel" id="signalPanel">
-          <div class="panel-heading">
-            <div>
-              <span class="eyebrow">Official bot connection</span>
-              <h2>Discord restock signals</h2>
-            </div>
-            <span class="step-state" id="discordState">Not connected</span>
-          </div>
-          <p class="step-hint" id="discordHint">Connect a bot that can view the signal channel and read its message history. Discord user tokens and self-bots are never accepted.</p>
-          <div class="discord-setup">
-            <label class="field">
-              <span>Bot token</span>
-              <input id="discordBotToken" type="password" maxlength="200" autocomplete="off" spellcheck="false" placeholder="Paste an official bot token">
-            </label>
-            <label class="field">
-              <span>Channel ID</span>
-              <input id="discordChannelId" type="text" minlength="15" maxlength="25" pattern="[0-9]{15,25}" inputmode="numeric" autocomplete="off" spellcheck="false" placeholder="123456789012345678" required>
-            </label>
-          </div>
-          <div class="action-row signal-connection-actions">
-            <button class="button primary compact" id="discordConnectButton" type="button">Connect &amp; import</button>
-            <button class="button ghost compact" id="discordDisconnectButton" type="button" hidden>Disconnect</button>
-            <button class="button ghost compact" id="discordForgetButton" type="button" hidden>Remove saved token</button>
-          </div>
-          <label class="toggle-row discord-auto-open">
-            <input id="discordAutoOpen" type="checkbox">
-            <span>Automatically open fresh desired signals</span>
-          </label>
-          <small class="row-help">The first connection imports up to 50 recent messages as history without opening pages. After that, only signals under two minutes old can auto-open. The token is encrypted by your operating system and never saved in settings or shown again.</small>
-
-          <div class="signal-inbox-heading">
-            <div>
-              <strong>Signal inbox</strong>
-              <span id="signalCount">0 signals</span>
-            </div>
-            <button class="button ghost compact" id="clearSignalsButton" type="button">Clear</button>
-          </div>
-          <div class="signal-list" id="signalList">
-            <div class="empty-state">No restock signals yet.</div>
-          </div>
-        </section>
-
         <section class="panel" id="schedulePanel" hidden>
           <div class="panel-heading">
             <h2>Drop calendar</h2>
@@ -192,16 +153,72 @@
           <div class="schedule-week" id="scheduleWeek"></div>
         </section>
 
-        <section class="panel log-panel">
+        <section class="panel log-panel collapsible-panel" id="activityPanel">
           <div class="panel-heading">
             <h2>Activity</h2>
             <div class="action-row">
               <button class="button ghost compact" id="eventFilterButton" type="button" hidden>Show all</button>
               <button class="button ghost compact" id="clearEventsButton" type="button">Clear</button>
+              <button class="button ghost compact panel-toggle" type="button" aria-controls="activityPanelBody" aria-expanded="true">Minimize</button>
             </div>
           </div>
-          <div class="event-list" id="eventList">
-            <div class="empty-state">No activity yet.</div>
+          <div class="panel-content" id="activityPanelBody">
+            <div class="event-list" id="eventList">
+              <div class="empty-state">No activity yet.</div>
+            </div>
+          </div>
+        </section>
+
+        <div class="discord-launcher" id="discordLauncher">
+          <button class="button secondary discord-launcher-button" id="showDiscordButton" type="button" aria-controls="signalPanel" aria-expanded="false">
+            Show Discord
+          </button>
+        </div>
+
+        <section class="panel signal-panel collapsible-panel" id="signalPanel" hidden>
+          <div class="panel-heading">
+            <div>
+              <span class="eyebrow">Official bot connection</span>
+              <h2>Discord restock signals</h2>
+            </div>
+            <div class="action-row">
+              <span class="step-state" id="discordState">Not connected</span>
+              <button class="button ghost compact panel-toggle" type="button" aria-controls="signalPanelBody" aria-expanded="true">Minimize</button>
+            </div>
+          </div>
+          <div class="panel-content" id="signalPanelBody">
+            <p class="step-hint" id="discordHint">Connect a bot that can view the signal channel and read its message history. Discord user tokens and self-bots are never accepted.</p>
+            <div class="discord-setup">
+              <label class="field">
+                <span>Bot token</span>
+                <input id="discordBotToken" type="password" maxlength="200" autocomplete="off" spellcheck="false" placeholder="Paste an official bot token">
+              </label>
+              <label class="field">
+                <span>Channel ID</span>
+                <input id="discordChannelId" type="text" minlength="15" maxlength="25" pattern="[0-9]{15,25}" inputmode="numeric" autocomplete="off" spellcheck="false" placeholder="123456789012345678" required>
+              </label>
+            </div>
+            <div class="action-row signal-connection-actions">
+              <button class="button primary compact" id="discordConnectButton" type="button">Connect &amp; import</button>
+              <button class="button ghost compact" id="discordDisconnectButton" type="button" hidden>Disconnect</button>
+              <button class="button ghost compact" id="discordForgetButton" type="button" hidden>Remove saved token</button>
+            </div>
+            <label class="toggle-row discord-auto-open">
+              <input id="discordAutoOpen" type="checkbox">
+              <span>Automatically open fresh desired signals</span>
+            </label>
+            <small class="row-help">The first connection imports up to 50 recent messages as history without opening pages. After that, only signals under two minutes old can auto-open. The token is encrypted by your operating system and never saved in settings or shown again.</small>
+
+            <div class="signal-inbox-heading">
+              <div>
+                <strong>Signal inbox</strong>
+                <span id="signalCount">0 signals</span>
+              </div>
+              <button class="button ghost compact" id="clearSignalsButton" type="button">Clear</button>
+            </div>
+            <div class="signal-list" id="signalList">
+              <div class="empty-state">No restock signals yet.</div>
+            </div>
           </div>
         </section>
       </div>

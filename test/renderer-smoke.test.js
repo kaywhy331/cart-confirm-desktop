@@ -136,6 +136,38 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
     doc.getElementById("testButton").closest(".topbar-controls"),
     "Test lives in the header next to Autopilot"
   );
+
+  // Discord stays out of the dashboard until requested, then opens as the
+  // bottom card and shares the Missions/Activity minimize behavior.
+  const signalPanel = doc.getElementById("signalPanel");
+  const showDiscordButton = doc.getElementById("showDiscordButton");
+  assert.equal(signalPanel.hidden, true);
+  assert.equal(showDiscordButton.getAttribute("aria-expanded"), "false");
+  assert.equal(signalPanel.closest(".monitor-column").lastElementChild, signalPanel);
+  showDiscordButton.click();
+  assert.equal(doc.getElementById("discordLauncher").hidden, true);
+  assert.equal(signalPanel.hidden, false);
+  assert.equal(showDiscordButton.getAttribute("aria-expanded"), "true");
+
+  const discordPanelToggle = signalPanel.querySelector(".panel-toggle");
+  discordPanelToggle.click();
+  assert.equal(signalPanel.classList.contains("is-collapsed"), true);
+  assert.equal(discordPanelToggle.getAttribute("aria-expanded"), "false");
+  assert.equal(doc.getElementById("signalPanelBody").hidden, true);
+  assert.equal(discordPanelToggle.textContent, "Expand");
+  discordPanelToggle.click();
+  assert.equal(signalPanel.classList.contains("is-collapsed"), false);
+  assert.equal(doc.getElementById("signalPanelBody").hidden, false);
+
+  for (const panelId of ["missionsPanel", "activityPanel"]) {
+    const panel = doc.getElementById(panelId);
+    const toggle = panel.querySelector(".panel-toggle");
+    toggle.click();
+    assert.equal(panel.classList.contains("is-collapsed"), true);
+    toggle.click();
+    assert.equal(panel.classList.contains("is-collapsed"), false);
+  }
+
   doc.getElementById("testButton").click();
   await new Promise((resolve) => setTimeout(resolve, 10));
   assert.equal(testEventCalls, 1);
