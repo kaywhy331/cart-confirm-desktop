@@ -25,7 +25,16 @@ test("passive stock refreshes do not consume purchase attempts", () => {
 test("out-of-stock product pages use the normal monitoring retry path", () => {
   const productPage = section("async function handleProductPage", "async function handleCartPage");
   assert.match(productPage, /if \(error && error !== "out-of-stock"\)/);
-  assert.match(productPage, /scheduleRetry\(product, `Waiting for an eligible/);
+  assert.match(productPage, /scheduleRetry\([\s\S]*?"eligibility"[\s\S]*?\);/);
+  assert.match(productPage, /refreshing one waiting mission every/);
+});
+
+test("only pre-eligibility retries request the rapid navigation cadence", () => {
+  const retry = section("async function scheduleRetry", "async function clickAction");
+  assert.match(retry, /cadence === "eligibility"/);
+  assert.match(retry, /cadence: eligibilityCadence \? "eligibility" : "normal"/);
+  assert.match(retry, /eligibilityRefreshIntervalSeconds/);
+  assert.match(retry, /retryIntervalSeconds/);
 });
 
 test("unchanged config polling does not rescan and duplicate the same observation", () => {

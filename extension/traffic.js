@@ -44,6 +44,19 @@
     );
   }
 
+  function navigationIntervalMs(config = {}, cadence = "normal") {
+    const normalMs = Math.max(
+      10_000,
+      finiteTime(config.storeNavigationIntervalSeconds, 20) * 1000
+    );
+    if (cadence !== "eligibility") return normalMs;
+    const eligibilityMs = Math.max(
+      2_000,
+      finiteTime(config.eligibilityRefreshIntervalSeconds, 2) * 1000
+    );
+    return Math.min(normalMs, eligibilityMs);
+  }
+
   function reserveNavigationSlot(input, options) {
     const now = finiteTime(options.now, Date.now());
     const intervalMs = Math.max(1_000, finiteTime(options.intervalMs, 20_000));
@@ -144,6 +157,7 @@
     OVERLOAD_DECAY_MS,
     applyOverloadSignal,
     isOverloadStatus,
+    navigationIntervalMs,
     parseRetryAfter,
     reserveNavigationSlot,
     revalidateNavigationSlot

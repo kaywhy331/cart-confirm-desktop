@@ -145,6 +145,7 @@ function publicConfig(config) {
     automationRunId: String(config.automationRunId || ""),
     fastMode: Boolean(config.fastMode),
     retryIntervalSeconds: Number(config.retryIntervalSeconds || 15),
+    eligibilityRefreshIntervalSeconds: Number(config.eligibilityRefreshIntervalSeconds || 2),
     storeNavigationIntervalSeconds: Number(config.storeNavigationIntervalSeconds || 20),
     overloadCooldownSeconds: Number(config.overloadCooldownSeconds || 300),
     firstPartyOnly: true,
@@ -304,7 +305,7 @@ async function reserveNavigation(message, sender) {
     const result = Traffic.reserveNavigationSlot(state.retailers[retailer], {
       now: Date.now(),
       notBefore: Number(message.notBefore || Date.now()),
-      intervalMs: Number(config.storeNavigationIntervalSeconds || 20) * 1000,
+      intervalMs: Traffic.navigationIntervalMs(config, message.cadence),
       reservationId,
       ownerId,
       productId: product.id

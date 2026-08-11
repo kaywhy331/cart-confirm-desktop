@@ -83,6 +83,15 @@ test("automation status and offer messages preserve actionable workflow detail",
     message: "Test mode is observation-only, so no purchase action was attempted."
   });
   assert.equal(eventMessage(offer), "Test mode is observation-only, so no purchase action was attempted.");
+
+  const retry = validateEvent({
+    eventType: "retry-scheduled",
+    retailer: "target",
+    productId: "target:1011960739",
+    reason: "retrying",
+    message: "Target is refreshing one waiting mission every 2 seconds."
+  });
+  assert.equal(eventMessage(retry), "Target is refreshing one waiting mission every 2 seconds.");
 });
 
 test("detects retailers and canonicalizes product URLs", () => {
@@ -105,6 +114,7 @@ test("normalizes a multi-store buy list and preserves a private token", () => {
     automationEnabled: true,
     fastMode: false,
     retryIntervalSeconds: 8,
+    eligibilityRefreshIntervalSeconds: 3,
     storeNavigationIntervalSeconds: 25,
     overloadCooldownSeconds: 600,
     scheduledRetailer: "amazon"
@@ -117,6 +127,7 @@ test("normalizes a multi-store buy list and preserves a private token", () => {
   assert.equal(result.companionToken, "existing-token");
   assert.equal(result.automationEnabled, true);
   assert.equal(result.fastMode, false);
+  assert.equal(result.eligibilityRefreshIntervalSeconds, 3);
   assert.equal(result.storeNavigationIntervalSeconds, 25);
   assert.equal(result.overloadCooldownSeconds, 600);
   assert.equal(result.scheduledRetailer, "amazon");
@@ -225,6 +236,15 @@ test("rejects unsafe or ambiguous product settings", () => {
     /appears more than once/
   );
   assert.throws(() => normalizeSettings({ products: PRODUCTS, retryIntervalSeconds: 1 }), /Retry interval/);
+  assert.throws(() => normalizeSettings({ products: PRODUCTS, eligibilityRefreshIntervalSeconds: 1 }), /Pre-eligibility refresh interval/);
+  assert.throws(
+    () => normalizeSettings({
+      products: PRODUCTS,
+      eligibilityRefreshIntervalSeconds: 30,
+      storeNavigationIntervalSeconds: 20
+    }),
+    /cannot exceed/
+  );
   assert.throws(() => normalizeSettings({ products: PRODUCTS, storeNavigationIntervalSeconds: 1 }), /navigation interval/);
   assert.throws(() => normalizeSettings({ products: PRODUCTS, overloadCooldownSeconds: 1 }), /Overload cooldown/);
   assert.throws(() => normalizeSettings({ products: PRODUCTS, scheduledRetailer: "other" }), /single schedule/);

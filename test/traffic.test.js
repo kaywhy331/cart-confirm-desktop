@@ -6,10 +6,24 @@ const assert = require("node:assert/strict");
 const {
   applyOverloadSignal,
   isOverloadStatus,
+  navigationIntervalMs,
   parseRetryAfter,
   reserveNavigationSlot,
   revalidateNavigationSlot
 } = require("../extension/traffic");
+
+test("pre-eligibility navigation uses the rapid lane without accelerating normal retries", () => {
+  const config = {
+    eligibilityRefreshIntervalSeconds: 2,
+    storeNavigationIntervalSeconds: 20
+  };
+  assert.equal(navigationIntervalMs(config, "eligibility"), 2_000);
+  assert.equal(navigationIntervalMs(config, "normal"), 20_000);
+  assert.equal(navigationIntervalMs({
+    eligibilityRefreshIntervalSeconds: 30,
+    storeNavigationIntervalSeconds: 20
+  }, "eligibility"), 20_000);
+});
 
 test("traffic slots serialize independent tabs for one retailer", () => {
   const first = reserveNavigationSlot({}, {

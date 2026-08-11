@@ -33,3 +33,18 @@ test("real offer, availability, route, and operating-mode changes remain visible
   assert.equal(shouldRecordActivity(existing, { ...existing[2], page: "https://www.target.com/cart" }), true);
   assert.equal(shouldRecordActivity(existing, { ...base, eventType: "add-clicked", attempt: 1 }), true);
 });
+
+test("rapid retries collapse without hiding cadence or failure changes", () => {
+  const retry = {
+    ...base,
+    eventType: "retry-scheduled",
+    reason: "retrying",
+    message: "Target is refreshing one waiting mission every 2 seconds."
+  };
+  assert.equal(shouldRecordActivity([retry], { ...retry, attempt: 2 }), false);
+  assert.equal(shouldRecordActivity([retry], {
+    ...retry,
+    message: "Target is refreshing one waiting mission every 3 seconds."
+  }), true);
+  assert.equal(shouldRecordActivity([retry], { ...base, eventType: "store-error", reason: "store-error" }), true);
+});

@@ -262,7 +262,7 @@
     return { eligible: true, reason: "eligible" };
   }
 
-  async function scheduleRetry(product, message, destination = "reload", errorBackoff = false) {
+  async function scheduleRetry(product, message, destination = "reload", errorBackoff = false, cadence = "normal") {
     if (!config?.automationEnabled || config?.monitoringPaused || !product.enabled || retryTimer) return;
     const state = await productAutomationState(product);
     if (!state.ok || state.completed || !state.armed) return;
@@ -278,7 +278,10 @@
     // action. Passive stock refreshes remain bounded by the four-hour run and
     // the shared per-store traffic budget.
     const attempt = currentAttempt(product) + 1;
-    const baseSeconds = Math.max(5, Number(config.retryIntervalSeconds || 15));
+    const eligibilityCadence = cadence === "eligibility";
+    const baseSeconds = eligibilityCadence
+      ? Math.max(2, Number(config.eligibilityRefreshIntervalSeconds || 2))
+      : Math.max(5, Number(config.retryIntervalSeconds || 15));
     const multiplier = errorBackoff ? Math.min(8, 2 ** Math.min(3, Math.floor((attempt - 1) / 3))) : Math.min(3, 1 + Math.floor(attempt / 20));
     const jitter = Math.floor(Math.random() * Math.max(1, baseSeconds * 0.2));
     const delayMs = (baseSeconds * multiplier + jitter) * 1000;
@@ -288,6 +291,7 @@
       retailer,
       productId: product.id,
       reservationId,
+      cadence: eligibilityCadence ? "eligibility" : "normal",
       notBefore: Date.now() + delayMs
     });
     if (!reservation.ok) {
@@ -324,7 +328,7 @@
         if (traffic.reason === "not-ready" && traffic.waitMs > 0) {
           retryTimer = setTimeout(navigateWhenAllowed, traffic.waitMs);
         } else if (traffic.reason === "reservation-missing") {
-          await scheduleRetry(product, "A throttled browser timer expired its traffic slot; reserving a fresh one.", destination, errorBackoff);
+          await scheduleRetry(product, "A throttled browser timer expired its traffic slot; reserving a fresh one.", destination, errorBackoff, cadence);
         } else if (traffic.reason === "traffic-budget-exhausted") {
           await send("automation-blocked", product, {
             reason: "traffic-budget-exhausted",
@@ -544,7 +548,14 @@
             : "The offer does not have a verifiable first-party seller and readable eligible price."
         }, `blocked:${product.id}:${result.reason}:${offer.price}:${offer.seller}`, 30_000);
       }
-      await scheduleRetry(product, `Waiting for an eligible ${adapter.label} first-party offer.`);
+      const rapidSeconds = Math.max(2, Number(config.eligibilityRefreshIntervalSeconds || 2));
+      await scheduleRetry(
+        product,
+        `Waiting for an eligible ${adapter.label} first-party offer. ${adapter.label} is refreshing one waiting mission every ${rapidSeconds} seconds.`,
+        "reload",
+        false,
+        "eligibility"
+      );
       return;
     }
 

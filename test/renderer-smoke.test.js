@@ -35,6 +35,7 @@ function snapshotFixture() {
       automationRunId: "",
       fastMode: true,
       retryIntervalSeconds: 15,
+      eligibilityRefreshIntervalSeconds: 2,
       storeNavigationIntervalSeconds: 20,
       overloadCooldownSeconds: 300,
       scheduledOpenEnabled: false,
@@ -156,6 +157,12 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
     "Test lives in the header next to Autopilot"
   );
   assert.match(doc.getElementById("testButton").textContent, /Test all/);
+  assert.equal(doc.getElementById("eligibilityRefreshIntervalSeconds").value, "2");
+
+  doc.getElementById("eligibilityRefreshIntervalSeconds").value = "3";
+  doc.getElementById("eligibilityRefreshIntervalSeconds").dispatchEvent(new window.Event("change", { bubbles: true }));
+  await new Promise((resolve) => setTimeout(resolve, 650));
+  assert.equal(savedSettingsInputs.at(-1).eligibilityRefreshIntervalSeconds, 3);
 
   // Discord stays out of the dashboard until requested, then opens as the
   // bottom card and shares the Missions/Activity minimize behavior.

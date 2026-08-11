@@ -149,6 +149,11 @@ for one supervised run) and manually walk the checkout to the final review page:
 - [ ] Arm Autopilot once with two harmless unscheduled missions and confirm both
       pages launch from that single action; no separate **Open all due** click
       should be required.
+- [ ] With two harmless unavailable same-store missions, confirm the activity
+      text says the store is refreshing one waiting mission at the configured
+      **Pre-eligibility refresh** spacing. Confirm the faster lane stops for a
+      mission as soon as it reports an eligible offer; cart/checkout recovery
+      must continue using the normal **Store traffic spacing**.
 - [ ] Trigger a loud test alarm, select **Silence**, and confirm the alarm bar
       disappears. Trigger an away digest, select **Dismiss**, and confirm that
       bar disappears too. Relaunching must not replay persisted feed entries as

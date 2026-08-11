@@ -28,6 +28,7 @@ const elements = {
   settingsBox: document.getElementById("settingsBox"),
   fastMode: document.getElementById("fastMode"),
   retryIntervalSeconds: document.getElementById("retryIntervalSeconds"),
+  eligibilityRefreshIntervalSeconds: document.getElementById("eligibilityRefreshIntervalSeconds"),
   storeNavigationIntervalSeconds: document.getElementById("storeNavigationIntervalSeconds"),
   overloadCooldownSeconds: document.getElementById("overloadCooldownSeconds"),
   storeShortcut: document.getElementById("storeShortcut"),
@@ -292,6 +293,7 @@ function globalSettings(products) {
     automationEnabled: isArmed(),
     fastMode: elements.fastMode.checked,
     retryIntervalSeconds: Number(elements.retryIntervalSeconds.value),
+    eligibilityRefreshIntervalSeconds: Number(elements.eligibilityRefreshIntervalSeconds.value),
     storeNavigationIntervalSeconds: Number(elements.storeNavigationIntervalSeconds.value),
     overloadCooldownSeconds: Number(elements.overloadCooldownSeconds.value),
     scheduledOpenEnabled: false,
@@ -1205,6 +1207,7 @@ function renderSignals(signals = []) {
 function populateSettingsInputs(settings) {
   const map = [
     [elements.retryIntervalSeconds, settings.retryIntervalSeconds],
+    [elements.eligibilityRefreshIntervalSeconds, settings.eligibilityRefreshIntervalSeconds],
     [elements.storeNavigationIntervalSeconds, settings.storeNavigationIntervalSeconds],
     [elements.overloadCooldownSeconds, settings.overloadCooldownSeconds]
   ];
@@ -1458,8 +1461,16 @@ elements.openAllButton.addEventListener("click", async () => {
 function scheduleSettingsSave() {
   clearTimeout(settingsSaveTimer);
   settingsSaveTimer = setTimeout(() => {
+    const rapidSeconds = Number(elements.eligibilityRefreshIntervalSeconds.value);
+    const normalSeconds = Number(elements.storeNavigationIntervalSeconds.value);
+    elements.eligibilityRefreshIntervalSeconds.setCustomValidity(
+      rapidSeconds > normalSeconds
+        ? "Pre-eligibility refresh cannot be slower than the normal store traffic spacing."
+        : ""
+    );
     for (const input of [
       elements.retryIntervalSeconds,
+      elements.eligibilityRefreshIntervalSeconds,
       elements.storeNavigationIntervalSeconds,
       elements.overloadCooldownSeconds
     ]) {
@@ -1474,6 +1485,7 @@ function scheduleSettingsSave() {
 
 elements.fastMode.addEventListener("change", scheduleSettingsSave);
 elements.retryIntervalSeconds.addEventListener("change", scheduleSettingsSave);
+elements.eligibilityRefreshIntervalSeconds.addEventListener("change", scheduleSettingsSave);
 elements.storeNavigationIntervalSeconds.addEventListener("change", scheduleSettingsSave);
 elements.overloadCooldownSeconds.addEventListener("change", scheduleSettingsSave);
 

@@ -109,6 +109,14 @@
               <small>Retries use this minimum plus jitter and backoff after store errors.</small>
             </label>
             <label class="control-card field compact-field">
+              <span class="control-title">Pre-eligibility refresh</span>
+              <span class="number-suffix">
+                <input id="eligibilityRefreshIntervalSeconds" type="number" min="2" max="60" step="1" inputmode="numeric" required>
+                <span>seconds</span>
+              </span>
+              <small>Until an offer becomes eligible, waiting missions share this faster per-store refresh lane.</small>
+            </label>
+            <label class="control-card field compact-field">
               <span class="control-title">Store traffic spacing</span>
               <span class="number-suffix">
                 <input id="storeNavigationIntervalSeconds" type="number" min="10" max="3600" step="1" inputmode="numeric" required>
