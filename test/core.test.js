@@ -7,6 +7,7 @@ const {
   assertSafeArmedUpdate,
   createInitialStatus,
   createProductStatus,
+  eventMessage,
   extractTcin,
   matchingProduct,
   normalizeProduct,
@@ -62,6 +63,26 @@ test("extracts store-specific product identifiers", () => {
   assert.equal(extractSku("walmart", PRODUCTS[1].productUrl), "123456789");
   assert.equal(extractSku("amazon", PRODUCTS[2].productUrl), "B0ABC12345");
   assert.equal(extractSku("amazon", "b0abc12345"), "B0ABC12345");
+});
+
+test("automation status and offer messages preserve actionable workflow detail", () => {
+  const status = validateEvent({
+    eventType: "automation-status",
+    retailer: "target",
+    productId: "target:1011960739",
+    message: "This mission already completed in another tab."
+  });
+  assert.equal(eventMessage(status), "This mission already completed in another tab.");
+
+  const offer = validateEvent({
+    eventType: "offer-observed",
+    retailer: "target",
+    productId: "target:1011960739",
+    eligible: true,
+    price: 34.99,
+    message: "Test mode is observation-only, so no purchase action was attempted."
+  });
+  assert.equal(eventMessage(offer), "Test mode is observation-only, so no purchase action was attempted.");
 });
 
 test("detects retailers and canonicalizes product URLs", () => {

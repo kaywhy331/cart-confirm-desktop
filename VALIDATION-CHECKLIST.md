@@ -143,8 +143,12 @@ for one supervised run) and manually walk the checkout to the final review page:
 
 ## 5. Ongoing
 
-- [ ] Press **Test next (no buying)** once per enabled mission and confirm it
-      advances through the list instead of reopening the first mission.
+- [ ] Press **Test all (no buying)** once and confirm every enabled mission
+      without an **Open at** time is checked through the paced store queues.
+      Confirm scheduled missions stay closed until their configured time.
+- [ ] Arm Autopilot once with two harmless unscheduled missions and confirm both
+      pages launch from that single action; no separate **Open all due** click
+      should be required.
 - [ ] Trigger a loud test alarm, select **Silence**, and confirm the alarm bar
       disappears. Trigger an away digest, select **Dismiss**, and confirm that
       bar disappears too. Relaunching must not replay persisted feed entries as

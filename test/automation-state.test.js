@@ -75,3 +75,23 @@ test("add-only products run in parallel while checkout keeps the store lane excl
   assert.equal(State.claim(state, checkoutC, "tab:3", 1_060).reason, "completed");
   assert.equal(State.claim(state, reviewD, "tab:4", 1_061).ok, true, "completing the checkout releases the store lane");
 });
+
+test("a blocked pre-submit workflow releases its store lane for the next mission", () => {
+  const state = State.createState("run", 1_000);
+  const next = { ...PRODUCT, id: "walmart:987654321" };
+  assert.equal(State.claim(state, PRODUCT, "tab:1", 1_000).ok, true);
+  assert.equal(State.claim(state, next, "tab:2", 1_001).reason, "store-busy");
+  assert.equal(State.release(state, PRODUCT, "tab:wrong").released, false);
+  assert.equal(State.release(state, PRODUCT, "tab:1").released, true);
+  assert.equal(State.claim(state, next, "tab:2", 1_002).ok, true);
+});
+
+test("a possible order submission can never be released automatically", () => {
+  const state = State.createState("run", 1_000);
+  State.claim(state, PRODUCT, "tab:1", 1_000);
+  State.beginSubmission(state, PRODUCT, "tab:1", "evidence", 1_010);
+  const released = State.release(state, PRODUCT, "tab:1");
+  assert.equal(released.ok, false);
+  assert.equal(released.reason, "submission-uncertain");
+  assert.ok(state.locks[`store:${PRODUCT.retailer}`]);
+});

@@ -8,6 +8,8 @@
   const ACTIVE_PRODUCT_KEY = "cartConfirmActiveProductId";
   const CONFIG_REFRESH_MS = 5_000;
   const HEARTBEAT_MS = 10_000;
+  const OBSERVATION_DEDUPE_MS = Number.MAX_SAFE_INTEGER;
+  const LOCK_RELEASING_EVENTS = new Set(["automation-blocked", "store-error", "retry-scheduled"]);
   const PROOF_MAX_AGE_MS = Safety.CART_PROOF_MAX_AGE_MS;
   const seen = new Map();
   const attemptCache = new Map();
@@ -70,6 +72,9 @@
         ...details
       }
     });
+    if (product?.id && LOCK_RELEASING_EVENTS.has(eventType)) {
+      await runtimeMessage({ type: "CART_CONFIRM_RELEASE_PRODUCT", productId: product.id });
+    }
     if (result.ok) {
       seen.set(key, Date.now());
       pruneSeen();
@@ -261,17 +266,18 @@
     if (!config?.automationEnabled || config?.monitoringPaused || !product.enabled || retryTimer) return;
     const state = await productAutomationState(product);
     if (!state.ok || state.completed || !state.armed) return;
+    if (Number.isInteger(state.attempts)) attemptCache.set(product.id, state.attempts);
     if (state.budgetReason) {
       await requireAttempt(product);
       return;
     }
     if (["intent", "uncertain"].includes(state.submission?.phase)) return;
 
-    // Watch-only items monitor without consuming the purchase attempt budget;
-    // the four-hour run limit and the store traffic budget still apply.
-    const counted = product.action !== "watch";
-    const attempt = counted ? await requireAttempt(product) : currentAttempt(product) + 1;
-    if (attempt === null) return;
+    // Observation navigation is not a purchase attempt. Attempts are charged
+    // only immediately before an add, checkout, quantity, or final-submit
+    // action. Passive stock refreshes remain bounded by the four-hour run and
+    // the shared per-store traffic budget.
+    const attempt = currentAttempt(product) + 1;
     const baseSeconds = Math.max(5, Number(config.retryIntervalSeconds || 15));
     const multiplier = errorBackoff ? Math.min(8, 2 ** Math.min(3, Math.floor((attempt - 1) / 3))) : Math.min(3, 1 + Math.floor(attempt / 20));
     const jitter = Math.floor(Math.random() * Math.max(1, baseSeconds * 0.2));
@@ -466,7 +472,10 @@
 
   async function handleProductPage(product) {
     const error = adapter.storeError(document);
-    if (error) {
+    // An unavailable product is normal monitoring state, not a store failure.
+    // Let the offer adapter report it as out of stock and schedule a standard
+    // bounded refresh instead of entering the error path.
+    if (error && error !== "out-of-stock") {
       if (error === "traffic-overload") {
         await runtimeMessage({ type: "CART_CONFIRM_TRAFFIC_OVERLOAD", retailer });
       }
@@ -487,7 +496,14 @@
     // Reporting must never delay the add path: these are fire-and-forget.
     void send("availability", product, {
       availability: offer.available ? "available" : "unavailable"
-    }, `availability:${product.id}:${offer.available}`, 10_000);
+    }, `availability:${product.id}:${offer.available}`, OBSERVATION_DEDUPE_MS);
+    const eligibleMessage = result.eligible
+      ? !config.automationEnabled
+        ? `${adapter.label} verified an eligible first-party offer at $${offer.price.toFixed(2)}. Test mode is observation-only, so no purchase action was attempted.`
+        : product.action === "watch"
+          ? `${adapter.label} verified an eligible first-party offer at $${offer.price.toFixed(2)}. This mission is Watch & alert only, so no purchase action was attempted.`
+          : `${adapter.label} verified an eligible first-party offer at $${offer.price.toFixed(2)}. Autopilot is starting the ${product.action === "cart" ? "add-to-cart" : product.action === "review" ? "checkout-review" : "auto-buy"} workflow.`
+      : "";
     void send("offer-observed", product, {
       availability: offer.available ? "available" : "unavailable",
       price: offer.price === null ? undefined : offer.price,
@@ -495,12 +511,25 @@
       firstParty: offer.firstParty,
       eligible: result.eligible,
       reason: result.reason,
-      attempt: currentAttempt(product)
-    }, `offer:${product.id}:${offer.price}:${offer.seller}:${result.reason}`, 10_000);
+      attempt: currentAttempt(product),
+      message: eligibleMessage
+    }, `offer:${product.id}:${offer.price}:${offer.seller}:${result.reason}:${eligibleMessage}`, OBSERVATION_DEDUPE_MS);
 
     if (!config.automationEnabled || !product.enabled) return;
     const state = await productAutomationState(product);
-    if (!state.ok || state.completed) return;
+    if (!state.ok) {
+      await send("automation-blocked", product, {
+        reason: "manual-action-required",
+        message: `Autopilot could not read this mission's durable state (${state.reason || "unknown state error"}). Its store lane was released so the remaining missions can continue.`
+      }, `product-state-error:${product.id}:${state.reason}`, 30_000);
+      return;
+    }
+    if (state.completed) {
+      await send("automation-status", product, {
+        message: "This mission is already complete for the current Autopilot run, so Cart Confirm will not purchase it twice."
+      }, `already-completed:${product.id}:${config.automationRunId}`, Number.MAX_SAFE_INTEGER);
+      return;
+    }
 
     if (!result.eligible) {
       if (result.reason !== "out-of-stock") {
@@ -533,17 +562,32 @@
           reason: "manual-action-required",
           message: "A prior order submission is uncertain and remains locked for manual review."
         }, `claim-uncertain:${product.id}`, 60_000);
-      } else if (claim.reason !== "completed") {
+      } else if (claim.reason === "completed") {
+        await send("automation-status", product, {
+          message: "This mission completed in another tab during the current Autopilot run, so no duplicate action was taken."
+        }, `claim-completed:${product.id}:${config.automationRunId}`, Number.MAX_SAFE_INTEGER);
+      } else if (["store-busy", "product-busy"].includes(claim.reason)) {
         await scheduleRetry(product, claim.reason === "store-busy"
           ? `${adapter.label} is processing another configured product in this store.`
           : "Another tab is already processing this configured product.");
+      } else {
+        await send("automation-blocked", product, {
+          reason: "manual-action-required",
+          message: `Autopilot could not claim this mission (${claim.reason || "unknown claim error"}). Its store lane was released so the remaining missions can continue.`
+        }, `claim-error:${product.id}:${claim.reason}`, 30_000);
       }
       return;
     }
 
     setActiveProduct(product);
     const savedProof = await saveProof(product, offer, "product");
-    if (!savedProof.ok) return;
+    if (!savedProof.ok) {
+      await send("automation-blocked", product, {
+        reason: "manual-action-required",
+        message: `Autopilot could not save the verified offer proof (${savedProof.reason || "unknown proof error"}). Its store lane was released so the remaining missions can continue.`
+      }, `product-proof-error:${product.id}:${savedProof.reason}`, 30_000);
+      return;
+    }
     if (!await requireStoreAction(product, "add-to-cart")) return;
     const attempt = await requireAttempt(product);
     if (attempt === null) return;
@@ -922,7 +966,7 @@
       if (await handleChallenge(product)) return;
       if (!product) return;
 
-      void send("page-observed", product, {}, `page:${product.id}:${pageAddress()}`, 30_000);
+      void send("page-observed", product, {}, `page:${product.id}:${pageAddress()}`, OBSERVATION_DEDUPE_MS);
       const kind = adapter.pageKind(location.href);
       if (kind === "queue" && await handleRetailerQueue(product)) return;
       if (kind === "confirmation" && await handleConfirmation(product)) return;
@@ -931,9 +975,12 @@
       else if (kind === "checkout" || kind === "confirmation") await handleCheckoutPage(product);
       else {
         clearRetry();
+        const safePath = String(location.pathname || "/").slice(0, 160);
         await send("automation-blocked", product, {
           reason: "manual-action-required",
-          message: "The store redirected this workflow to an unrecognized page. Complete any sign-in or account prompt manually, then return to the configured product."
+          message: kind === "auth"
+            ? `${adapter.label} requires a manual sign-in or account check at ${safePath}. This mission's store lane was released so the remaining missions can continue.`
+            : `${adapter.label} redirected this workflow to the unrecognized path ${safePath}. This mission's store lane was released so the remaining missions can continue; review this tab manually.`
         }, `unexpected-page:${product.id}:${pageAddress()}`, 60_000);
       }
     } finally {
@@ -967,11 +1014,15 @@
       seen.clear();
       if (!config.automationEnabled || config.monitoringPaused) clearRetry();
     }
+    const previousContextProductId = backgroundActiveProductId;
+    const previousContextEntry = backgroundActiveEntry;
     const context = await runtimeMessage({ type: "CART_CONFIRM_GET_TAB_PRODUCT_CONTEXT" });
     backgroundActiveProductId = context.ok ? String(context.productId || "") : "";
     backgroundActiveEntry = context.ok ? String(context.entry || "product") : "product";
     if (backgroundActiveProductId) sessionStorage.setItem(ACTIVE_PRODUCT_KEY, backgroundActiveProductId);
-    scheduleScan(0);
+    const contextChanged = previousContextProductId !== backgroundActiveProductId
+      || previousContextEntry !== backgroundActiveEntry;
+    if (changed || contextChanged) scheduleScan(0);
   }
 
   document.addEventListener("click", (event) => {

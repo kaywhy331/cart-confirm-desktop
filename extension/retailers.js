@@ -566,8 +566,9 @@
       pageKind(url) {
         const path = new URL(url).pathname.toLowerCase();
         if (/order-confirm|thank.?you|confirmation/.test(path)) return "confirmation";
-        if (/checkout|co-delivery|co-payment|co-review/.test(path)) return "checkout";
-        if (path.includes("/cart")) return "cart";
+        if (/\/(?:login|signin|sign-in)(?:\/|$)|\/account(?:\/|$)|\/co-(?:login|signin)(?:\/|$)/.test(path)) return "auth";
+        if (/checkout|co-(?:delivery|fulfillment|pickup|payment|review)/.test(path)) return "checkout";
+        if (/\/(?:cart|co-cart)(?:\/|$)/.test(path)) return "cart";
         return extractSkuFromUrl("target", url) ? "product" : "other";
       },
       offer(doc, product) {

@@ -515,6 +515,16 @@ function buildEditCard(product) {
     || product.signalAutoOpen === false
   ));
 
+  const validateFulfillmentSelection = () => {
+    const fulfillment = field(card, "fulfillmentMode");
+    const requiresExplicitMode = field(card, "action").value === "checkout";
+    fulfillment.setCustomValidity(requiresExplicitMode && fulfillment.value === "manual"
+      ? "Choose Shipping / delivery or Store pickup before enabling automatic order submission."
+      : "");
+    if (requiresExplicitMode && fulfillment.value === "manual") advanced.open = true;
+  };
+  validateFulfillmentSelection();
+
   field(card, "retailer").addEventListener("change", () => updateEditStore(card));
   field(card, "productUrl").addEventListener("change", () => {
     const url = field(card, "productUrl").value;
@@ -536,8 +546,10 @@ function buildEditCard(product) {
   });
   field(card, "action").addEventListener("change", () => {
     if (["review", "checkout"].includes(field(card, "action").value)) advanced.open = true;
+    validateFulfillmentSelection();
     updateSignalEntryOptions(card);
   });
+  field(card, "fulfillmentMode").addEventListener("change", validateFulfillmentSelection);
   card.querySelector(".mission-done").addEventListener("click", () => void finishEdit(card));
   const cancel = () => {
     editingId = null;
@@ -1236,28 +1248,52 @@ function render(snapshot) {
 
 // --- Actions ---
 
-elements.autopilotToggle.addEventListener("click", () => runAction(async () => {
-  if (!currentSnapshot) throw new Error("Settings have not loaded yet.");
-  if (editingId) throw new Error("Finish the open mission editor first (Done or Cancel).");
-  const saved = currentSnapshot.settings;
-  if (saved.automationEnabled) {
-    const next = await window.cartAssist.saveSettings({ ...saved, automationEnabled: false });
-    render(next);
-    return { armed: false };
+elements.autopilotToggle.addEventListener("click", async () => {
+  if (openRunInFlight) return;
+  setMissionOpenBusy(true);
+  try {
+    await runAction(async () => {
+      if (!currentSnapshot) throw new Error("Settings have not loaded yet.");
+      if (editingId) throw new Error("Finish the open mission editor first (Done or Cancel).");
+      const saved = currentSnapshot.settings;
+      if (saved.automationEnabled) {
+        const next = await window.cartAssist.saveSettings({ ...saved, automationEnabled: false });
+        render(next);
+        return { armed: false };
+      }
+      const autoSubmitCount = saved.products.filter((product) => product.enabled && product.action === "checkout").length;
+      if (
+        autoSubmitCount > 0
+        && !window.confirm(`${autoSubmitCount} enabled mission${autoSubmitCount === 1 ? "" : "s"} may submit a real order. Re-arming starts a new run. Every enabled mission without a calendar time will open now; scheduled missions wait for their exact time. Verify retailer order history first. "Prepare checkout, I submit" is safer. Switch Autopilot on anyway?`)
+      ) {
+        throw new Error("Autopilot was not switched on.");
+      }
+      const next = await window.cartAssist.saveSettings({ ...saved, automationEnabled: true });
+      render(next);
+      setMessage("Autopilot ON. Opening every due enabled mission… same-store pages are paced for safety.");
+      try {
+        const launch = await window.cartAssist.openBuyList();
+        return { armed: true, ...launch };
+      } catch (error) {
+        throw new Error(`Autopilot is ON, but its mission pages could not open: ${error.message || "unknown opening error"}`);
+      }
+    }, (result) => {
+      if (!result?.armed) return "Autopilot OFF. Monitoring pages stay open, but nothing will be clicked.";
+      const count = Number(result.count || 0);
+      const scheduled = Number(result.scheduled || 0);
+      const parts = [`Autopilot ON. ${count} due mission page${count === 1 ? "" : "s"} opened`];
+      if (result.reused) parts.push(`${result.reused} reused an existing Chrome tab`);
+      if (result.deduped) parts.push(`${result.deduped} already queued`);
+      if (scheduled) parts.push(`${scheduled} waiting for ${scheduled === 1 ? "its" : "their"} calendar time`);
+      const browserNote = result.defaultBrowser
+        ? " Chrome was not found, so some pages used your default browser; Autopilot only works inside Chrome."
+        : "";
+      return `${parts.join(", ")}. Each due mission acts as its page loads.${browserNote}`;
+    });
+  } finally {
+    setMissionOpenBusy(false);
   }
-  const autoSubmitCount = saved.products.filter((product) => product.enabled && product.action === "checkout").length;
-  if (
-    autoSubmitCount > 0
-    && !window.confirm(`${autoSubmitCount} enabled mission${autoSubmitCount === 1 ? "" : "s"} may submit a real order. Re-arming starts a new run and can retry an item whose prior submission was uncertain. Verify retailer order history first. "Prepare checkout, I submit" is safer. Switch Autopilot on anyway?`)
-  ) {
-    throw new Error("Autopilot was not switched on.");
-  }
-  const next = await window.cartAssist.saveSettings({ ...saved, automationEnabled: true });
-  render(next);
-  return { armed: true };
-}, (result) => (result?.armed
-  ? "Autopilot ON. Missions act whenever their product pages are open — use Open all enabled to launch them."
-  : "Autopilot OFF. Monitoring pages stay open, but nothing will be clicked.")));
+});
 
 elements.disarmButton.addEventListener("click", () => {
   stopUiEpoch += 1;
@@ -1360,33 +1396,51 @@ elements.missionList.addEventListener("drop", (event) => {
   void runAction(() => saveMissionList(products), "Missions reordered.");
 });
 
-elements.testButton.addEventListener("click", () => runAction(async () => {
-  if (isArmed()) {
-    throw new Error("Switch Autopilot off before testing — Test opens the product page without buying anything.");
+function setMissionOpenBusy(busy) {
+  openRunInFlight = busy;
+  elements.autopilotToggle.disabled = busy;
+  elements.testButton.disabled = busy;
+  elements.openAllButton.disabled = busy;
+}
+
+elements.testButton.addEventListener("click", async () => {
+  if (openRunInFlight) return;
+  setMissionOpenBusy(true);
+  setMessage("Checking every due enabled mission… same-store pages are paced for safety.");
+  try {
+    await runAction(async () => {
+      if (isArmed()) {
+        throw new Error("Switch Autopilot off before testing — Test all opens mission pages without buying anything.");
+      }
+      return window.cartAssist.testEvent();
+    }, (result) => {
+      const count = Number(result?.count || 0);
+      const parts = [`Test started for ${count} enabled mission${count === 1 ? "" : "s"}`];
+      if (result?.reused) parts.push(`${result.reused} reused an existing Chrome tab`);
+      if (result?.deduped) parts.push(`${result.deduped} already queued`);
+      if (result?.scheduled) parts.push(`${result.scheduled} waiting for ${result.scheduled === 1 ? "its" : "their"} calendar time`);
+      const browserNote = result?.defaultBrowser
+        ? " Chrome was not found, so your default browser was used — the companion only checks pages opened in Chrome."
+        : "";
+      return `${parts.join(", ")}. Autopilot is OFF, so nothing will be added.${browserNote}`;
+    });
+  } finally {
+    setMissionOpenBusy(false);
   }
-  return window.cartAssist.testEvent();
-}, (result) => {
-  const product = savedProducts().find((candidate) => candidate.id === result?.productId);
-  const label = product ? productLabel(product) : "mission";
-  return result?.via === "companion-tab"
-  ? `Test started for ${label} in your existing Chrome tab. The next press tests the next enabled mission; nothing is added while Autopilot is off.`
-  : result?.via === "default-browser"
-    ? `${label} opened, but Chrome was not found — it used your default browser, where the companion cannot see it. Install Chrome or open the link in Chrome manually.`
-    : `Test started for ${label}: the product page is opening in Chrome. The next press tests the next enabled mission; nothing is added while Autopilot is off.`;
-}));
+});
 
 elements.openAllButton.addEventListener("click", async () => {
   if (openRunInFlight) return;
   const actionStopEpoch = stopUiEpoch;
-  openRunInFlight = true;
-  elements.openAllButton.disabled = true;
-  setMessage("Opening enabled missions… multiple opens are paced to respect store limits.");
+  setMissionOpenBusy(true);
+  setMessage("Opening due enabled missions… multiple opens are paced to respect store limits.");
   try {
     const result = await window.cartAssist.openBuyList();
     if (actionStopEpoch !== stopUiEpoch) return;
     const parts = [`${result.count} mission page${result.count === 1 ? "" : "s"} opened`];
     if (result.reused) parts.push(`${result.reused} reused an existing Chrome tab`);
     if (result.deduped) parts.push(`${result.deduped} already queued`);
+    if (result.scheduled) parts.push(`${result.scheduled} waiting for ${result.scheduled === 1 ? "its" : "their"} calendar time`);
     const armNote = result.armed
       ? "Autopilot is ON — missions act as each page loads."
       : "Autopilot is OFF — nothing will be added until you switch it on.";
@@ -1397,8 +1451,7 @@ elements.openAllButton.addEventListener("click", async () => {
   } catch (error) {
     if (actionStopEpoch === stopUiEpoch) setMessage(error.message || "The action failed.", "error");
   } finally {
-    openRunInFlight = false;
-    elements.openAllButton.disabled = false;
+    setMissionOpenBusy(false);
   }
 });
 

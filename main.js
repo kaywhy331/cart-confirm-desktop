@@ -32,19 +32,19 @@ const {
 } = require("./lib/core");
 const { migrateStoredSettings } = require("./lib/migrations");
 const { consumeStoreAction } = require("./lib/action-budget");
-const { evaluateProductSchedules, evaluateSchedule } = require("./lib/schedule");
+const { evaluateProductSchedules, evaluateSchedule, planImmediateProductOpenings } = require("./lib/schedule");
 const { loadRuntimeState, saveRuntimeState } = require("./lib/runtime-state");
 const { isAllowedExtensionOrigin, isTrustedCompanionRequest } = require("./lib/extension-identity");
 const { createStoreOpenQueue } = require("./lib/store-open-queue");
 const { createOpenRequestStore } = require("./lib/open-requests");
 const { findChrome } = require("./lib/chrome-launcher");
 const { checkProductPage } = require("./lib/quiet-monitor");
+const { shouldRecordActivity } = require("./lib/activity");
 const {
   companionEventAllowed,
   createAbortRegistry,
   monitoringActive,
-  monitoringOperationActive,
-  nextEnabledProduct
+  monitoringOperationActive
 } = require("./lib/monitoring-control");
 const { QUEUE_FANOUT_SPACING_MS, planQueueFanout } = require("./lib/queue-fanout");
 const {
@@ -113,7 +113,6 @@ let serverDiagnostics = {
 };
 let lastDiagnosticsBroadcastAt = 0;
 let stopEpoch = 0;
-let lastTestProductId = "";
 const lastNotificationAt = new Map();
 const storeOverloadUntil = new Map();
 const retailerTabSeenAt = new Map();
@@ -304,6 +303,7 @@ function broadcast() {
 
 function addEvent(event) {
   if (event.eventType === "heartbeat") return;
+  if (!shouldRecordActivity(events, event)) return;
   events = [
     {
       ...event,
@@ -492,17 +492,15 @@ async function openProduct(productId, options = {}) {
 }
 
 async function openBuyList(retailer = "", options = {}) {
-  const enabledProducts = settings.products.filter((product) => (
-    product.enabled && (!retailer || product.retailer === retailer)
-  ));
-  if (!enabledProducts.length) {
+  const plan = planImmediateProductOpenings(settings, retailer);
+  if (!plan.enabled.length) {
     throw new Error(retailer
       ? `Enable at least one ${retailerLabel(retailer)} product first.`
       : "Enable at least one product first.");
   }
 
   resumeMonitoring();
-  const results = await Promise.all(enabledProducts.map((product) => (
+  const results = await Promise.all(plan.ready.map((product) => (
     openExternalRetailer(product.productUrl, { ...options, productId: product.id })
   )));
   return {
@@ -510,6 +508,7 @@ async function openBuyList(retailer = "", options = {}) {
     reused: results.filter((result) => result.via === "companion-tab").length,
     deduped: results.filter((result) => result.via === "already-queued").length,
     defaultBrowser: results.some((result) => result.via === "default-browser"),
+    scheduled: plan.scheduled.length,
     armed: settings.automationEnabled
   };
 }
@@ -1351,10 +1350,7 @@ function registerIpc() {
   ipcMain.handle("cart-assist:test-event", () => {
     if (!companionPort) throw new Error("The local companion server is not running.");
     if (settings.automationEnabled) throw new Error("Switch Autopilot off before testing.");
-    const product = nextEnabledProduct(settings.products, lastTestProductId);
-    if (!product) throw new Error("Enable at least one product first.");
-    lastTestProductId = product.id;
-    return openProduct(product.id);
+    return openBuyList();
   });
 }
 

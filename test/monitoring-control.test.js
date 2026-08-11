@@ -8,8 +8,7 @@ const test = require("node:test");
 const {
   companionEventAllowed,
   createAbortRegistry,
-  monitoringOperationActive,
-  nextEnabledProduct
+  monitoringOperationActive
 } = require("../lib/monitoring-control");
 
 test("a Stop epoch invalidates active work and aborts every registered request", () => {
@@ -37,19 +36,6 @@ test("paused monitoring drops stale tab events but retains connection heartbeats
   assert.equal(companionEventAllowed({ monitoringPaused: false }, "offer-observed"), true);
 });
 
-test("Test rotates through enabled missions in list order", () => {
-  const products = [
-    { id: "target:one", enabled: true },
-    { id: "target:two", enabled: false },
-    { id: "walmart:three", enabled: true }
-  ];
-  assert.equal(nextEnabledProduct(products)?.id, "target:one");
-  assert.equal(nextEnabledProduct(products, "target:one")?.id, "walmart:three");
-  assert.equal(nextEnabledProduct(products, "walmart:three")?.id, "target:one");
-  assert.equal(nextEnabledProduct(products, "target:two")?.id, "walmart:three");
-  assert.equal(nextEnabledProduct(products.map((product) => ({ ...product, enabled: false }))), null);
-});
-
 test("the desktop Stop path aborts quiet checks and internal stock opens cannot resume it", () => {
   const source = fs.readFileSync(path.join(__dirname, "..", "main.js"), "utf8");
   const contentSource = fs.readFileSync(path.join(__dirname, "..", "extension", "content.js"), "utf8");
@@ -63,7 +49,14 @@ test("the desktop Stop path aborts quiet checks and internal stock opens cannot 
   assert.match(backgroundSource, /function automationActive\(config\)[\s\S]*?config\.monitoringPaused !== true/);
 });
 
-test("Test next opens the selected mission while remaining disarmed", () => {
+test("Test all opens every enabled mission while remaining disarmed", () => {
   const source = fs.readFileSync(path.join(__dirname, "..", "main.js"), "utf8");
-  assert.match(source, /cart-assist:test-event[\s\S]*?nextEnabledProduct\(settings\.products, lastTestProductId\)[\s\S]*?return openProduct\(product\.id\);/);
+  assert.match(source, /cart-assist:test-event[\s\S]*?if \(settings\.automationEnabled\)[\s\S]*?return openBuyList\(\);/);
+  assert.match(source, /async function openBuyList[\s\S]*?planImmediateProductOpenings\(settings, retailer\)[\s\S]*?Promise\.all\(plan\.ready\.map/);
+});
+
+test("arming Autopilot launches the due mission sweep automatically", () => {
+  const source = fs.readFileSync(path.join(__dirname, "..", "src", "renderer.js"), "utf8");
+  assert.match(source, /autopilotToggle[\s\S]*?saveSettings\(\{ \.\.\.saved, automationEnabled: true \}\)[\s\S]*?openBuyList\(\)/);
+  assert.match(source, /waiting for[\s\S]*?calendar time/);
 });

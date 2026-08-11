@@ -6,6 +6,7 @@ const {
   SCHEDULE_GRACE_MS,
   evaluateProductSchedules,
   evaluateSchedule,
+  planImmediateProductOpenings,
   productScheduleKey,
   scheduleKey
 } = require("../lib/schedule");
@@ -68,4 +69,26 @@ test("multiple product schedules act independently", () => {
   const actions = evaluateProductSchedules(products, {}, 1_000_010);
   assert.equal(actions.length, 1);
   assert.equal(actions[0].productId, "target:1");
+});
+
+test("immediate mission sweeps defer every calendar-owned product", () => {
+  const config = {
+    scheduledOpenEnabled: true,
+    scheduledOpenAt: new Date(9_000_000).toISOString(),
+    scheduledRetailer: "walmart",
+    products: [
+      { id: "target:ready", retailer: "target", enabled: true, openAt: "" },
+      { id: "target:scheduled", retailer: "target", enabled: true, openAt: new Date(8_000_000).toISOString() },
+      { id: "walmart:global", retailer: "walmart", enabled: true, openAt: "" },
+      { id: "amazon:off", retailer: "amazon", enabled: false, openAt: "" }
+    ]
+  };
+
+  const all = planImmediateProductOpenings(config);
+  assert.deepEqual(all.ready.map((product) => product.id), ["target:ready"]);
+  assert.deepEqual(all.scheduled.map((product) => product.id), ["target:scheduled", "walmart:global"]);
+  assert.deepEqual(
+    planImmediateProductOpenings(config, "target").scheduled.map((product) => product.id),
+    ["target:scheduled"]
+  );
 });

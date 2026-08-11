@@ -764,6 +764,19 @@ async function completeProduct(productId) {
   });
 }
 
+async function releaseProduct(productId, ownerId) {
+  const config = await discoverConfig(true);
+  if (!config) return { ok: false, reason: "desktop-not-found", released: false };
+  const product = config.products.find((candidate) => candidate.id === productId);
+  if (!product) return { ok: false, reason: "product-disabled", released: false };
+  return withAutomationStateLock(async () => {
+    const state = await readAutomationState(config);
+    const result = AutomationState.release(state, product, ownerId);
+    await writeAutomationState(state);
+    return result;
+  });
+}
+
 async function recordProductAttempt(productId) {
   const config = await discoverConfig(true);
   if (!automationActive(config)) return { ok: false, reason: "disarmed" };
@@ -852,6 +865,11 @@ async function handleMessage(message, sender) {
       return getProductState(String(message.productId || ""));
     case "CART_CONFIRM_COMPLETE_PRODUCT":
       return completeProduct(String(message.productId || ""));
+    case "CART_CONFIRM_RELEASE_PRODUCT":
+      return releaseProduct(
+        String(message.productId || ""),
+        `tab:${sender?.tab?.id ?? "unknown"}`
+      );
     case "CART_CONFIRM_RECORD_ATTEMPT":
       return recordProductAttempt(String(message.productId || ""));
     case "CART_CONFIRM_RESERVE_STORE_ACTION":

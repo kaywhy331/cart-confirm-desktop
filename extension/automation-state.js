@@ -96,6 +96,25 @@
     return { ok: true, attempt: record.attempts };
   }
 
+  // A blocked or retrying pre-submit workflow must not starve the rest of the
+  // store's missions for the full lock TTL. Durable submit intent remains a
+  // hard boundary: once submission may have happened, no automatic release is
+  // allowed until explicit failure or confirmation resolves it.
+  function release(state, product, ownerId) {
+    const record = recordFor(state, product.id);
+    if (["intent", "uncertain"].includes(record.submission?.phase)) {
+      return { ok: false, reason: "submission-uncertain", released: false };
+    }
+    let released = false;
+    for (const [key, lock] of Object.entries(state.locks)) {
+      if (lock?.productId === product.id && lock.ownerId === ownerId) {
+        delete state.locks[key];
+        released = true;
+      }
+    }
+    return { ok: true, released };
+  }
+
   function saveProof(state, product, input, now = Date.now()) {
     const source = input?.source === "cart" ? "cart" : "product";
     const record = recordFor(state, product.id);
@@ -211,6 +230,7 @@
     normalizeState,
     productState,
     recordAttempt,
+    release,
     saveProof
   });
 

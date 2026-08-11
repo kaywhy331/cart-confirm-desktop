@@ -75,6 +75,7 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   const { window } = dom;
   let pushUpdate = null;
   let openProductCalls = 0;
+  let openBuyListCalls = 0;
   let testEventCalls = 0;
   const savedSettingsInputs = [];
   const copiedAffiliateUrls = [];
@@ -85,13 +86,22 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
     getSnapshot: async () => snapshotFixture(),
     saveSettings: async (input) => {
       savedSettingsInputs.push(input);
-      return snapshotFixture();
+      const next = snapshotFixture();
+      next.settings = {
+        ...next.settings,
+        ...input,
+        monitoringPaused: input.automationEnabled ? false : input.monitoringPaused
+      };
+      return next;
     },
     openProduct: async () => {
       openProductCalls += 1;
       return { productId: "target:95298172", via: "companion-tab" };
     },
-    openBuyList: async () => ({ count: 1, reused: 1, deduped: 0, armed: false }),
+    openBuyList: async () => {
+      openBuyListCalls += 1;
+      return { count: 1, reused: 1, deduped: 0, scheduled: 0, armed: true };
+    },
     openCart: async () => "",
     openOrders: async () => "",
     copyAffiliateLink: async (input) => {
@@ -109,7 +119,7 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
     stopAll: async () => snapshotFixture(),
     testEvent: async () => {
       testEventCalls += 1;
-      return { productId: "target:95298172", via: "companion-tab" };
+      return { count: 1, reused: 1, deduped: 0, armed: false };
     },
     onUpdate: (callback) => {
       pushUpdate = callback;
@@ -132,10 +142,20 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   assert.match(doc.getElementById("worstCase").textContent, /\$40/);
   assert.equal(doc.getElementById("alarmBar").hidden, true);
   assert.equal(window.getComputedStyle(doc.getElementById("alarmBar")).display, "none");
+  for (const element of [
+    doc.querySelector(".missions-column"),
+    doc.querySelector(".monitor-column"),
+    doc.getElementById("missionsPanel"),
+    card
+  ]) {
+    assert.equal(window.getComputedStyle(element).minWidth, "0", "dashboard cards must shrink inside their grid track");
+  }
+  assert.equal(window.getComputedStyle(card).maxWidth, "100%");
   assert.ok(
     doc.getElementById("testButton").closest(".topbar-controls"),
     "Test lives in the header next to Autopilot"
   );
+  assert.match(doc.getElementById("testButton").textContent, /Test all/);
 
   // Discord stays out of the dashboard until requested, then opens as the
   // bottom card and shares the Missions/Activity minimize behavior.
@@ -169,9 +189,30 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   }
 
   doc.getElementById("testButton").click();
+  doc.getElementById("testButton").click();
+  assert.equal(doc.getElementById("testButton").disabled, true);
+  assert.equal(doc.getElementById("openAllButton").disabled, true);
   await new Promise((resolve) => setTimeout(resolve, 10));
-  assert.equal(testEventCalls, 1);
-  assert.equal(openProductCalls, 0, "the backend owns Test rotation and opening as one atomic action");
+  assert.equal(testEventCalls, 1, "an overlapping Test all click must not enqueue another sweep");
+  assert.equal(openProductCalls, 0, "the backend owns the paced all-mission Test run as one atomic action");
+  assert.match(doc.getElementById("message").textContent, /Test started for 1 enabled mission/);
+  assert.match(doc.getElementById("message").textContent, /nothing will be added/);
+  assert.equal(doc.getElementById("testButton").disabled, false);
+  assert.equal(doc.getElementById("openAllButton").disabled, false);
+
+  // Arming launches every due mission in the same action; it no longer waits
+  // for a separate Open all click.
+  doc.getElementById("autopilotToggle").click();
+  assert.equal(doc.getElementById("autopilotToggle").disabled, true);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(openBuyListCalls, 1);
+  assert.equal(savedSettingsInputs.at(-1).automationEnabled, true);
+  assert.match(doc.getElementById("message").textContent, /Autopilot ON/);
+  assert.match(doc.getElementById("message").textContent, /1 due mission page opened/);
+  assert.equal(doc.getElementById("autopilotToggle").disabled, false);
+  doc.getElementById("autopilotToggle").click();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(openBuyListCalls, 1, "turning Autopilot off must not launch another sweep");
 
   // Edit flow: inline editor with values, cancel restores the view card.
   card.querySelector(".mission-edit").click();
@@ -182,6 +223,20 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   assert.equal(editCard.querySelector("[data-field='affiliateUrl']"), null);
   assert.equal(editCard.querySelector(".howl-resolve"), null);
   assert.equal(typeof window.cartAssist.resolveHowlLink, "undefined");
+  const settingsBeforeUnsafeCheckout = savedSettingsInputs.length;
+  const actionSelect = editCard.querySelector("[data-field='action']");
+  const fulfillmentSelect = editCard.querySelector("[data-field='fulfillmentMode']");
+  actionSelect.value = "checkout";
+  actionSelect.dispatchEvent(new window.Event("change", { bubbles: true }));
+  assert.equal(editCard.querySelector(".advanced-fields").open, true);
+  assert.match(fulfillmentSelect.validationMessage, /Choose Shipping/);
+  editCard.querySelector(".mission-done").click();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(savedSettingsInputs.length, settingsBeforeUnsafeCheckout, "unsafe auto-buy fulfillment must fail in the editor");
+  assert.ok(doc.querySelector(".mission-edit-card"));
+  actionSelect.value = "cart";
+  actionSelect.dispatchEvent(new window.Event("change", { bubbles: true }));
+  assert.equal(fulfillmentSelect.validationMessage, "");
   editCard.querySelector(".mission-cancel").click();
 
   // Backend-provisioned campaign links expose a one-click copy action without

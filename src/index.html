@@ -33,7 +33,7 @@
           <span class="autopilot-label">Autopilot</span>
           <span class="autopilot-state" id="autopilotState">OFF</span>
         </button>
-        <button class="button secondary" id="testButton" type="button" title="Cycles through enabled missions while Autopilot is off; nothing is added">Test next (no buying)</button>
+        <button class="button secondary" id="testButton" type="button" title="Checks every enabled mission that does not have a calendar time; nothing is added">Test all (no buying)</button>
         <button class="button danger" id="disarmButton" type="button" title="Autopilot off, monitoring paused, queued openings cancelled, scheduled times cleared">Stop everything</button>
       </div>
     </header>
@@ -78,7 +78,7 @@
           <div class="panel-heading">
             <h2>Missions</h2>
             <div class="action-row">
-              <button class="button ghost compact" id="openAllButton" type="button">Open all enabled</button>
+              <button class="button ghost compact" id="openAllButton" type="button">Open all due</button>
               <button class="button primary compact" id="newMissionButton" type="button">+ New mission</button>
               <button class="button ghost compact panel-toggle" type="button" aria-controls="missionsPanelBody" aria-expanded="true">Minimize</button>
             </div>
@@ -316,7 +316,7 @@
           <label class="field">
             <span>Required fulfillment</span>
             <select data-field="fulfillmentMode">
-              <option value="manual">Confirm manually</option>
+              <option value="manual">Confirm manually (not available for auto-buy)</option>
               <option value="shipping">Shipping / delivery</option>
               <option value="pickup">Store pickup</option>
             </select>
