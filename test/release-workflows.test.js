@@ -17,8 +17,18 @@ test("the stable release lane remains signed and tag-gated", () => {
   assert.match(signed, /verification\.verified/);
   assert.match(signed, /WINDOWS_CERTIFICATE/);
   assert.match(signed, /WINDOWS_CERTIFICATE_PASSWORD/);
+  assert.match(signed, /IsNullOrWhiteSpace\(\$env:CSC_LINK\)/);
+  assert.match(signed, /IsNullOrWhiteSpace\(\$env:CSC_KEY_PASSWORD\)/);
   assert.match(signed, /Get-AuthenticodeSignature/);
   assert.match(signed, /Status -ne "Valid"/);
+  assert.match(signed, /Expected exactly two checksum entries/);
+  assert.match(signed, /Malformed checksum entry/);
+  assert.match(signed, /Duplicate checksum entry/);
+  assert.match(signed, /Checksum names an unexpected artifact/);
+  assert.match(signed, /Get-ChildItem dist -Filter \*\.exe \| Sort-Object Name/);
+  assert.match(signed, /Resolve-Path dist\/SHA256SUMS\.txt/);
+  assert.match(signed, /& gh @arguments/);
+  assert.doesNotMatch(signed, /dist\/\*\.exe/);
   assert.doesNotMatch(signed, /unsigned-v/);
 });
 

@@ -36,11 +36,14 @@ jobs:
           if (-not $tag.verification.verified) {
             throw "GitHub did not verify the release tag signature: $($tag.verification.reason)."
           }
-      - name: Require the Windows signing certificate
+      - name: Require the Windows signing credentials
         shell: pwsh
         run: |
           if ([string]::IsNullOrWhiteSpace($env:CSC_LINK)) {
             throw "WINDOWS_CERTIFICATE must contain a base64 PFX or secure certificate URL."
+          }
+          if ([string]::IsNullOrWhiteSpace($env:CSC_KEY_PASSWORD)) {
+            throw "WINDOWS_CERTIFICATE_PASSWORD must contain the PFX password."
           }
       - run: npm ci --no-fund
       - run: npm run verify
@@ -59,13 +62,42 @@ jobs:
               throw "$($artifact.Name) has invalid Authenticode status: $($signature.Status)."
             }
           }
-          Get-Content dist/SHA256SUMS.txt | ForEach-Object {
-            $parts = $_ -split '\s+', 2
-            $actual = (Get-FileHash (Join-Path dist $parts[1]) -Algorithm SHA256).Hash.ToLowerInvariant()
-            if ($actual -ne $parts[0]) { throw "Checksum mismatch for $($parts[1])." }
+          $checksums = @(Get-Content dist/SHA256SUMS.txt)
+          if ($checksums.Count -ne 2) {
+            throw "Expected exactly two checksum entries, found $($checksums.Count)."
+          }
+          $seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+          foreach ($line in $checksums) {
+            if ($line -notmatch '^(?<hash>[0-9a-f]{64})\s{2}(?<name>[^\\/]+\.exe)$') {
+              throw "Malformed checksum entry: $line"
+            }
+            $expectedName = $Matches.name
+            if (-not $seen.Add($expectedName)) {
+              throw "Duplicate checksum entry for $expectedName."
+            }
+            $artifact = $artifacts | Where-Object Name -CEQ $expectedName
+            if ($null -eq $artifact) {
+              throw "Checksum names an unexpected artifact: $expectedName"
+            }
+            $actual = (Get-FileHash $artifact.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($actual -ne $Matches.hash) {
+              throw "Checksum mismatch for $($artifact.Name)."
+            }
           }
       - name: Create GitHub release
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create $env:GITHUB_REF_NAME dist/*.exe dist/SHA256SUMS.txt --verify-tag --generate-notes
+        run: |
+          $assets = @(Get-ChildItem dist -Filter *.exe | Sort-Object Name | ForEach-Object FullName)
+          $assets += (Resolve-Path dist/SHA256SUMS.txt).Path
+          $arguments = @(
+            "release", "create", $env:GITHUB_REF_NAME,
+            "--repo", $env:GITHUB_REPOSITORY,
+            "--verify-tag",
+            "--generate-notes"
+          ) + $assets
+          & gh @arguments
+          if ($LASTEXITCODE -ne 0) {
+            throw "GitHub stable release publication failed."
+          }
