@@ -7,6 +7,7 @@ const path = require("node:path");
 const { JSDOM } = require("jsdom");
 
 const html = fs.readFileSync(path.join(__dirname, "..", "src", "index.html"), "utf8");
+const configProfilesSource = fs.readFileSync(path.join(__dirname, "..", "lib", "config-profiles.js"), "utf8");
 const rendererSource = fs.readFileSync(path.join(__dirname, "..", "src", "renderer.js"), "utf8");
 const stylesSource = fs.readFileSync(path.join(__dirname, "..", "src", "styles.css"), "utf8");
 
@@ -28,6 +29,7 @@ function snapshotFixture() {
         fulfillmentMode: "manual",
         signalAutoOpen: true,
         signalEntry: "product",
+        executionMode: "watcher",
         enabled: true
       }],
       automationEnabled: false,
@@ -35,14 +37,19 @@ function snapshotFixture() {
       automationRunId: "",
       fastMode: true,
       retryIntervalSeconds: 15,
+      eligibilityRefreshIntervalSeconds: 2,
       storeNavigationIntervalSeconds: 20,
       overloadCooldownSeconds: 300,
+      watcherIntervalSeconds: 60,
+      blitzRetryDelayMs: 750,
+      blitzWindowSeconds: 20,
       scheduledOpenEnabled: false,
       scheduledOpenAt: "",
       scheduledRetailer: "target",
       discordEnabled: false,
       discordChannelId: "",
       discordAutoOpen: true,
+      configurationProfiles: [],
       firstPartyOnly: true
     },
     status: {
@@ -55,6 +62,7 @@ function snapshotFixture() {
     productStatuses: {},
     events: [],
     signals: [],
+    catalog: { version: 1, activeSearch: null, items: [] },
     discord: {
       enabled: false,
       configured: false,
@@ -75,8 +83,14 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   const { window } = dom;
   let pushUpdate = null;
   let openProductCalls = 0;
+  let openBuyListCalls = 0;
+  const openBuyListInputs = [];
   let testEventCalls = 0;
   const savedSettingsInputs = [];
+  const bulkImportInputs = [];
+  const catalogSearchInputs = [];
+  const catalogAddInputs = [];
+  let catalogClearCalls = 0;
   const copiedAffiliateUrls = [];
   const style = window.document.createElement("style");
   style.textContent = stylesSource;
@@ -85,13 +99,118 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
     getSnapshot: async () => snapshotFixture(),
     saveSettings: async (input) => {
       savedSettingsInputs.push(input);
+      const next = snapshotFixture();
+      next.settings = {
+        ...next.settings,
+        ...input,
+        monitoringPaused: input.automationEnabled ? false : input.monitoringPaused
+      };
+      return next;
+    },
+    bulkImportMissions: async (input) => {
+      bulkImportInputs.push(input);
+      const next = snapshotFixture();
+      next.settings.products = [
+        {
+          ...next.settings.products[0],
+          action: "watch",
+          enabled: false,
+          maxPrice: 0,
+          title: "Imported Target Item"
+        },
+        {
+          ...next.settings.products[0],
+          id: "walmart:95163305",
+          retailer: "walmart",
+          productUrl: "https://www.walmart.com/ip/95163305",
+          sku: "95163305",
+          action: "watch",
+          enabled: false,
+          maxPrice: 0,
+          title: "Imported Walmart Item"
+        }
+      ];
+      return {
+        snapshot: next,
+        summary: { candidates: 2, imported: 2, duplicates: 0, invalid: 0, overCapacity: 0 },
+        issues: []
+      };
+    },
+    searchCatalog: async (input) => {
+      catalogSearchInputs.push(input);
+      const next = snapshotFixture();
+      next.catalog = {
+        version: 1,
+        activeSearch: {
+          id: "catalog-search-1",
+          query: input.query,
+          retailers: input.retailers,
+          filters: { includeWords: [], excludeWords: [], maxPrice: null },
+          startedAt: new Date().toISOString(),
+          expiresAt: new Date(Date.now() + 600_000).toISOString(),
+          status: { amazon: { state: "captured", count: 1, updatedAt: new Date().toISOString() } }
+        },
+        items: [{
+          id: "amazon:B0CAT12345",
+          retailer: "amazon",
+          sku: "B0CAT12345",
+          title: "Pokémon Catalog Box",
+          productUrl: "https://www.amazon.com/dp/B0CAT12345",
+          price: 44.99,
+          observedAt: new Date().toISOString(),
+          searchId: "catalog-search-1",
+          query: input.query
+        }]
+      };
+      return { snapshot: next, openings: [{ retailer: "amazon", via: "chrome" }] };
+    },
+    addCatalogMissions: async (selectedIds) => {
+      catalogAddInputs.push(selectedIds);
+      const next = snapshotFixture();
+      next.settings.products.push({
+        ...next.settings.products[0],
+        id: "amazon:B0CAT12345",
+        retailer: "amazon",
+        sku: "B0CAT12345",
+        title: "Pokémon Catalog Box",
+        productUrl: "https://www.amazon.com/dp/B0CAT12345",
+        action: "watch",
+        maxPrice: 0,
+        maxOrderTotal: 0,
+        enabled: false
+      });
+      next.catalog = {
+        version: 1,
+        activeSearch: null,
+        items: [{
+          id: "amazon:B0CAT12345",
+          retailer: "amazon",
+          sku: "B0CAT12345",
+          title: "Pokémon Catalog Box",
+          productUrl: "https://www.amazon.com/dp/B0CAT12345",
+          price: 44.99,
+          observedAt: new Date().toISOString(),
+          searchId: "catalog-search-1",
+          query: "pokemon"
+        }]
+      };
+      return { snapshot: next, summary: { selected: 1, imported: 1, duplicates: 0, missing: 0, overCapacity: 0 } };
+    },
+    clearCatalog: async () => {
+      catalogClearCalls += 1;
       return snapshotFixture();
     },
     openProduct: async () => {
       openProductCalls += 1;
       return { productId: "target:95298172", via: "companion-tab" };
     },
-    openBuyList: async () => ({ count: 1, reused: 1, deduped: 0, armed: false }),
+    openBuyList: async (options = {}) => {
+      openBuyListCalls += 1;
+      openBuyListInputs.push(options);
+      return options.backgroundFirst
+        ? { count: 0, background: 1, reused: 0, deduped: 0, scheduled: 0, armed: true }
+        : { count: 1, background: 0, reused: 1, deduped: 0, scheduled: 0, armed: false };
+    },
     openCart: async () => "",
     openOrders: async () => "",
     copyAffiliateLink: async (input) => {
@@ -109,7 +228,7 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
     stopAll: async () => snapshotFixture(),
     testEvent: async () => {
       testEventCalls += 1;
-      return { productId: "target:95298172", via: "companion-tab" };
+      return { count: 1, reused: 1, deduped: 0, armed: false };
     },
     onUpdate: (callback) => {
       pushUpdate = callback;
@@ -117,6 +236,7 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
     }
   };
 
+  window.eval(configProfilesSource);
   window.eval(rendererSource);
   await new Promise((resolve) => setTimeout(resolve, 20));
   const doc = window.document;
@@ -132,14 +252,137 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   assert.match(doc.getElementById("worstCase").textContent, /\$40/);
   assert.equal(doc.getElementById("alarmBar").hidden, true);
   assert.equal(window.getComputedStyle(doc.getElementById("alarmBar")).display, "none");
+  for (const element of [
+    doc.querySelector(".missions-column"),
+    doc.querySelector(".monitor-column"),
+    doc.getElementById("missionsPanel"),
+    card
+  ]) {
+    assert.equal(window.getComputedStyle(element).minWidth, "0", "dashboard cards must shrink inside their grid track");
+  }
+  assert.equal(window.getComputedStyle(card).maxWidth, "100%");
   assert.ok(
     doc.getElementById("testButton").closest(".topbar-controls"),
     "Test lives in the header next to Autopilot"
   );
-  doc.getElementById("testButton").click();
+  assert.match(doc.getElementById("testButton").textContent, /Test all/);
+  assert.equal(doc.getElementById("eligibilityRefreshIntervalSeconds").value, "2");
+  assert.equal(doc.getElementById("watcherIntervalSeconds").value, "60");
+  assert.match(card.querySelector("[data-view='sub']").textContent, /continuous watcher/);
+
+  doc.getElementById("watcherIntervalSeconds").value = "90";
+  doc.getElementById("watcherIntervalSeconds").dispatchEvent(new window.Event("change", { bubbles: true }));
+  await new Promise((resolve) => setTimeout(resolve, 650));
+  assert.equal(savedSettingsInputs.at(-1).watcherIntervalSeconds, 90);
+
+  // Ready-made setups explain and apply only global timing/media settings.
+  const profileSelect = doc.getElementById("configurationProfileSelect");
+  assert.deepEqual([...profileSelect.options].map((option) => option.textContent), [
+    "Recommended",
+    "Low traffic",
+    "Scheduled drop"
+  ]);
+  assert.match(doc.querySelector(".settings-explainer").textContent, /never change products, price caps, quantities, or purchase actions/i);
+  profileSelect.value = "built-in:low-traffic";
+  profileSelect.dispatchEvent(new window.Event("change", { bubbles: true }));
+  doc.getElementById("applyConfigurationProfileButton").click();
   await new Promise((resolve) => setTimeout(resolve, 10));
-  assert.equal(testEventCalls, 1);
-  assert.equal(openProductCalls, 0, "the backend owns Test rotation and opening as one atomic action");
+  assert.equal(savedSettingsInputs.at(-1).watcherIntervalSeconds, 300);
+  assert.equal(savedSettingsInputs.at(-1).storeNavigationIntervalSeconds, 60);
+  assert.equal(savedSettingsInputs.at(-1).products[0].maxPrice, 40);
+
+  // A named custom setup persists its allowlisted numbers, can be applied,
+  // and can be deleted without changing the currently applied values.
+  doc.getElementById("watcherIntervalSeconds").value = "90";
+  doc.getElementById("configurationProfileName").value = "Friday night drop";
+  doc.getElementById("saveConfigurationProfileButton").click();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  const savedProfile = savedSettingsInputs.at(-1).configurationProfiles[0];
+  assert.equal(savedProfile.name, "Friday night drop");
+  assert.equal(savedProfile.configuration.watcherIntervalSeconds, 90);
+  assert.equal("products" in savedProfile.configuration, false);
+  assert.equal(profileSelect.value, savedProfile.id);
+  assert.equal(doc.getElementById("deleteConfigurationProfileButton").hidden, false);
+
+  doc.getElementById("watcherIntervalSeconds").value = "120";
+  doc.getElementById("applyConfigurationProfileButton").click();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(savedSettingsInputs.at(-1).watcherIntervalSeconds, 90);
+
+  window.confirm = () => true;
+  doc.getElementById("deleteConfigurationProfileButton").click();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(savedSettingsInputs.at(-1).configurationProfiles.length, 0);
+  assert.equal(profileSelect.options.length, 3);
+  assert.equal(doc.getElementById("deleteConfigurationProfileButton").hidden, true);
+
+  // Discord stays out of the dashboard until requested, then opens as the
+  // bottom card and shares the Missions/Activity minimize behavior.
+  const signalPanel = doc.getElementById("signalPanel");
+  const showDiscordButton = doc.getElementById("showDiscordButton");
+  assert.equal(signalPanel.hidden, true);
+  assert.equal(showDiscordButton.getAttribute("aria-expanded"), "false");
+  assert.equal(signalPanel.closest(".monitor-column").lastElementChild, signalPanel);
+  showDiscordButton.click();
+  assert.equal(doc.getElementById("discordLauncher").hidden, true);
+  assert.equal(signalPanel.hidden, false);
+  assert.equal(showDiscordButton.getAttribute("aria-expanded"), "true");
+
+  const discordPanelToggle = signalPanel.querySelector(".panel-toggle");
+  discordPanelToggle.click();
+  assert.equal(signalPanel.classList.contains("is-collapsed"), true);
+  assert.equal(discordPanelToggle.getAttribute("aria-expanded"), "false");
+  assert.equal(doc.getElementById("signalPanelBody").hidden, true);
+  assert.equal(discordPanelToggle.textContent, "Expand");
+  discordPanelToggle.click();
+  assert.equal(signalPanel.classList.contains("is-collapsed"), false);
+  assert.equal(doc.getElementById("signalPanelBody").hidden, false);
+
+  for (const panelId of ["missionsPanel", "activityPanel"]) {
+    const panel = doc.getElementById(panelId);
+    const toggle = panel.querySelector(".panel-toggle");
+    toggle.click();
+    assert.equal(panel.classList.contains("is-collapsed"), true);
+    toggle.click();
+    assert.equal(panel.classList.contains("is-collapsed"), false);
+  }
+
+  doc.getElementById("testButton").click();
+  doc.getElementById("testButton").click();
+  assert.equal(doc.getElementById("testButton").disabled, true);
+  assert.equal(doc.getElementById("openAllButton").disabled, true);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(testEventCalls, 1, "an overlapping Test all click must not enqueue another sweep");
+  assert.equal(openProductCalls, 0, "the backend owns the paced all-mission Test run as one atomic action");
+  assert.match(doc.getElementById("message").textContent, /Test started for 1 enabled mission/);
+  assert.match(doc.getElementById("message").textContent, /nothing will be added/);
+  assert.equal(doc.getElementById("testButton").disabled, false);
+  assert.equal(doc.getElementById("openAllButton").disabled, false);
+
+  // Arming starts Target/Walmart background-first. It does not need a separate
+  // Open all click or keep a product tab open while waiting for likely stock.
+  doc.getElementById("autopilotToggle").click();
+  assert.equal(doc.getElementById("autopilotToggle").disabled, true);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(openBuyListCalls, 1);
+  assert.equal(openBuyListInputs[0]?.backgroundFirst, true);
+  assert.equal(savedSettingsInputs.at(-1).automationEnabled, true);
+  assert.match(doc.getElementById("message").textContent, /Autopilot ON/);
+  assert.match(doc.getElementById("message").textContent, /1 Target\/Walmart watcher armed background-first/);
+  assert.match(doc.getElementById("message").textContent, /likely stock signal opens Chrome/);
+  assert.equal(doc.getElementById("autopilotToggle").disabled, false);
+  doc.getElementById("autopilotToggle").click();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(openBuyListCalls, 1, "turning Autopilot off must not launch another sweep");
+
+  doc.getElementById("openAllButton").click();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(openBuyListCalls, 2);
+  assert.equal(
+    Object.keys(openBuyListInputs[1]).length,
+    0,
+    "manual Open all must keep opening due browser pages immediately"
+  );
 
   // Edit flow: inline editor with values, cancel restores the view card.
   card.querySelector(".mission-edit").click();
@@ -150,6 +393,20 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   assert.equal(editCard.querySelector("[data-field='affiliateUrl']"), null);
   assert.equal(editCard.querySelector(".howl-resolve"), null);
   assert.equal(typeof window.cartAssist.resolveHowlLink, "undefined");
+  const settingsBeforeUnsafeCheckout = savedSettingsInputs.length;
+  const actionSelect = editCard.querySelector("[data-field='action']");
+  const fulfillmentSelect = editCard.querySelector("[data-field='fulfillmentMode']");
+  actionSelect.value = "checkout";
+  actionSelect.dispatchEvent(new window.Event("change", { bubbles: true }));
+  assert.equal(editCard.querySelector(".advanced-fields").open, true);
+  assert.match(fulfillmentSelect.validationMessage, /Choose Shipping/);
+  editCard.querySelector(".mission-done").click();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(savedSettingsInputs.length, settingsBeforeUnsafeCheckout, "unsafe auto-buy fulfillment must fail in the editor");
+  assert.ok(doc.querySelector(".mission-edit-card"));
+  actionSelect.value = "cart";
+  actionSelect.dispatchEvent(new window.Event("change", { bubbles: true }));
+  assert.equal(fulfillmentSelect.validationMessage, "");
   editCard.querySelector(".mission-cancel").click();
 
   // Backend-provisioned campaign links expose a one-click copy action without
@@ -304,6 +561,12 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   assert.match(doc.getElementById("scheduleNext").textContent, /Next: Booster Box in/);
   assert.equal(doc.getElementById("scheduleCoverage").textContent, "1/1 enabled");
   assert.equal(doc.getElementById("enableScheduledButton").hidden, true);
+  assert.match(doc.querySelector("[data-view='sub']").textContent, /calendar-gated → blitz/);
+
+  const firedBlitz = snapshotFixture();
+  firedBlitz.settings.products[0].executionMode = "blitz";
+  pushUpdate(firedBlitz);
+  assert.match(doc.querySelector("[data-view='sub']").textContent, /calendar blitz/);
 
   const uncovered = snapshotFixture();
   uncovered.settings.products[0].openAt = new Date(Date.now() + 3_600_000).toISOString();
@@ -367,6 +630,47 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   newEditor.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
   assert.equal(doc.querySelector(".mission-edit-card"), null);
   assert.ok(doc.querySelector(".mission-empty"), "empty CTA returns after cancel");
+
+  // Bulk import accepts mixed retailer URLs and renders the backend's safe,
+  // disabled watch missions without silently enabling a $0 cap.
+  doc.getElementById("bulkImportButton").click();
+  const bulkDialog = doc.getElementById("bulkImportDialog");
+  assert.equal(bulkDialog.hasAttribute("open"), true);
+  doc.getElementById("bulkImportText").value = [
+    "https://www.target.com/p/item/-/A-1011209279",
+    "https://www.walmart.com/ip/item/95163305"
+  ].join("\n");
+  doc.getElementById("bulkImportSubmitButton").click();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(bulkImportInputs.length, 1);
+  assert.equal(bulkDialog.hasAttribute("open"), false);
+  assert.equal(doc.querySelectorAll(".mission-card").length, 2);
+  assert.equal([...doc.querySelectorAll("[data-view='enabled']")].every((input) => !input.checked), true);
+  assert.match(doc.getElementById("message").textContent, /2 imported Off for review/);
+
+  // A keyword search opens only selected official retailer searches, renders
+  // captured listing data, and imports selections as inert missions.
+  doc.getElementById("catalogQuery").value = "pokemon";
+  doc.getElementById("catalogTarget").checked = false;
+  doc.getElementById("catalogWalmart").checked = false;
+  doc.getElementById("catalogAmazon").checked = true;
+  doc.getElementById("catalogSearchForm").dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true }));
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.deepEqual(Array.from(catalogSearchInputs[0].retailers), ["amazon"]);
+  assert.equal(doc.querySelectorAll(".catalog-card").length, 1);
+  assert.match(doc.querySelector(".catalog-card").textContent, /Pokémon Catalog Box/);
+  assert.match(doc.querySelector(".catalog-card").textContent, /\$44\.99/);
+  assert.equal(doc.querySelector(".catalog-card input").checked, true);
+  doc.getElementById("catalogAddButton").click();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.deepEqual(Array.from(catalogAddInputs[0]), ["amazon:B0CAT12345"]);
+  assert.equal(doc.querySelectorAll(".mission-card").length, 2);
+  assert.equal([...doc.querySelectorAll(".mission-card")].at(-1).querySelector("[data-view='enabled']").checked, false);
+  assert.match(doc.getElementById("message").textContent, /Off, watch-only, and at a \$0 cap/);
+  doc.getElementById("catalogClearButton").click();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(catalogClearCalls, 1);
+  assert.equal(doc.querySelectorAll(".catalog-card").length, 0);
 
   window.close();
 });

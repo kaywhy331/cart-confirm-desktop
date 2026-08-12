@@ -1,5 +1,6 @@
 "use strict";
 
+const ConfigProfiles = globalThis.CartConfirmConfigProfiles;
 const elements = {
   autopilotToggle: document.getElementById("autopilotToggle"),
   autopilotState: document.getElementById("autopilotState"),
@@ -22,17 +23,50 @@ const elements = {
   missionViewTemplate: document.getElementById("missionViewTemplate"),
   missionEditTemplate: document.getElementById("missionEditTemplate"),
   newMissionButton: document.getElementById("newMissionButton"),
+  bulkImportButton: document.getElementById("bulkImportButton"),
+  bulkImportDialog: document.getElementById("bulkImportDialog"),
+  bulkImportText: document.getElementById("bulkImportText"),
+  bulkImportResult: document.getElementById("bulkImportResult"),
+  bulkImportSubmitButton: document.getElementById("bulkImportSubmitButton"),
+  bulkImportCancelButton: document.getElementById("bulkImportCancelButton"),
+  catalogSearchForm: document.getElementById("catalogSearchForm"),
+  catalogQuery: document.getElementById("catalogQuery"),
+  catalogTarget: document.getElementById("catalogTarget"),
+  catalogWalmart: document.getElementById("catalogWalmart"),
+  catalogAmazon: document.getElementById("catalogAmazon"),
+  catalogIncludeWords: document.getElementById("catalogIncludeWords"),
+  catalogExcludeWords: document.getElementById("catalogExcludeWords"),
+  catalogMaxPrice: document.getElementById("catalogMaxPrice"),
+  catalogSearchButton: document.getElementById("catalogSearchButton"),
+  catalogClearButton: document.getElementById("catalogClearButton"),
+  catalogSelectAllButton: document.getElementById("catalogSelectAllButton"),
+  catalogAddButton: document.getElementById("catalogAddButton"),
+  catalogStatus: document.getElementById("catalogStatus"),
+  catalogCount: document.getElementById("catalogCount"),
+  catalogList: document.getElementById("catalogList"),
   testButton: document.getElementById("testButton"),
   openAllButton: document.getElementById("openAllButton"),
   worstCase: document.getElementById("worstCase"),
   settingsBox: document.getElementById("settingsBox"),
+  configurationProfileSelect: document.getElementById("configurationProfileSelect"),
+  configurationProfileDescription: document.getElementById("configurationProfileDescription"),
+  configurationProfileName: document.getElementById("configurationProfileName"),
+  applyConfigurationProfileButton: document.getElementById("applyConfigurationProfileButton"),
+  saveConfigurationProfileButton: document.getElementById("saveConfigurationProfileButton"),
+  deleteConfigurationProfileButton: document.getElementById("deleteConfigurationProfileButton"),
   fastMode: document.getElementById("fastMode"),
+  watcherIntervalSeconds: document.getElementById("watcherIntervalSeconds"),
   retryIntervalSeconds: document.getElementById("retryIntervalSeconds"),
+  eligibilityRefreshIntervalSeconds: document.getElementById("eligibilityRefreshIntervalSeconds"),
+  blitzRetryDelayMs: document.getElementById("blitzRetryDelayMs"),
+  blitzWindowSeconds: document.getElementById("blitzWindowSeconds"),
   storeNavigationIntervalSeconds: document.getElementById("storeNavigationIntervalSeconds"),
   overloadCooldownSeconds: document.getElementById("overloadCooldownSeconds"),
   storeShortcut: document.getElementById("storeShortcut"),
   openCartButton: document.getElementById("openCartButton"),
   openOrdersButton: document.getElementById("openOrdersButton"),
+  discordLauncher: document.getElementById("discordLauncher"),
+  showDiscordButton: document.getElementById("showDiscordButton"),
   signalPanel: document.getElementById("signalPanel"),
   discordState: document.getElementById("discordState"),
   discordHint: document.getElementById("discordHint"),
@@ -74,10 +108,25 @@ const BLOCKING_REASONS = new Set([
   "total-unavailable",
   "traffic-overload",
   "traffic-budget-exhausted",
-  "attempt-budget-exhausted",
-  "run-expired",
   "unmatched-product"
 ]);
+
+function setPanelExpanded(toggle, expanded) {
+  const panel = toggle.closest(".collapsible-panel");
+  if (!panel) return;
+  const content = document.getElementById(toggle.getAttribute("aria-controls"));
+  panel.classList.toggle("is-collapsed", !expanded);
+  if (content) content.hidden = !expanded;
+  toggle.setAttribute("aria-expanded", String(expanded));
+  toggle.textContent = expanded ? "Minimize" : "Expand";
+}
+
+for (const toggle of document.querySelectorAll(".panel-toggle")) {
+  setPanelExpanded(toggle, toggle.getAttribute("aria-expanded") !== "false");
+  toggle.addEventListener("click", () => {
+    setPanelExpanded(toggle, toggle.getAttribute("aria-expanded") !== "true");
+  });
+}
 
 let currentSnapshot = null;
 let messageTimer = null;
@@ -87,7 +136,14 @@ let editCardNode = null;
 let resumeAutopilotAfterEdit = false;
 let awaySince = 0;
 let settingsSaveTimer = null;
+let selectedConfigurationProfileId = "built-in:recommended";
 let eventFilterProductId = null;
+let bulkImportInFlight = false;
+let catalogSearchInFlight = false;
+let catalogImportInFlight = false;
+let renderedCatalogSearchId = "";
+const catalogSelectedIds = new Set();
+const catalogSeenIds = new Set();
 // Persisted feed entries are history, not fresh alarm triggers. Only events
 // received after this renderer process starts may sound an alarm.
 let lastAlarmEventStamp = new Date().toISOString();
@@ -267,14 +323,78 @@ function copyAffiliateProduct(product) {
 
 // --- Saving ---
 
+function currentConfiguration() {
+  return ConfigProfiles.normalizeConfiguration({
+    fastMode: elements.fastMode.checked,
+    watcherIntervalSeconds: elements.watcherIntervalSeconds.value,
+    retryIntervalSeconds: elements.retryIntervalSeconds.value,
+    eligibilityRefreshIntervalSeconds: elements.eligibilityRefreshIntervalSeconds.value,
+    blitzRetryDelayMs: elements.blitzRetryDelayMs.value,
+    blitzWindowSeconds: elements.blitzWindowSeconds.value,
+    storeNavigationIntervalSeconds: elements.storeNavigationIntervalSeconds.value,
+    overloadCooldownSeconds: elements.overloadCooldownSeconds.value
+  });
+}
+
+function allConfigurationProfiles(settings = currentSnapshot?.settings) {
+  return [
+    ...ConfigProfiles.BUILT_IN_PROFILES,
+    ...(settings?.configurationProfiles || [])
+  ];
+}
+
+function selectedConfigurationProfile(settings = currentSnapshot?.settings) {
+  return allConfigurationProfiles(settings).find((profile) => profile.id === selectedConfigurationProfileId) || null;
+}
+
+function profileOptionGroup(label, profiles) {
+  const group = document.createElement("optgroup");
+  group.label = label;
+  for (const profile of profiles) {
+    const option = document.createElement("option");
+    option.value = profile.id;
+    option.textContent = profile.name;
+    group.append(option);
+  }
+  return group;
+}
+
+function renderConfigurationProfiles(settings) {
+  const customProfiles = settings.configurationProfiles || [];
+  const profiles = allConfigurationProfiles(settings);
+  if (!profiles.some((profile) => profile.id === selectedConfigurationProfileId)) {
+    selectedConfigurationProfileId = ConfigProfiles.BUILT_IN_PROFILES[0].id;
+  }
+  elements.configurationProfileSelect.replaceChildren(
+    profileOptionGroup("Ready-made setups", ConfigProfiles.BUILT_IN_PROFILES),
+    ...(customProfiles.length ? [profileOptionGroup("Your saved setups", customProfiles)] : [])
+  );
+  elements.configurationProfileSelect.value = selectedConfigurationProfileId;
+  const profile = selectedConfigurationProfile(settings);
+  const custom = profile?.id.startsWith("custom:");
+  elements.configurationProfileDescription.textContent = custom
+    ? "Your saved copy of these speed and traffic numbers. Select Use this setup to apply it."
+    : profile?.description || "";
+  if (document.activeElement !== elements.configurationProfileName) {
+    elements.configurationProfileName.value = custom ? profile.name : "";
+  }
+  elements.saveConfigurationProfileButton.textContent = custom ? "Update saved setup" : "Save current numbers";
+  elements.deleteConfigurationProfileButton.hidden = !custom;
+}
+
 function globalSettings(products) {
   return {
     products,
     automationEnabled: isArmed(),
     fastMode: elements.fastMode.checked,
+    watcherIntervalSeconds: Number(elements.watcherIntervalSeconds.value),
     retryIntervalSeconds: Number(elements.retryIntervalSeconds.value),
+    eligibilityRefreshIntervalSeconds: Number(elements.eligibilityRefreshIntervalSeconds.value),
+    blitzRetryDelayMs: Number(elements.blitzRetryDelayMs.value),
+    blitzWindowSeconds: Number(elements.blitzWindowSeconds.value),
     storeNavigationIntervalSeconds: Number(elements.storeNavigationIntervalSeconds.value),
     overloadCooldownSeconds: Number(elements.overloadCooldownSeconds.value),
+    configurationProfiles: currentSnapshot?.settings?.configurationProfiles || [],
     scheduledOpenEnabled: false,
     scheduledRetailer: currentSnapshot?.settings?.scheduledRetailer || "target",
     scheduledOpenAt: "",
@@ -387,6 +507,11 @@ function buildViewCard(product, status) {
   if (product.openAt) {
     subParts.push(`opens ${new Date(product.openAt).toLocaleString([], { dateStyle: "medium", timeStyle: "short" })}`);
   }
+  subParts.push(product.openAt
+    ? "calendar-gated → blitz"
+    : product.executionMode === "blitz"
+      ? "calendar blitz"
+      : "continuous watcher");
   if (product.alertLevel === "alarm") subParts.push("🔔 alarm");
   subParts.push(product.signalAutoOpen === false
     ? "signals record only"
@@ -496,6 +621,16 @@ function buildEditCard(product) {
     || product.signalAutoOpen === false
   ));
 
+  const validateFulfillmentSelection = () => {
+    const fulfillment = field(card, "fulfillmentMode");
+    const requiresExplicitMode = field(card, "action").value === "checkout";
+    fulfillment.setCustomValidity(requiresExplicitMode && fulfillment.value === "manual"
+      ? "Choose Shipping / delivery or Store pickup before enabling automatic order submission."
+      : "");
+    if (requiresExplicitMode && fulfillment.value === "manual") advanced.open = true;
+  };
+  validateFulfillmentSelection();
+
   field(card, "retailer").addEventListener("change", () => updateEditStore(card));
   field(card, "productUrl").addEventListener("change", () => {
     const url = field(card, "productUrl").value;
@@ -517,8 +652,10 @@ function buildEditCard(product) {
   });
   field(card, "action").addEventListener("change", () => {
     if (["review", "checkout"].includes(field(card, "action").value)) advanced.open = true;
+    validateFulfillmentSelection();
     updateSignalEntryOptions(card);
   });
+  field(card, "fulfillmentMode").addEventListener("change", validateFulfillmentSelection);
   card.querySelector(".mission-done").addEventListener("click", () => void finishEdit(card));
   const cancel = () => {
     editingId = null;
@@ -646,6 +783,306 @@ async function startEdit(product, seed = null) {
   editCardNode.querySelector("[data-field='productUrl']").focus();
 }
 
+function setBulkImportResult(text, kind = "") {
+  elements.bulkImportResult.textContent = text;
+  elements.bulkImportResult.className = `bulk-import-result ${kind}`.trim();
+}
+
+function closeBulkImportDialog() {
+  if (bulkImportInFlight) return;
+  if (typeof elements.bulkImportDialog.close === "function") elements.bulkImportDialog.close();
+  else elements.bulkImportDialog.removeAttribute("open");
+}
+
+function openBulkImportDialog() {
+  if (editingId) {
+    setMessage("Finish the open mission editor before importing URLs.", "error");
+    return;
+  }
+  elements.bulkImportText.value = "";
+  setBulkImportResult("");
+  if (typeof elements.bulkImportDialog.showModal === "function") elements.bulkImportDialog.showModal();
+  else elements.bulkImportDialog.setAttribute("open", "");
+  elements.bulkImportText.focus();
+}
+
+function bulkImportSummaryText(summary = {}) {
+  const parts = [];
+  if (summary.imported) parts.push(`${summary.imported} imported Off for review`);
+  if (summary.duplicates) parts.push(`${summary.duplicates} duplicate${summary.duplicates === 1 ? "" : "s"} skipped`);
+  if (summary.invalid) parts.push(`${summary.invalid} invalid line${summary.invalid === 1 ? "" : "s"}`);
+  if (summary.overCapacity) parts.push(`${summary.overCapacity} over the 50-mission limit`);
+  return parts.join(" · ") || "No product URLs were found.";
+}
+
+async function submitBulkImport() {
+  if (bulkImportInFlight) return;
+  const text = elements.bulkImportText.value.trim();
+  if (!text) {
+    setBulkImportResult("Paste at least one product URL.", "error");
+    elements.bulkImportText.focus();
+    return;
+  }
+
+  const actionStopEpoch = stopUiEpoch;
+  const wasArmed = isArmed();
+  bulkImportInFlight = true;
+  elements.bulkImportSubmitButton.disabled = true;
+  elements.bulkImportCancelButton.disabled = true;
+  setBulkImportResult("Validating and deduplicating URLs…");
+  try {
+    if (wasArmed) await pauseAutopilot();
+    const result = await window.cartAssist.bulkImportMissions(text);
+    render(result.snapshot);
+    const summaryText = bulkImportSummaryText(result.summary);
+    const issueText = (result.issues || []).map((issue) => `Line ${issue.line}: ${issue.reason}`).join(" ");
+    if (result.summary?.imported > 0) {
+      bulkImportInFlight = false;
+      closeBulkImportDialog();
+      if (wasArmed && actionStopEpoch === stopUiEpoch) await resumeAutopilot();
+      setMessage(`${summaryText}. Review each imported mission before enabling it.`, "success");
+      return;
+    }
+    setBulkImportResult(`${summaryText}${issueText ? ` ${issueText}` : ""}`, "error");
+    if (wasArmed && actionStopEpoch === stopUiEpoch) await resumeAutopilot();
+  } catch (error) {
+    setBulkImportResult(error.message || "The URL import failed.", "error");
+    if (wasArmed && actionStopEpoch === stopUiEpoch) {
+      try {
+        await resumeAutopilot();
+      } catch {
+        setMessage("Import failed and Autopilot could not be resumed. Review the header state.", "error");
+      }
+    }
+  } finally {
+    bulkImportInFlight = false;
+    elements.bulkImportSubmitButton.disabled = false;
+    elements.bulkImportCancelButton.disabled = false;
+  }
+}
+
+function catalogRetailerInputs() {
+  return [
+    ["target", elements.catalogTarget],
+    ["walmart", elements.catalogWalmart],
+    ["amazon", elements.catalogAmazon]
+  ];
+}
+
+function catalogSearchInput() {
+  return {
+    query: elements.catalogQuery.value.trim(),
+    retailers: catalogRetailerInputs().filter(([, input]) => input.checked).map(([retailer]) => retailer),
+    filters: {
+      includeWords: elements.catalogIncludeWords.value,
+      excludeWords: elements.catalogExcludeWords.value,
+      maxPrice: elements.catalogMaxPrice.value
+    }
+  };
+}
+
+function setCatalogFormFromSearch(search) {
+  if (!search) return;
+  elements.catalogQuery.value = search.query || "";
+  for (const [retailer, input] of catalogRetailerInputs()) {
+    input.checked = (search.retailers || []).includes(retailer);
+  }
+  elements.catalogIncludeWords.value = (search.filters?.includeWords || []).join(" ");
+  elements.catalogExcludeWords.value = (search.filters?.excludeWords || []).join(" ");
+  elements.catalogMaxPrice.value = search.filters?.maxPrice ?? "";
+}
+
+function catalogStatusText(catalog) {
+  const search = catalog?.activeSearch;
+  if (!search) return catalog?.items?.length
+    ? "Showing the locally saved results from the last search."
+    : "Enter a keyword to begin.";
+  if (new Date(search.expiresAt).getTime() <= Date.now()) {
+    return `“${search.query}” expired. Select Search / refresh to capture the pages again.`;
+  }
+  const stores = (search.retailers || []).map((retailer) => {
+    const entry = search.status?.[retailer] || {};
+    const label = STORE_LABELS[retailer] || retailer;
+    return entry.state === "captured"
+      ? `${label}: ${Number(entry.count) || 0} captured`
+      : `${label}: waiting for visible results`;
+  });
+  return `“${search.query}” · ${stores.join(" · ")}`;
+}
+
+function renderCatalog(catalog = {}) {
+  const search = catalog.activeSearch || null;
+  const searchId = String(search?.id || "");
+  if (searchId !== renderedCatalogSearchId) {
+    renderedCatalogSearchId = searchId;
+    catalogSelectedIds.clear();
+    catalogSeenIds.clear();
+    setCatalogFormFromSearch(search);
+  }
+
+  const items = Array.isArray(catalog.items) ? catalog.items : [];
+  const existingIds = new Set((currentSnapshot?.settings?.products || []).map((product) => product.id));
+  const currentIds = new Set(items.map((item) => item.id));
+  for (const id of [...catalogSelectedIds]) {
+    if (!currentIds.has(id) || existingIds.has(id)) catalogSelectedIds.delete(id);
+  }
+  for (const id of [...catalogSeenIds]) {
+    if (!currentIds.has(id)) catalogSeenIds.delete(id);
+  }
+  for (const item of items) {
+    if (!catalogSeenIds.has(item.id)) {
+      catalogSeenIds.add(item.id);
+      if (!existingIds.has(item.id)) catalogSelectedIds.add(item.id);
+    }
+  }
+
+  elements.catalogList.replaceChildren();
+  if (!items.length) {
+    const empty = document.createElement("div");
+    empty.className = "empty-state";
+    empty.textContent = search ? "Waiting for visible retailer result cards…" : "No catalog results yet.";
+    elements.catalogList.append(empty);
+  }
+  for (const item of items) {
+    const alreadyAdded = existingIds.has(item.id);
+    const card = document.createElement("article");
+    card.className = `catalog-card${alreadyAdded ? " already-added" : ""}`;
+    card.dataset.retailer = item.retailer;
+
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.checked = catalogSelectedIds.has(item.id) && !alreadyAdded;
+    checkbox.disabled = alreadyAdded || catalogImportInFlight;
+    checkbox.setAttribute("aria-label", `Select ${item.title}`);
+    checkbox.addEventListener("change", () => {
+      if (checkbox.checked) catalogSelectedIds.add(item.id);
+      else catalogSelectedIds.delete(item.id);
+      renderCatalog(currentSnapshot?.catalog || {});
+    });
+
+    const main = document.createElement("div");
+    main.className = "catalog-result-main";
+    const title = document.createElement("strong");
+    title.className = "catalog-result-title";
+    title.textContent = item.title;
+    const meta = document.createElement("div");
+    meta.className = "catalog-result-meta";
+    meta.textContent = `${STORE_LABELS[item.retailer] || item.retailer} · ${SKU_LABELS[item.retailer] || "Item ID"} ${item.sku} · ${relativeTime(item.observedAt)}`;
+    const productUrl = document.createElement("div");
+    productUrl.className = "catalog-result-url";
+    productUrl.textContent = item.productUrl;
+    productUrl.title = item.productUrl;
+    main.append(title, meta, productUrl);
+
+    const price = document.createElement("div");
+    price.className = "catalog-result-price";
+    price.textContent = item.price === null ? "Not shown" : money(item.price);
+    const note = document.createElement("small");
+    note.textContent = alreadyAdded ? "Already in Missions" : "listing only";
+    price.append(note);
+    card.append(checkbox, main, price);
+    elements.catalogList.append(card);
+  }
+
+  const availableCount = items.filter((item) => !existingIds.has(item.id)).length;
+  elements.catalogCount.textContent = `${items.length} result${items.length === 1 ? "" : "s"} · ${availableCount} available`;
+  elements.catalogStatus.textContent = catalogStatusText(catalog);
+  const busy = catalogSearchInFlight || catalogImportInFlight;
+  elements.catalogSearchButton.disabled = busy || isArmed();
+  elements.catalogClearButton.disabled = busy || (!search && !items.length);
+  elements.catalogSelectAllButton.disabled = busy || availableCount === 0;
+  elements.catalogAddButton.disabled = busy || isArmed() || catalogSelectedIds.size === 0;
+  elements.catalogAddButton.textContent = catalogSelectedIds.size
+    ? `Add selected (${catalogSelectedIds.size}) to Missions`
+    : "Add selected to Missions";
+}
+
+async function submitCatalogSearch() {
+  if (catalogSearchInFlight || catalogImportInFlight) return;
+  if (isArmed()) {
+    setMessage("Switch Autopilot off before searching retailer catalogs.", "error");
+    return;
+  }
+  if (!elements.catalogQuery.checkValidity()) {
+    elements.catalogQuery.reportValidity();
+    return;
+  }
+  const input = catalogSearchInput();
+  if (!input.retailers.length) {
+    setMessage("Choose at least one retailer to search.", "error");
+    return;
+  }
+  if (elements.catalogMaxPrice.value && !elements.catalogMaxPrice.checkValidity()) {
+    elements.catalogMaxPrice.reportValidity();
+    return;
+  }
+
+  catalogSearchInFlight = true;
+  renderCatalog(currentSnapshot?.catalog || {});
+  try {
+    const result = await window.cartAssist.searchCatalog(input);
+    render(result.snapshot);
+    const defaultBrowser = (result.openings || []).some((opening) => opening.via === "default-browser");
+    setMessage(
+      `${result.openings?.length || input.retailers.length} official search page${input.retailers.length === 1 ? "" : "s"} opened. Visible results will arrive in this inbox.${defaultBrowser ? " Chrome was not found, so capture requires opening these searches in the Chrome profile that has Quick add loaded." : ""}`,
+      defaultBrowser ? "warn" : "success"
+    );
+  } catch (error) {
+    setMessage(error.message || "The catalog search could not start.", "error");
+  } finally {
+    catalogSearchInFlight = false;
+    renderCatalog(currentSnapshot?.catalog || {});
+  }
+}
+
+async function addSelectedCatalogMissions() {
+  if (catalogSearchInFlight || catalogImportInFlight) return;
+  if (editingId) {
+    setMessage("Finish the open mission editor before importing catalog results.", "error");
+    return;
+  }
+  if (isArmed()) {
+    setMessage("Switch Autopilot off before adding catalog results to Missions.", "error");
+    return;
+  }
+  const selectedIds = [...catalogSelectedIds];
+  if (!selectedIds.length) return;
+  catalogImportInFlight = true;
+  renderCatalog(currentSnapshot?.catalog || {});
+  try {
+    const result = await window.cartAssist.addCatalogMissions(selectedIds);
+    render(result.snapshot);
+    const summary = result.summary || {};
+    const extras = [];
+    if (summary.duplicates) extras.push(`${summary.duplicates} duplicate${summary.duplicates === 1 ? "" : "s"} skipped`);
+    if (summary.overCapacity) extras.push(`${summary.overCapacity} over the 50-mission limit`);
+    if (summary.missing) extras.push(`${summary.missing} no longer available`);
+    setMessage(
+      summary.imported
+        ? `${summary.imported} catalog mission${summary.imported === 1 ? "" : "s"} added Off, watch-only, and at a $0 cap for review.${extras.length ? ` ${extras.join(" · ")}.` : ""}`
+        : extras.join(" · ") || "No selected catalog results were imported.",
+      summary.imported ? "success" : "warn"
+    );
+  } catch (error) {
+    setMessage(error.message || "The selected catalog results could not be imported.", "error");
+  } finally {
+    catalogImportInFlight = false;
+    renderCatalog(currentSnapshot?.catalog || {});
+  }
+}
+
+async function clearCatalog() {
+  if (catalogSearchInFlight || catalogImportInFlight) return;
+  if (!window.confirm("Clear the Catalog Inbox and stop accepting results for its current search?")) return;
+  try {
+    const next = await window.cartAssist.clearCatalog();
+    render(next);
+    setMessage("Catalog Inbox cleared.", "success");
+  } catch (error) {
+    setMessage(error.message || "The Catalog Inbox could not be cleared.", "error");
+  }
+}
+
 function renderMissions() {
   // While a mission editor is open, leave the list DOM alone: background
   // snapshot broadcasts must not steal focus from the person typing.
@@ -751,7 +1188,7 @@ function companionStepState() {
     return {
       done: false,
       label: "Reload the extension",
-      hint: `Chrome has companion v${hello.version} but this app is v${appVersion}. In chrome://extensions, click the reload arrow on the Cart Confirm Companion card.`
+      hint: `Chrome has companion v${hello.version} but this app is v${appVersion}. In chrome://extensions, click the reload arrow on the Quick add card.`
     };
   }
   if (hello.reason === "pairing-mismatch") {
@@ -1173,7 +1610,11 @@ function renderSignals(signals = []) {
 
 function populateSettingsInputs(settings) {
   const map = [
+    [elements.watcherIntervalSeconds, settings.watcherIntervalSeconds],
     [elements.retryIntervalSeconds, settings.retryIntervalSeconds],
+    [elements.eligibilityRefreshIntervalSeconds, settings.eligibilityRefreshIntervalSeconds],
+    [elements.blitzRetryDelayMs, settings.blitzRetryDelayMs],
+    [elements.blitzWindowSeconds, settings.blitzWindowSeconds],
     [elements.storeNavigationIntervalSeconds, settings.storeNavigationIntervalSeconds],
     [elements.overloadCooldownSeconds, settings.overloadCooldownSeconds]
   ];
@@ -1204,10 +1645,12 @@ function render(snapshot) {
   elements.autopilotState.textContent = armed ? "ON" : paused ? "STOPPED" : "OFF";
 
   populateSettingsInputs(settings);
+  renderConfigurationProfiles(settings);
   elements.portBadge.textContent = app.companionPort ? `Port ${app.companionPort}` : "Port unavailable";
   elements.versionText.textContent = `${app.name} v${app.version}`;
 
   renderMissions();
+  renderCatalog(snapshot.catalog || {});
   renderDiscord(snapshot.discord, settings);
   renderSignals(snapshot.signals || []);
   checkForAlarmEvents(events);
@@ -1217,28 +1660,58 @@ function render(snapshot) {
 
 // --- Actions ---
 
-elements.autopilotToggle.addEventListener("click", () => runAction(async () => {
-  if (!currentSnapshot) throw new Error("Settings have not loaded yet.");
-  if (editingId) throw new Error("Finish the open mission editor first (Done or Cancel).");
-  const saved = currentSnapshot.settings;
-  if (saved.automationEnabled) {
-    const next = await window.cartAssist.saveSettings({ ...saved, automationEnabled: false });
-    render(next);
-    return { armed: false };
+elements.autopilotToggle.addEventListener("click", async () => {
+  if (openRunInFlight) return;
+  setMissionOpenBusy(true);
+  try {
+    await runAction(async () => {
+      if (!currentSnapshot) throw new Error("Settings have not loaded yet.");
+      if (editingId) throw new Error("Finish the open mission editor first (Done or Cancel).");
+      const saved = currentSnapshot.settings;
+      if (saved.automationEnabled) {
+        const next = await window.cartAssist.saveSettings({ ...saved, automationEnabled: false });
+        render(next);
+        return { armed: false };
+      }
+      const autoSubmitCount = saved.products.filter((product) => product.enabled && product.action === "checkout").length;
+      if (
+        autoSubmitCount > 0
+        && !window.confirm(`${autoSubmitCount} enabled mission${autoSubmitCount === 1 ? "" : "s"} may submit a real order. Re-arming starts a new run. Unscheduled Target and Walmart missions start as quiet background watchers and open Chrome only after a likely stock signal; Amazon must open now. Scheduled missions wait for their exact time. Verify retailer order history first. "Prepare checkout, I submit" is safer. Switch Autopilot on anyway?`)
+      ) {
+        throw new Error("Autopilot was not switched on.");
+      }
+      const next = await window.cartAssist.saveSettings({ ...saved, automationEnabled: true });
+      render(next);
+      setMessage("Autopilot ON. Starting Target and Walmart background watchers; opening only missions that require a browser now…");
+      try {
+        const launch = await window.cartAssist.openBuyList({ backgroundFirst: true });
+        return { armed: true, ...launch };
+      } catch (error) {
+        throw new Error(`Autopilot is ON, but its watchers or required browser pages could not start: ${error.message || "unknown opening error"}`);
+      }
+    }, (result) => {
+      if (!result?.armed) return "Autopilot OFF. Monitoring pages stay open, but nothing will be clicked.";
+      const count = Number(result.count || 0);
+      const background = Number(result.background || 0);
+      const scheduled = Number(result.scheduled || 0);
+      const parts = ["Autopilot ON"];
+      if (background) {
+        parts.push(`${background} Target/Walmart watcher${background === 1 ? "" : "s"} armed background-first`);
+      }
+      if (count) parts.push(`${count} browser-required mission page${count === 1 ? "" : "s"} opened`);
+      if (!background && !count && !scheduled) parts.push("no due missions needed a browser page");
+      if (result.reused) parts.push(`${result.reused} reused an existing Chrome tab`);
+      if (result.deduped) parts.push(`${result.deduped} already queued`);
+      if (scheduled) parts.push(`${scheduled} waiting for ${scheduled === 1 ? "its" : "their"} calendar time`);
+      const browserNote = result.defaultBrowser
+        ? " Chrome was not found, so some pages used your default browser; Autopilot only works inside Chrome."
+        : "";
+      return `${parts.join(", ")}. A likely stock signal opens Chrome for authoritative validation and the configured action. Review missions remain on checkout review; a successful auto-submit remains on Target's confirmation page.${browserNote}`;
+    });
+  } finally {
+    setMissionOpenBusy(false);
   }
-  const autoSubmitCount = saved.products.filter((product) => product.enabled && product.action === "checkout").length;
-  if (
-    autoSubmitCount > 0
-    && !window.confirm(`${autoSubmitCount} enabled mission${autoSubmitCount === 1 ? "" : "s"} may submit a real order. Re-arming starts a new run and can retry an item whose prior submission was uncertain. Verify retailer order history first. "Prepare checkout, I submit" is safer. Switch Autopilot on anyway?`)
-  ) {
-    throw new Error("Autopilot was not switched on.");
-  }
-  const next = await window.cartAssist.saveSettings({ ...saved, automationEnabled: true });
-  render(next);
-  return { armed: true };
-}, (result) => (result?.armed
-  ? "Autopilot ON. Missions act whenever their product pages are open — use Open all enabled to launch them."
-  : "Autopilot OFF. Monitoring pages stay open, but nothing will be clicked.")));
+});
 
 elements.disarmButton.addEventListener("click", () => {
   stopUiEpoch += 1;
@@ -1255,6 +1728,42 @@ elements.disarmButton.addEventListener("click", () => {
 });
 
 elements.newMissionButton.addEventListener("click", () => void startEdit(null));
+elements.bulkImportButton.addEventListener("click", openBulkImportDialog);
+elements.bulkImportSubmitButton.addEventListener("click", () => void submitBulkImport());
+elements.bulkImportCancelButton.addEventListener("click", closeBulkImportDialog);
+elements.bulkImportDialog.addEventListener("cancel", (event) => {
+  if (bulkImportInFlight) event.preventDefault();
+});
+elements.bulkImportText.addEventListener("keydown", (event) => {
+  if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+    event.preventDefault();
+    void submitBulkImport();
+  }
+});
+elements.catalogSearchForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  void submitCatalogSearch();
+});
+elements.catalogClearButton.addEventListener("click", () => void clearCatalog());
+elements.catalogSelectAllButton.addEventListener("click", () => {
+  const existingIds = new Set((currentSnapshot?.settings?.products || []).map((product) => product.id));
+  for (const item of currentSnapshot?.catalog?.items || []) {
+    if (!existingIds.has(item.id)) catalogSelectedIds.add(item.id);
+  }
+  renderCatalog(currentSnapshot?.catalog || {});
+});
+elements.catalogAddButton.addEventListener("click", () => void addSelectedCatalogMissions());
+
+elements.showDiscordButton.addEventListener("click", () => {
+  elements.discordLauncher.hidden = true;
+  elements.signalPanel.hidden = false;
+  elements.showDiscordButton.setAttribute("aria-expanded", "true");
+  const toggle = elements.signalPanel.querySelector(".panel-toggle");
+  if (toggle) {
+    setPanelExpanded(toggle, true);
+    toggle.focus();
+  }
+});
 
 elements.discordConnectButton.addEventListener("click", () => void runAction(async () => {
   if (!elements.discordChannelId.checkValidity()) {
@@ -1330,33 +1839,51 @@ elements.missionList.addEventListener("drop", (event) => {
   void runAction(() => saveMissionList(products), "Missions reordered.");
 });
 
-elements.testButton.addEventListener("click", () => runAction(async () => {
-  if (isArmed()) {
-    throw new Error("Switch Autopilot off before testing — Test opens the product page without buying anything.");
+function setMissionOpenBusy(busy) {
+  openRunInFlight = busy;
+  elements.autopilotToggle.disabled = busy;
+  elements.testButton.disabled = busy;
+  elements.openAllButton.disabled = busy;
+}
+
+elements.testButton.addEventListener("click", async () => {
+  if (openRunInFlight) return;
+  setMissionOpenBusy(true);
+  setMessage("Checking every due enabled mission… same-store pages are paced for safety.");
+  try {
+    await runAction(async () => {
+      if (isArmed()) {
+        throw new Error("Switch Autopilot off before testing — Test all opens mission pages without buying anything.");
+      }
+      return window.cartAssist.testEvent();
+    }, (result) => {
+      const count = Number(result?.count || 0);
+      const parts = [`Test started for ${count} enabled mission${count === 1 ? "" : "s"}`];
+      if (result?.reused) parts.push(`${result.reused} reused an existing Chrome tab`);
+      if (result?.deduped) parts.push(`${result.deduped} already queued`);
+      if (result?.scheduled) parts.push(`${result.scheduled} waiting for ${result.scheduled === 1 ? "its" : "their"} calendar time`);
+      const browserNote = result?.defaultBrowser
+        ? " Chrome was not found, so your default browser was used — the companion only checks pages opened in Chrome."
+        : "";
+      return `${parts.join(", ")}. Autopilot is OFF, so nothing will be added.${browserNote}`;
+    });
+  } finally {
+    setMissionOpenBusy(false);
   }
-  return window.cartAssist.testEvent();
-}, (result) => {
-  const product = savedProducts().find((candidate) => candidate.id === result?.productId);
-  const label = product ? productLabel(product) : "mission";
-  return result?.via === "companion-tab"
-  ? `Test started for ${label} in your existing Chrome tab. The next press tests the next enabled mission; nothing is added while Autopilot is off.`
-  : result?.via === "default-browser"
-    ? `${label} opened, but Chrome was not found — it used your default browser, where the companion cannot see it. Install Chrome or open the link in Chrome manually.`
-    : `Test started for ${label}: the product page is opening in Chrome. The next press tests the next enabled mission; nothing is added while Autopilot is off.`;
-}));
+});
 
 elements.openAllButton.addEventListener("click", async () => {
   if (openRunInFlight) return;
   const actionStopEpoch = stopUiEpoch;
-  openRunInFlight = true;
-  elements.openAllButton.disabled = true;
-  setMessage("Opening enabled missions… multiple opens are paced to respect store limits.");
+  setMissionOpenBusy(true);
+  setMessage("Opening due enabled missions… multiple opens are paced to respect store limits.");
   try {
     const result = await window.cartAssist.openBuyList();
     if (actionStopEpoch !== stopUiEpoch) return;
     const parts = [`${result.count} mission page${result.count === 1 ? "" : "s"} opened`];
     if (result.reused) parts.push(`${result.reused} reused an existing Chrome tab`);
     if (result.deduped) parts.push(`${result.deduped} already queued`);
+    if (result.scheduled) parts.push(`${result.scheduled} waiting for ${result.scheduled === 1 ? "its" : "their"} calendar time`);
     const armNote = result.armed
       ? "Autopilot is ON — missions act as each page loads."
       : "Autopilot is OFF — nothing will be added until you switch it on.";
@@ -1367,16 +1894,26 @@ elements.openAllButton.addEventListener("click", async () => {
   } catch (error) {
     if (actionStopEpoch === stopUiEpoch) setMessage(error.message || "The action failed.", "error");
   } finally {
-    openRunInFlight = false;
-    elements.openAllButton.disabled = false;
+    setMissionOpenBusy(false);
   }
 });
 
 function scheduleSettingsSave() {
   clearTimeout(settingsSaveTimer);
   settingsSaveTimer = setTimeout(() => {
+    const rapidSeconds = Number(elements.eligibilityRefreshIntervalSeconds.value);
+    const normalSeconds = Number(elements.storeNavigationIntervalSeconds.value);
+    elements.eligibilityRefreshIntervalSeconds.setCustomValidity(
+      rapidSeconds > normalSeconds
+        ? "Pre-eligibility refresh cannot be slower than the normal store traffic spacing."
+        : ""
+    );
     for (const input of [
+      elements.watcherIntervalSeconds,
       elements.retryIntervalSeconds,
+      elements.eligibilityRefreshIntervalSeconds,
+      elements.blitzRetryDelayMs,
+      elements.blitzWindowSeconds,
       elements.storeNavigationIntervalSeconds,
       elements.overloadCooldownSeconds
     ]) {
@@ -1390,9 +1927,84 @@ function scheduleSettingsSave() {
 }
 
 elements.fastMode.addEventListener("change", scheduleSettingsSave);
+elements.watcherIntervalSeconds.addEventListener("change", scheduleSettingsSave);
 elements.retryIntervalSeconds.addEventListener("change", scheduleSettingsSave);
+elements.eligibilityRefreshIntervalSeconds.addEventListener("change", scheduleSettingsSave);
+elements.blitzRetryDelayMs.addEventListener("change", scheduleSettingsSave);
+elements.blitzWindowSeconds.addEventListener("change", scheduleSettingsSave);
 elements.storeNavigationIntervalSeconds.addEventListener("change", scheduleSettingsSave);
 elements.overloadCooldownSeconds.addEventListener("change", scheduleSettingsSave);
+
+elements.configurationProfileSelect.addEventListener("change", () => {
+  selectedConfigurationProfileId = elements.configurationProfileSelect.value;
+  renderConfigurationProfiles(currentSnapshot.settings);
+});
+
+elements.applyConfigurationProfileButton.addEventListener("click", () => void runAction(async () => {
+  if (isArmed()) throw new Error("Switch Autopilot off before applying a saved setup.");
+  const profile = selectedConfigurationProfile();
+  if (!profile) throw new Error("Choose a setup first.");
+  clearTimeout(settingsSaveTimer);
+  const next = await window.cartAssist.saveSettings({
+    ...currentSnapshot.settings,
+    ...ConfigProfiles.normalizeConfiguration(profile.configuration)
+  });
+  render(next);
+  return profile.name;
+}, (name) => `${name} applied. Products, caps, quantities, and purchase actions were not changed.`));
+
+elements.saveConfigurationProfileButton.addEventListener("click", () => void runAction(async () => {
+  const name = elements.configurationProfileName.value.replace(/\s+/g, " ").trim();
+  if (!name) throw new Error("Enter a name for your setup.");
+  if (name.length > 40) throw new Error("Setup names can contain at most 40 characters.");
+  const customProfiles = [...(currentSnapshot.settings.configurationProfiles || [])];
+  const selected = selectedConfigurationProfile();
+  const selectedIndex = selected?.id.startsWith("custom:")
+    ? customProfiles.findIndex((profile) => profile.id === selected.id)
+    : -1;
+  const duplicateIndex = customProfiles.findIndex((profile, index) => (
+    index !== selectedIndex && profile.name.toLowerCase() === name.toLowerCase()
+  ));
+  if (duplicateIndex >= 0) throw new Error("That setup name is already saved. Select it to update or delete it.");
+  if (selectedIndex < 0 && customProfiles.length >= ConfigProfiles.MAX_CUSTOM_PROFILES) {
+    throw new Error(`You can save up to ${ConfigProfiles.MAX_CUSTOM_PROFILES} custom setups.`);
+  }
+
+  const profile = {
+    id: selectedIndex >= 0
+      ? customProfiles[selectedIndex].id
+      : `custom:${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`,
+    name,
+    configuration: currentConfiguration()
+  };
+  if (selectedIndex >= 0) customProfiles[selectedIndex] = profile;
+  else customProfiles.push(profile);
+  selectedConfigurationProfileId = profile.id;
+  clearTimeout(settingsSaveTimer);
+  const next = await window.cartAssist.saveSettings({
+    ...currentSnapshot.settings,
+    ...profile.configuration,
+    configurationProfiles: customProfiles
+  });
+  render(next);
+  return name;
+}, (name) => `${name} saved. It stores only the speed and traffic settings.`));
+
+elements.deleteConfigurationProfileButton.addEventListener("click", () => {
+  const profile = selectedConfigurationProfile();
+  if (!profile?.id.startsWith("custom:")) return;
+  if (!window.confirm(`Delete the saved setup "${profile.name}"?`)) return;
+  void runAction(async () => {
+    const nextProfiles = (currentSnapshot.settings.configurationProfiles || []).filter((candidate) => candidate.id !== profile.id);
+    selectedConfigurationProfileId = ConfigProfiles.BUILT_IN_PROFILES[0].id;
+    const next = await window.cartAssist.saveSettings({
+      ...currentSnapshot.settings,
+      configurationProfiles: nextProfiles
+    });
+    render(next);
+    return profile.name;
+  }, (name) => `${name} deleted. Your current settings were not changed.`);
+});
 
 elements.openCartButton.addEventListener("click", () => runAction(
   () => window.cartAssist.openCart(elements.storeShortcut.value),

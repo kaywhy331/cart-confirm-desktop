@@ -4,11 +4,39 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const {
   SCHEDULE_GRACE_MS,
+  assertNoNewPastProductSchedules,
   evaluateProductSchedules,
   evaluateSchedule,
+  planImmediateProductOpenings,
+  productCalendarOwned,
+  productCalendarTime,
   productScheduleKey,
   scheduleKey
 } = require("../lib/schedule");
+
+test("calendar ownership covers product and legacy store schedules", () => {
+  const product = { id: "target:one", retailer: "target", openAt: new Date(2_000_000).toISOString() };
+  assert.equal(productCalendarOwned({}, product), true);
+  assert.equal(productCalendarTime({}, product), product.openAt);
+
+  const global = settings(3_000_000);
+  assert.equal(productCalendarOwned(global, global.products[0]), true);
+  assert.equal(productCalendarTime(global, global.products[0]), global.scheduledOpenAt);
+  assert.equal(productCalendarOwned(global, global.products[1]), false);
+});
+
+test("a missed schedule may remain as a fail-closed gate until it is cleared or replaced", () => {
+  const missedAt = new Date(1_000_000).toISOString();
+  const current = [{ id: "target:one", sku: "one", openAt: missedAt }];
+  assert.doesNotThrow(() => assertNoNewPastProductSchedules(current, current, 2_000_000));
+  assert.doesNotThrow(() => assertNoNewPastProductSchedules([{ ...current[0], openAt: "" }], current, 2_000_000));
+  assert.doesNotThrow(() => assertNoNewPastProductSchedules([
+    { ...current[0], openAt: new Date(3_000_000).toISOString() }
+  ], current, 2_000_000));
+  assert.throws(() => assertNoNewPastProductSchedules([
+    { id: "target:two", sku: "two", openAt: missedAt }
+  ], current, 2_000_000), /future opening time/);
+});
 
 function settings(at) {
   return {
@@ -68,4 +96,26 @@ test("multiple product schedules act independently", () => {
   const actions = evaluateProductSchedules(products, {}, 1_000_010);
   assert.equal(actions.length, 1);
   assert.equal(actions[0].productId, "target:1");
+});
+
+test("immediate mission sweeps defer every calendar-owned product", () => {
+  const config = {
+    scheduledOpenEnabled: true,
+    scheduledOpenAt: new Date(9_000_000).toISOString(),
+    scheduledRetailer: "walmart",
+    products: [
+      { id: "target:ready", retailer: "target", enabled: true, openAt: "" },
+      { id: "target:scheduled", retailer: "target", enabled: true, openAt: new Date(8_000_000).toISOString() },
+      { id: "walmart:global", retailer: "walmart", enabled: true, openAt: "" },
+      { id: "amazon:off", retailer: "amazon", enabled: false, openAt: "" }
+    ]
+  };
+
+  const all = planImmediateProductOpenings(config);
+  assert.deepEqual(all.ready.map((product) => product.id), ["target:ready"]);
+  assert.deepEqual(all.scheduled.map((product) => product.id), ["target:scheduled", "walmart:global"]);
+  assert.deepEqual(
+    planImmediateProductOpenings(config, "target").scheduled.map((product) => product.id),
+    ["target:scheduled"]
+  );
 });

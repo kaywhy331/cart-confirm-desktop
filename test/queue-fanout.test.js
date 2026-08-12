@@ -17,6 +17,7 @@ function settings(overrides = {}) {
       { id: "walmart:1", retailer: "walmart", enabled: true },
       { id: "walmart:2", retailer: "walmart", enabled: true },
       { id: "walmart:3", retailer: "walmart", enabled: true },
+      { id: "walmart:scheduled", retailer: "walmart", enabled: true, openAt: "2026-08-12T00:00:00.000Z" },
       { id: "walmart:off", retailer: "walmart", enabled: false },
       { id: "target:1", retailer: "target", enabled: true }
     ],
@@ -81,5 +82,13 @@ test("fan-out fails closed while stopped, disarmed, or sold out", () => {
   assert.equal(planQueueFanout({
     settings: settings(),
     event: queueEvent({ availability: "unavailable" })
+  }), null);
+  assert.equal(planQueueFanout({
+    settings: settings({
+      products: settings().products.map((product) => (
+        product.id === "walmart:1" ? { ...product, openAt: "2026-08-12T00:00:00.000Z" } : product
+      ))
+    }),
+    event: queueEvent()
   }), null);
 });

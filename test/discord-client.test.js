@@ -9,6 +9,7 @@ const {
 } = require("../lib/discord-client");
 
 const TOKEN = "a-valid-local-discord-bot-token-value";
+const PACKAGE_VERSION = require("../package.json").version;
 
 function response(status, payload) {
   return { ok: status >= 200 && status < 300, status, json: async () => payload };
@@ -28,6 +29,10 @@ test("official bot setup resolves channel and mentioned role names", async () =>
   assert.equal(setup.channelName, "restocks");
   assert.equal(setup.roleNames["323456789012345678"], "Target 2");
   assert.equal(calls[0].options.headers.Authorization, `Bot ${TOKEN}`);
+  assert.equal(
+    calls[0].options.headers["User-Agent"],
+    `DiscordBot (https://github.com/kaywhy331/cart-confirm-desktop, ${PACKAGE_VERSION})`
+  );
 });
 
 test("message polling uses a bounded after cursor", async () => {

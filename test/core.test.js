@@ -7,6 +7,7 @@ const {
   assertSafeArmedUpdate,
   createInitialStatus,
   createProductStatus,
+  eventMessage,
   extractTcin,
   matchingProduct,
   normalizeProduct,
@@ -19,6 +20,7 @@ const {
   toRendererProduct,
   validateEvent
 } = require("../lib/core");
+const { BUILT_IN_PROFILES } = require("../lib/config-profiles");
 const {
   detectRetailer,
   extractSku,
@@ -64,6 +66,35 @@ test("extracts store-specific product identifiers", () => {
   assert.equal(extractSku("amazon", "b0abc12345"), "B0ABC12345");
 });
 
+test("automation status and offer messages preserve actionable workflow detail", () => {
+  const status = validateEvent({
+    eventType: "automation-status",
+    retailer: "target",
+    productId: "target:1011960739",
+    message: "This mission already completed in another tab."
+  });
+  assert.equal(eventMessage(status), "This mission already completed in another tab.");
+
+  const offer = validateEvent({
+    eventType: "offer-observed",
+    retailer: "target",
+    productId: "target:1011960739",
+    eligible: true,
+    price: 34.99,
+    message: "Test mode is observation-only, so no purchase action was attempted."
+  });
+  assert.equal(eventMessage(offer), "Test mode is observation-only, so no purchase action was attempted.");
+
+  const retry = validateEvent({
+    eventType: "retry-scheduled",
+    retailer: "target",
+    productId: "target:1011960739",
+    reason: "retrying",
+    message: "Target is refreshing one waiting mission every 2 seconds."
+  });
+  assert.equal(eventMessage(retry), "Target is refreshing one waiting mission every 2 seconds.");
+});
+
 test("detects retailers and canonicalizes product URLs", () => {
   assert.equal(detectRetailer(PRODUCTS[0].productUrl), "target");
   assert.equal(detectRetailer(PRODUCTS[1].productUrl), "walmart");
@@ -78,14 +109,28 @@ test("detects retailers and canonicalizes product URLs", () => {
 });
 
 test("normalizes a multi-store buy list and preserves a private token", () => {
+  const defaults = normalizeSettings({ products: PRODUCTS });
+  assert.equal(defaults.watcherIntervalSeconds, 60);
+  assert.equal(defaults.blitzRetryDelayMs, 750);
+  assert.equal(defaults.blitzWindowSeconds, 20);
+
   const existing = normalizeSettings({ products: PRODUCTS, companionToken: "existing-token" });
   const result = normalizeSettings({
     products: PRODUCTS,
     automationEnabled: true,
     fastMode: false,
     retryIntervalSeconds: 8,
+    eligibilityRefreshIntervalSeconds: 3,
     storeNavigationIntervalSeconds: 25,
     overloadCooldownSeconds: 600,
+    watcherIntervalSeconds: 90,
+    blitzRetryDelayMs: 500,
+    blitzWindowSeconds: 30,
+    configurationProfiles: [{
+      id: "custom:launch-night",
+      name: "Launch night",
+      configuration: BUILT_IN_PROFILES[2].configuration
+    }],
     scheduledRetailer: "amazon"
   }, existing);
 
@@ -96,8 +141,15 @@ test("normalizes a multi-store buy list and preserves a private token", () => {
   assert.equal(result.companionToken, "existing-token");
   assert.equal(result.automationEnabled, true);
   assert.equal(result.fastMode, false);
+  assert.equal(result.eligibilityRefreshIntervalSeconds, 3);
   assert.equal(result.storeNavigationIntervalSeconds, 25);
   assert.equal(result.overloadCooldownSeconds, 600);
+  assert.equal(result.watcherIntervalSeconds, 90);
+  assert.equal(result.blitzRetryDelayMs, 500);
+  assert.equal(result.blitzWindowSeconds, 30);
+  assert.equal(result.configurationProfiles[0].name, "Launch night");
+  assert.equal(result.configurationProfiles[0].configuration.eligibilityRefreshIntervalSeconds, 2);
+  assert.equal(normalizeSettings({ products: PRODUCTS }, result).configurationProfiles.length, 1);
   assert.equal(result.scheduledRetailer, "amazon");
   assert.equal(result.discordEnabled, false);
   assert.equal(result.discordAutoOpen, true);
@@ -204,8 +256,20 @@ test("rejects unsafe or ambiguous product settings", () => {
     /appears more than once/
   );
   assert.throws(() => normalizeSettings({ products: PRODUCTS, retryIntervalSeconds: 1 }), /Retry interval/);
+  assert.throws(() => normalizeSettings({ products: PRODUCTS, eligibilityRefreshIntervalSeconds: 1 }), /Pre-eligibility refresh interval/);
+  assert.throws(
+    () => normalizeSettings({
+      products: PRODUCTS,
+      eligibilityRefreshIntervalSeconds: 30,
+      storeNavigationIntervalSeconds: 20
+    }),
+    /cannot exceed/
+  );
   assert.throws(() => normalizeSettings({ products: PRODUCTS, storeNavigationIntervalSeconds: 1 }), /navigation interval/);
   assert.throws(() => normalizeSettings({ products: PRODUCTS, overloadCooldownSeconds: 1 }), /Overload cooldown/);
+  assert.throws(() => normalizeSettings({ products: PRODUCTS, watcherIntervalSeconds: 10 }), /Watcher interval/);
+  assert.throws(() => normalizeSettings({ products: PRODUCTS, blitzRetryDelayMs: 100 }), /Blitz retry delay/);
+  assert.throws(() => normalizeSettings({ products: PRODUCTS, blitzWindowSeconds: 2 }), /Blitz persistence window/);
   assert.throws(() => normalizeSettings({ products: PRODUCTS, scheduledRetailer: "other" }), /single schedule/);
   assert.throws(() => normalizeSettings({ products: PRODUCTS, discordEnabled: true }), /Discord channel ID/);
   assert.throws(() => normalizeSettings({ products: PRODUCTS, discordChannelId: "not-a-channel" }), /valid Discord channel ID/);

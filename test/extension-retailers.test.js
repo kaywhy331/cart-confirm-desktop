@@ -71,3 +71,14 @@ test("Walmart queue URLs expose only safe item and wait state metadata", () => {
   assert.equal(getAdapter("walmart").pageKind(url), "queue");
   assert.equal("url" in queue, false);
 });
+
+test("Target checkout routes include co-cart while authentication stays manual", () => {
+  const target = getAdapter("target");
+  assert.equal(target.pageKind("https://www.target.com/co-cart"), "cart");
+  assert.equal(target.pageKind("https://www.target.com/co-pickup"), "checkout");
+  assert.equal(target.pageKind("https://www.target.com/co-delivery"), "checkout");
+  assert.equal(target.pageKind("https://www.target.com/co-payment"), "checkout");
+  assert.equal(target.pageKind("https://www.target.com/co-review"), "checkout");
+  assert.equal(target.pageKind("https://www.target.com/login"), "auth");
+  assert.equal(target.pageKind("https://www.target.com/account"), "auth");
+});

@@ -164,6 +164,29 @@ test("overload pages are classified separately from stock state", () => {
   assert.equal(getAdapter("target").storeError(doc), "traffic-overload");
 });
 
+test("Target overload dialogs expose only a scoped, actionable dismissal", () => {
+  const adapter = getAdapter("target");
+  const overload = new JSDOM(`
+    <body>
+      <div role="dialog">
+        <p>Something went wrong. Please try again later.</p>
+        <button>OK</button>
+      </div>
+    </body>
+  `).window.document;
+  assert.equal(adapter.storeErrorDismissButton(overload)?.textContent, "OK");
+
+  const unrelated = new JSDOM(`
+    <body><div role="dialog"><p>Join Target Circle today.</p><button>OK</button></div></body>
+  `).window.document;
+  assert.equal(adapter.storeErrorDismissButton(unrelated), null);
+
+  const challenge = new JSDOM(`
+    <body><div role="dialog"><p>Security challenge: verify you're human. Unusual traffic.</p><button>OK</button></div></body>
+  `).window.document;
+  assert.equal(adapter.storeErrorDismissButton(challenge), null);
+});
+
 test("submission failure requires explicit proof that the order was not placed", () => {
   const adapter = getAdapter("walmart");
   const doc = (text) => new JSDOM(`<body><main>${text}</main></body>`).window.document;

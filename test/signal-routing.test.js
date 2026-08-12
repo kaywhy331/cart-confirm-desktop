@@ -58,6 +58,13 @@ test("new, stopped, disabled, historical, and stale signals never auto-open", ()
   assert.equal(planSignalRoute({ signal: { ...signal, productId: "amazon:OTHER" }, settings: settings({ monitoringPaused: true }), now: NOW }).state, "disabled");
   assert.equal(planSignalRoute({ signal, settings: settings({ monitoringPaused: true }), now: NOW }).state, "disabled");
   assert.equal(planSignalRoute({ signal, settings: settings({ discordAutoOpen: false }), now: NOW }).state, "disabled");
+  const scheduled = planSignalRoute({
+    signal,
+    settings: settings({ products: [{ ...amazonProduct, openAt: "2026-08-09T00:00:00.000Z" }] }),
+    now: NOW
+  });
+  assert.equal(scheduled.state, "disabled");
+  assert.match(scheduled.note, /calendar time/);
   assert.equal(planSignalRoute({ signal, settings: settings(), historical: true, now: NOW }).state, "historical");
   assert.equal(planSignalRoute({ signal: { ...signal, observedAt: "2026-08-08T17:00:00.000Z" }, settings: settings(), now: NOW }).state, "stale");
 });

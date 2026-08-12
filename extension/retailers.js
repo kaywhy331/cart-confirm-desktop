@@ -487,8 +487,7 @@
       && /order (?:number|#)|confirmation (?:email|number)|order details/i.test(text);
   }
 
-  function storeError(doc) {
-    const text = pageText(doc, 160_000);
+  function classifyStoreErrorText(text) {
     if (/too many requests|temporarily unavailable|service unavailable|site (?:is )?(?:busy|overloaded)|experiencing (?:high|heavy) (?:traffic|demand)|unusual traffic|please try again later|bad gateway|gateway time-?out/i.test(text)) {
       return "traffic-overload";
     }
@@ -499,6 +498,38 @@
       return "store-error";
     }
     return "";
+  }
+
+  function storeError(doc) {
+    return classifyStoreErrorText(pageText(doc, 160_000));
+  }
+
+  function storeErrorDismissButton(doc) {
+    const roots = queryAll(doc, [
+      "[role='alertdialog']",
+      "[role='dialog']",
+      "[aria-live='assertive']",
+      "[data-test*='modal' i]",
+      "[data-testid*='modal' i]",
+      "[data-test*='error' i]",
+      "[data-testid*='error' i]"
+    ]).filter((root) => (
+      !root.hidden
+      && root.getAttribute?.("aria-hidden") !== "true"
+      && classifyStoreErrorText(textOf(root))
+      && !/captcha|robot check|verify (?:that )?you(?:'|’)re human|press and hold|security challenge/i.test(textOf(root))
+    ));
+    for (const root of roots.slice(0, 40)) {
+      for (const button of queryAll(root, ["button", "input[type='button']", "input[type='submit']", "a[role='button']"]).slice(0, 30)) {
+        const labels = [button.getAttribute?.("aria-label"), button.getAttribute?.("value"), textOf(button)]
+          .map((value) => String(value || "").replace(/\s+/g, " ").trim())
+          .filter(Boolean);
+        if (labels.some((label) => /^(?:ok(?:ay)?|try again|close|dismiss|got it|continue shopping)$/i.test(label)) && isActionable(button)) {
+          return button;
+        }
+      }
+    }
+    return null;
   }
 
   function submissionFailure(doc) {
@@ -566,8 +597,9 @@
       pageKind(url) {
         const path = new URL(url).pathname.toLowerCase();
         if (/order-confirm|thank.?you|confirmation/.test(path)) return "confirmation";
-        if (/checkout|co-delivery|co-payment|co-review/.test(path)) return "checkout";
-        if (path.includes("/cart")) return "cart";
+        if (/\/(?:login|signin|sign-in)(?:\/|$)|\/account(?:\/|$)|\/co-(?:login|signin)(?:\/|$)/.test(path)) return "auth";
+        if (/checkout|co-(?:delivery|fulfillment|pickup|payment|review)/.test(path)) return "checkout";
+        if (/\/(?:cart|co-cart)(?:\/|$)/.test(path)) return "cart";
         return extractSkuFromUrl("target", url) ? "product" : "other";
       },
       offer(doc, product) {
@@ -768,6 +800,7 @@
     adapter.securityChallenge = securityChallenge;
     adapter.orderConfirmed = (doc) => orderConfirmed(doc, adapter.confirmationSelectors);
     adapter.storeError = storeError;
+    adapter.storeErrorDismissButton = storeErrorDismissButton;
     adapter.submissionFailure = submissionFailure;
     adapter.unsafeOrderChoices = unsafeOrderChoices;
     adapter.fulfillmentMode = fulfillmentMode;

@@ -33,7 +33,7 @@
           <span class="autopilot-label">Autopilot</span>
           <span class="autopilot-state" id="autopilotState">OFF</span>
         </button>
-        <button class="button secondary" id="testButton" type="button" title="Cycles through enabled missions while Autopilot is off; nothing is added">Test next (no buying)</button>
+        <button class="button secondary" id="testButton" type="button" title="Checks every enabled mission that does not have a calendar time; nothing is added">Test all (no buying)</button>
         <button class="button danger" id="disarmButton" type="button" title="Autopilot off, monitoring paused, queued openings cancelled, scheduled times cleared">Stop everything</button>
       </div>
     </header>
@@ -74,52 +74,171 @@
           <p class="privacy-note">The companion sends only milestone names, store/SKU, seller label, observed prices, a query-free page address, and timestamps to this computer. It never sends cookies, passwords, addresses, payment details, or order numbers, and it does not solve CAPTCHAs, bypass queues, or defeat store controls.</p>
         </section>
 
-        <section class="panel missions-panel">
+        <section class="panel missions-panel collapsible-panel" id="missionsPanel">
           <div class="panel-heading">
             <h2>Missions</h2>
             <div class="action-row">
-              <button class="button ghost compact" id="openAllButton" type="button">Open all enabled</button>
+              <button class="button ghost compact" id="openAllButton" type="button">Open all due</button>
+              <button class="button secondary compact" id="bulkImportButton" type="button">Bulk import</button>
               <button class="button primary compact" id="newMissionButton" type="button">+ New mission</button>
+              <button class="button ghost compact panel-toggle" type="button" aria-controls="missionsPanelBody" aria-expanded="true">Minimize</button>
             </div>
           </div>
-          <p class="step-hint worst-case" id="worstCase"></p>
-          <div class="mission-list" id="missionList"></div>
+          <div class="panel-content" id="missionsPanelBody">
+            <p class="step-hint worst-case" id="worstCase"></p>
+            <div class="mission-list" id="missionList"></div>
+          </div>
+        </section>
+
+        <section class="panel catalog-panel collapsible-panel" id="catalogPanel">
+          <div class="panel-heading">
+            <div>
+              <span class="eyebrow">Visible retailer results</span>
+              <h2>Catalog Inbox</h2>
+            </div>
+            <div class="action-row">
+              <button class="button ghost compact" id="catalogClearButton" type="button">Clear</button>
+              <button class="button ghost compact panel-toggle" type="button" aria-controls="catalogPanelBody" aria-expanded="true">Minimize</button>
+            </div>
+          </div>
+          <div class="panel-content" id="catalogPanelBody">
+            <p class="catalog-explainer">Enter a keyword to open one official search page per selected retailer. The companion catalogs up to 20 visible result cards from each page—no private APIs, hidden batching, scrolling, or continuous crawler.</p>
+            <form class="catalog-search-form" id="catalogSearchForm">
+              <label class="field catalog-query-field">
+                <span>Keyword search</span>
+                <input id="catalogQuery" type="search" minlength="2" maxlength="80" autocomplete="off" spellcheck="false" placeholder="Example: Pokémon cards" required>
+              </label>
+              <fieldset class="catalog-retailers">
+                <legend>Retailers</legend>
+                <label class="toggle-row"><input id="catalogTarget" type="checkbox" value="target" checked><span>Target</span></label>
+                <label class="toggle-row"><input id="catalogWalmart" type="checkbox" value="walmart" checked><span>Walmart</span></label>
+                <label class="toggle-row"><input id="catalogAmazon" type="checkbox" value="amazon" checked><span>Amazon</span></label>
+              </fieldset>
+              <details class="catalog-filters">
+                <summary>Optional result filters</summary>
+                <div class="catalog-filter-grid">
+                  <label class="field">
+                    <span>Must include words</span>
+                    <input id="catalogIncludeWords" type="text" maxlength="120" autocomplete="off" spellcheck="false" placeholder="pokemon booster">
+                  </label>
+                  <label class="field">
+                    <span>Exclude words</span>
+                    <input id="catalogExcludeWords" type="text" maxlength="120" autocomplete="off" spellcheck="false" placeholder="digital used">
+                  </label>
+                  <label class="field">
+                    <span>Maximum displayed price</span>
+                    <span class="money-input"><span>$</span><input id="catalogMaxPrice" type="number" min="0.01" max="1000000" step="0.01" inputmode="decimal" placeholder="50.00"></span>
+                  </label>
+                </div>
+              </details>
+              <div class="catalog-search-actions">
+                <button class="button primary" id="catalogSearchButton" type="submit">Search / refresh</button>
+                <span class="catalog-status" id="catalogStatus" role="status" aria-live="polite">Enter a keyword to begin.</span>
+              </div>
+            </form>
+            <div class="catalog-inbox-heading">
+              <span id="catalogCount">0 results</span>
+              <div class="action-row">
+                <button class="button ghost compact" id="catalogSelectAllButton" type="button">Select available</button>
+                <button class="button secondary compact" id="catalogAddButton" type="button">Add selected to Missions</button>
+              </div>
+            </div>
+            <p class="catalog-safety">Displayed listing prices are informational only. Imported entries always start <strong>Off</strong>, watch-only, and at a <strong>$0 cap</strong> until you review them.</p>
+            <div class="catalog-list" id="catalogList">
+              <div class="empty-state">No catalog results yet.</div>
+            </div>
+          </div>
         </section>
 
         <details class="advanced-box" id="settingsBox">
-          <summary>Settings: timing, fast-load, and store shortcuts</summary>
+          <summary>Speed and traffic settings (optional)</summary>
+          <div class="settings-explainer">
+            <strong>Not sure what to choose?</strong>
+            <span>Use <b>Recommended</b>. Profiles change only the checking speed, page spacing, overload rest time, and fast-load switch. They never change products, price caps, quantities, or purchase actions.</span>
+          </div>
+          <section class="configuration-profiles" aria-labelledby="configurationProfilesTitle">
+            <div class="configuration-profile-heading">
+              <div>
+                <span class="control-title" id="configurationProfilesTitle">Saved setups</span>
+                <p>Pick a ready-made setup, or save the numbers below with your own name.</p>
+              </div>
+              <div class="configuration-profile-picker">
+                <select id="configurationProfileSelect" aria-label="Configuration profile"></select>
+                <button class="button secondary compact" id="applyConfigurationProfileButton" type="button">Use this setup</button>
+              </div>
+            </div>
+            <p class="configuration-profile-description" id="configurationProfileDescription"></p>
+            <div class="configuration-profile-save">
+              <label for="configurationProfileName">Your setup name</label>
+              <input id="configurationProfileName" type="text" maxlength="40" placeholder="Example: Friday night drop">
+              <button class="button ghost compact" id="saveConfigurationProfileButton" type="button">Save current numbers</button>
+              <button class="button danger compact" id="deleteConfigurationProfileButton" type="button" hidden>Delete saved setup</button>
+            </div>
+          </section>
           <div class="automation-grid">
             <label class="control-card">
-              <span class="control-title">Fast-load mode</span>
+              <span class="control-title">Load less page media</span>
               <span class="toggle-row">
                 <input id="fastMode" type="checkbox">
-                <span>Block images, fonts, and media</span>
+                <span>Skip images, fonts, and videos</span>
               </span>
-              <small>HTML, scripts, sign-in, and store security controls still load normally.</small>
+              <small>On uses less bandwidth. The buttons, sign-in, and store security checks still load.</small>
             </label>
             <label class="control-card field compact-field">
-              <span class="control-title">Retry interval</span>
+              <span class="control-title">Regular watch check</span>
+              <span class="number-suffix">
+                <input id="watcherIntervalSeconds" type="number" min="30" max="3600" step="1" inputmode="numeric" required>
+                <span>seconds</span>
+              </span>
+              <small>How long to wait between normal stock checks. A smaller number checks more often. Recommended: 60 seconds.</small>
+            </label>
+            <label class="control-card field compact-field">
+              <span class="control-title">Scheduled-drop error wait</span>
               <span class="number-suffix">
                 <input id="retryIntervalSeconds" type="number" min="5" max="3600" step="1" inputmode="numeric" required>
                 <span>seconds</span>
               </span>
-              <small>Retries use this minimum plus jitter and backoff after store errors.</small>
+              <small>If a scheduled drop page errors, wait at least this long before trying again. Repeated errors automatically wait longer.</small>
             </label>
             <label class="control-card field compact-field">
-              <span class="control-title">Store traffic spacing</span>
+              <span class="control-title">Scheduled stock refresh</span>
+              <span class="number-suffix">
+                <input id="eligibilityRefreshIntervalSeconds" type="number" min="2" max="60" step="1" inputmode="numeric" required>
+                <span>seconds</span>
+              </span>
+              <small>After a scheduled release, this is the gap between stock-page refreshes while the item is still unavailable.</small>
+            </label>
+            <label class="control-card field compact-field">
+              <span class="control-title">Target retry-click pause</span>
+              <span class="number-suffix">
+                <input id="blitzRetryDelayMs" type="number" min="250" max="5000" step="50" inputmode="numeric" required>
+                <span>ms</span>
+              </span>
+              <small>Pause between allowed Target retry clicks during a scheduled drop. Recommended: 750 ms.</small>
+            </label>
+            <label class="control-card field compact-field">
+              <span class="control-title">Target retry window</span>
+              <span class="number-suffix">
+                <input id="blitzWindowSeconds" type="number" min="5" max="120" step="1" inputmode="numeric" required>
+                <span>seconds</span>
+              </span>
+              <small>Maximum time Target may keep retrying one step after a scheduled release. Fixed click limits still stop it sooner.</small>
+            </label>
+            <label class="control-card field compact-field">
+              <span class="control-title">Gap between store page moves</span>
               <span class="number-suffix">
                 <input id="storeNavigationIntervalSeconds" type="number" min="10" max="3600" step="1" inputmode="numeric" required>
                 <span>seconds</span>
               </span>
-              <small>Automatic retry navigation for one store is serialized by this minimum.</small>
+              <small>Minimum wait before Cart Confirm automatically moves another tab for the same store.</small>
             </label>
             <label class="control-card field compact-field">
-              <span class="control-title">Overload cooldown</span>
+              <span class="control-title">Rest after store overload</span>
               <span class="number-suffix">
                 <input id="overloadCooldownSeconds" type="number" min="60" max="86400" step="1" inputmode="numeric" required>
                 <span>seconds</span>
               </span>
-              <small>429s and temporary gateway failures pause that store; a longer Retry-After wins.</small>
+              <small>How long to stop after the store says it is overloaded. If the store asks for a longer rest, Cart Confirm obeys it.</small>
             </label>
           </div>
           <div class="store-shortcuts">
@@ -138,48 +257,6 @@
       </div>
 
       <div class="monitor-column">
-        <section class="panel signal-panel" id="signalPanel">
-          <div class="panel-heading">
-            <div>
-              <span class="eyebrow">Official bot connection</span>
-              <h2>Discord restock signals</h2>
-            </div>
-            <span class="step-state" id="discordState">Not connected</span>
-          </div>
-          <p class="step-hint" id="discordHint">Connect a bot that can view the signal channel and read its message history. Discord user tokens and self-bots are never accepted.</p>
-          <div class="discord-setup">
-            <label class="field">
-              <span>Bot token</span>
-              <input id="discordBotToken" type="password" maxlength="200" autocomplete="off" spellcheck="false" placeholder="Paste an official bot token">
-            </label>
-            <label class="field">
-              <span>Channel ID</span>
-              <input id="discordChannelId" type="text" minlength="15" maxlength="25" pattern="[0-9]{15,25}" inputmode="numeric" autocomplete="off" spellcheck="false" placeholder="123456789012345678" required>
-            </label>
-          </div>
-          <div class="action-row signal-connection-actions">
-            <button class="button primary compact" id="discordConnectButton" type="button">Connect &amp; import</button>
-            <button class="button ghost compact" id="discordDisconnectButton" type="button" hidden>Disconnect</button>
-            <button class="button ghost compact" id="discordForgetButton" type="button" hidden>Remove saved token</button>
-          </div>
-          <label class="toggle-row discord-auto-open">
-            <input id="discordAutoOpen" type="checkbox">
-            <span>Automatically open fresh desired signals</span>
-          </label>
-          <small class="row-help">The first connection imports up to 50 recent messages as history without opening pages. After that, only signals under two minutes old can auto-open. The token is encrypted by your operating system and never saved in settings or shown again.</small>
-
-          <div class="signal-inbox-heading">
-            <div>
-              <strong>Signal inbox</strong>
-              <span id="signalCount">0 signals</span>
-            </div>
-            <button class="button ghost compact" id="clearSignalsButton" type="button">Clear</button>
-          </div>
-          <div class="signal-list" id="signalList">
-            <div class="empty-state">No restock signals yet.</div>
-          </div>
-        </section>
-
         <section class="panel" id="schedulePanel" hidden>
           <div class="panel-heading">
             <h2>Drop calendar</h2>
@@ -192,16 +269,72 @@
           <div class="schedule-week" id="scheduleWeek"></div>
         </section>
 
-        <section class="panel log-panel">
+        <section class="panel log-panel collapsible-panel" id="activityPanel">
           <div class="panel-heading">
             <h2>Activity</h2>
             <div class="action-row">
               <button class="button ghost compact" id="eventFilterButton" type="button" hidden>Show all</button>
               <button class="button ghost compact" id="clearEventsButton" type="button">Clear</button>
+              <button class="button ghost compact panel-toggle" type="button" aria-controls="activityPanelBody" aria-expanded="true">Minimize</button>
             </div>
           </div>
-          <div class="event-list" id="eventList">
-            <div class="empty-state">No activity yet.</div>
+          <div class="panel-content" id="activityPanelBody">
+            <div class="event-list" id="eventList">
+              <div class="empty-state">No activity yet.</div>
+            </div>
+          </div>
+        </section>
+
+        <div class="discord-launcher" id="discordLauncher">
+          <button class="button secondary discord-launcher-button" id="showDiscordButton" type="button" aria-controls="signalPanel" aria-expanded="false">
+            Show Discord
+          </button>
+        </div>
+
+        <section class="panel signal-panel collapsible-panel" id="signalPanel" hidden>
+          <div class="panel-heading">
+            <div>
+              <span class="eyebrow">Official bot connection</span>
+              <h2>Discord restock signals</h2>
+            </div>
+            <div class="action-row">
+              <span class="step-state" id="discordState">Not connected</span>
+              <button class="button ghost compact panel-toggle" type="button" aria-controls="signalPanelBody" aria-expanded="true">Minimize</button>
+            </div>
+          </div>
+          <div class="panel-content" id="signalPanelBody">
+            <p class="step-hint" id="discordHint">Connect a bot that can view the signal channel and read its message history. Discord user tokens and self-bots are never accepted.</p>
+            <div class="discord-setup">
+              <label class="field">
+                <span>Bot token</span>
+                <input id="discordBotToken" type="password" maxlength="200" autocomplete="off" spellcheck="false" placeholder="Paste an official bot token">
+              </label>
+              <label class="field">
+                <span>Channel ID</span>
+                <input id="discordChannelId" type="text" minlength="15" maxlength="25" pattern="[0-9]{15,25}" inputmode="numeric" autocomplete="off" spellcheck="false" placeholder="123456789012345678" required>
+              </label>
+            </div>
+            <div class="action-row signal-connection-actions">
+              <button class="button primary compact" id="discordConnectButton" type="button">Connect &amp; import</button>
+              <button class="button ghost compact" id="discordDisconnectButton" type="button" hidden>Disconnect</button>
+              <button class="button ghost compact" id="discordForgetButton" type="button" hidden>Remove saved token</button>
+            </div>
+            <label class="toggle-row discord-auto-open">
+              <input id="discordAutoOpen" type="checkbox">
+              <span>Automatically open fresh desired signals</span>
+            </label>
+            <small class="row-help">The first connection imports up to 50 recent messages as history without opening pages. After that, only signals under two minutes old can auto-open. The token is encrypted by your operating system and never saved in settings or shown again.</small>
+
+            <div class="signal-inbox-heading">
+              <div>
+                <strong>Signal inbox</strong>
+                <span id="signalCount">0 signals</span>
+              </div>
+              <button class="button ghost compact" id="clearSignalsButton" type="button">Clear</button>
+            </div>
+            <div class="signal-list" id="signalList">
+              <div class="empty-state">No restock signals yet.</div>
+            </div>
           </div>
         </section>
       </div>
@@ -212,6 +345,23 @@
       <span>First-party sellers only, always capped — enforced in code. Unofficial personal-use tool; store names and marks belong to their respective owners.</span>
     </footer>
   </div>
+
+  <dialog class="bulk-import-dialog" id="bulkImportDialog" aria-labelledby="bulkImportTitle">
+    <div class="dialog-heading">
+      <div>
+        <span class="eyebrow">Mission tools</span>
+        <h2 id="bulkImportTitle">Bulk import product links</h2>
+      </div>
+      <button class="button ghost compact" id="bulkImportCancelButton" type="button">Close</button>
+    </div>
+    <p>Paste Target, Walmart, or Amazon product URLs—one per line or separated by spaces.</p>
+    <textarea id="bulkImportText" maxlength="50000" spellcheck="false" placeholder="https://www.target.com/p/.../-/A-1011209279&#10;https://www.walmart.com/ip/.../95163305&#10;https://www.amazon.com/.../dp/B0ABC12345"></textarea>
+    <p class="bulk-import-safety">URL-only imports start <strong>Off</strong> as watch missions with a $0 cap. Review each mission’s current price before enabling it.</p>
+    <div class="bulk-import-result" id="bulkImportResult" role="status" aria-live="polite"></div>
+    <div class="dialog-actions">
+      <button class="button primary" id="bulkImportSubmitButton" type="button">Import URLs</button>
+    </div>
+  </dialog>
 
   <template id="missionViewTemplate">
     <article class="mission-card">
@@ -299,7 +449,7 @@
           <label class="field">
             <span>Required fulfillment</span>
             <select data-field="fulfillmentMode">
-              <option value="manual">Confirm manually</option>
+              <option value="manual">Confirm manually (not available for auto-buy)</option>
               <option value="shipping">Shipping / delivery</option>
               <option value="pickup">Store pickup</option>
             </select>
@@ -334,6 +484,7 @@
     </article>
   </template>
 
+  <script src="../lib/config-profiles.js"></script>
   <script src="renderer.js"></script>
 </body>
 </html>

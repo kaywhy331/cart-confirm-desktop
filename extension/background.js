@@ -2,6 +2,7 @@
 
 importScripts(
   "traffic.js",
+  "schedule-gate.js",
   "automation-state.js",
   "retailers.js",
   "tab-context.js",
@@ -10,6 +11,7 @@ importScripts(
 );
 
 const Traffic = globalThis.CartConfirmTraffic;
+const ScheduleGate = globalThis.CartConfirmScheduleGate;
 const AutomationState = globalThis.CartConfirmAutomationState;
 const TabContext = globalThis.CartConfirmTabContext;
 const OpenRequestTabs = globalThis.CartConfirmOpenRequestTabs;
@@ -25,7 +27,10 @@ const FAST_MODE_PAUSE_KEY = "cartConfirmFastModePausedUntil";
 const PAIRED_TOKEN_KEY = "cartConfirmPairedDesktopTokenV1";
 const VERSION_RELOAD_STATE_KEY = "cartConfirmVersionReloadStateV1";
 const TAB_PRODUCT_CONTEXT_KEY = "cartConfirmTabProductContextV1";
-const OVERLOAD_DEDUPE_MS = 5_000;
+// One authorized click can fan out into several commerce XHRs. Treat their
+// overload responses as one incident instead of exponentially extending the
+// cooldown for every response in the same burst.
+const OVERLOAD_DEDUPE_MS = 30_000;
 let cached = null;
 let appliedFastMode = null;
 let fastModePausedUntil = 0;
@@ -33,6 +38,7 @@ let automationStateQueue = Promise.resolve();
 let trafficStateQueue = Promise.resolve();
 let tabContextQueue = Promise.resolve();
 let trafficSyncInFlight = false;
+const recentAuthorizedStoreActions = new Map();
 
 async function fetchWithTimeout(url, options = {}, timeoutMs = REQUEST_TIMEOUT_MS) {
   const controller = new AbortController();
@@ -109,7 +115,7 @@ async function attemptBundledVersionReload(appVersion) {
   await chrome.storage.local.set({ [VERSION_RELOAD_STATE_KEY]: plan.state });
   await setConnectionProblemBadge(
     "UPD",
-    `Updating Cart Confirm Companion from v${extensionVersion} to v${String(appVersion || "").slice(0, 20)}`
+    `Updating Quick add from v${extensionVersion} to v${String(appVersion || "").slice(0, 20)}`
   );
   setTimeout(() => chrome.runtime.reload(), 250);
   return true;
@@ -145,9 +151,21 @@ function publicConfig(config) {
     automationRunId: String(config.automationRunId || ""),
     fastMode: Boolean(config.fastMode),
     retryIntervalSeconds: Number(config.retryIntervalSeconds || 15),
+    eligibilityRefreshIntervalSeconds: Number(config.eligibilityRefreshIntervalSeconds || 2),
     storeNavigationIntervalSeconds: Number(config.storeNavigationIntervalSeconds || 20),
     overloadCooldownSeconds: Number(config.overloadCooldownSeconds || 300),
+    watcherIntervalSeconds: Number(config.watcherIntervalSeconds || 60),
+    blitzRetryDelayMs: Number(config.blitzRetryDelayMs || 750),
+    blitzWindowSeconds: Number(config.blitzWindowSeconds || 20),
     firstPartyOnly: true,
+    catalogSearch: config.catalogSearch && typeof config.catalogSearch === "object"
+      ? {
+          id: String(config.catalogSearch.id || ""),
+          query: String(config.catalogSearch.query || ""),
+          retailers: Array.isArray(config.catalogSearch.retailers) ? config.catalogSearch.retailers : [],
+          expiresAt: String(config.catalogSearch.expiresAt || "")
+        }
+      : null,
     configVersion: config.configVersion,
     appVersion: config.appVersion
   };
@@ -304,7 +322,7 @@ async function reserveNavigation(message, sender) {
     const result = Traffic.reserveNavigationSlot(state.retailers[retailer], {
       now: Date.now(),
       notBefore: Number(message.notBefore || Date.now()),
-      intervalMs: Number(config.storeNavigationIntervalSeconds || 20) * 1000,
+      intervalMs: Traffic.navigationIntervalMs(config, message.cadence),
       reservationId,
       ownerId,
       productId: product.id
@@ -345,7 +363,8 @@ async function revalidateNavigation(message, sender) {
         return {
           ok: false,
           reason: budget.reason || "traffic-budget-exhausted",
-          waitMs: 0,
+          waitMs: Math.max(0, Number(budget.retryAt || 0) - Date.now()),
+          retryAt: Number(budget.retryAt || 0),
           cooldownUntil: result.state.cooldownUntil,
           lastStatus: result.state.lastStatus
         };
@@ -668,6 +687,81 @@ async function postEvent(payload) {
   }
 }
 
+async function postQuickAddMission(product) {
+  let config = await discoverConfig(true);
+  if (!config) return { ok: false, reason: "desktop-not-found", error: "Cart Confirm desktop is not reachable." };
+
+  const send = () => fetchWithTimeout(`${config.baseUrl}/missions/quick-add`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Cart-Assist-Token": config.token
+    },
+    body: JSON.stringify(product)
+  });
+
+  try {
+    let response = await send();
+    if (response.status === 401) {
+      config = await discoverConfig(true);
+      if (!config) return { ok: false, reason: "desktop-not-found", error: "Cart Confirm desktop is not reachable." };
+      response = await send();
+    }
+    const result = await response.json().catch(() => ({}));
+    if (response.ok) {
+      cached = null;
+      void discoverConfig(true);
+    }
+    return {
+      ok: response.ok,
+      ...result,
+      reason: result.reason || (response.ok ? "" : "quick-add-failed"),
+      error: result.error || (response.ok ? "" : "Quick add could not create the mission.")
+    };
+  } catch {
+    cached = null;
+    await setDisconnectedBadge();
+    return { ok: false, reason: "desktop-unreachable", error: "Cart Confirm desktop became unreachable." };
+  }
+}
+
+async function postCatalogResults(capture) {
+  let config = await discoverConfig(true);
+  if (!config) return { ok: false, reason: "desktop-not-found", error: "Cart Confirm desktop is not reachable." };
+
+  const send = () => fetchWithTimeout(`${config.baseUrl}/catalog/results`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Cart-Assist-Token": config.token
+    },
+    body: JSON.stringify(capture)
+  });
+
+  try {
+    let response = await send();
+    if (response.status === 401) {
+      config = await discoverConfig(true);
+      if (!config) return { ok: false, reason: "desktop-not-found" };
+      response = await send();
+    }
+    const result = await response.json().catch(() => ({}));
+    if (response.ok) {
+      cached = null;
+      void discoverConfig(true);
+    }
+    return {
+      ok: response.ok,
+      ...result,
+      reason: result.reason || (response.ok ? "" : "catalog-capture-rejected")
+    };
+  } catch {
+    cached = null;
+    await setDisconnectedBadge();
+    return { ok: false, reason: "desktop-unreachable" };
+  }
+}
+
 async function reserveStoreAction(productId, kind) {
   let config = await discoverConfig(true);
   if (!automationActive(config)) return { ok: false, reason: "disarmed" };
@@ -675,7 +769,7 @@ async function reserveStoreAction(productId, kind) {
   if (!product) return { ok: false, reason: "product-disabled" };
   const trafficState = await readTrafficState(config);
   const cooldownUntil = Number(trafficState.retailers?.[product.retailer]?.cooldownUntil || 0);
-  if (cooldownUntil > Date.now()) {
+  if (cooldownUntil > Date.now() && !Traffic.canBypassOverloadCooldown(product.retailer, kind)) {
     return { ok: false, reason: "traffic-overload", retryAt: cooldownUntil };
   }
 
@@ -696,9 +790,11 @@ async function reserveStoreAction(productId, kind) {
       response = await send();
     }
     const result = await response.json().catch(() => ({}));
-    return response.ok && result.allowed
-      ? { ok: true, remaining: result.remaining }
-      : { ok: false, reason: result.reason || "traffic-budget-exhausted", retryAt: result.retryAt };
+    if (response.ok && result.allowed) {
+      recentAuthorizedStoreActions.set(product.retailer, Date.now());
+      return { ok: true, remaining: result.remaining };
+    }
+    return { ok: false, reason: result.reason || "traffic-budget-exhausted", retryAt: result.retryAt };
   } catch {
     return { ok: false, reason: "desktop-unreachable" };
   }
@@ -721,7 +817,11 @@ function withAutomationStateLock(action) {
 }
 
 function configuredProduct(config, productId) {
-  return config.products.find((product) => product.id === productId && product.enabled) || null;
+  return config.products.find((product) => (
+    product.id === productId
+    && product.enabled
+    && !ScheduleGate.calendarOwned(product)
+  )) || null;
 }
 
 async function claimProduct(productId, ownerId) {
@@ -764,6 +864,19 @@ async function completeProduct(productId) {
   });
 }
 
+async function releaseProduct(productId, ownerId) {
+  const config = await discoverConfig(true);
+  if (!config) return { ok: false, reason: "desktop-not-found", released: false };
+  const product = config.products.find((candidate) => candidate.id === productId);
+  if (!product) return { ok: false, reason: "product-disabled", released: false };
+  return withAutomationStateLock(async () => {
+    const state = await readAutomationState(config);
+    const result = AutomationState.release(state, product, ownerId);
+    await writeAutomationState(state);
+    return result;
+  });
+}
+
 async function recordProductAttempt(productId) {
   const config = await discoverConfig(true);
   if (!automationActive(config)) return { ok: false, reason: "disarmed" };
@@ -785,6 +898,52 @@ async function saveProductProof(productId, proof) {
   return withAutomationStateLock(async () => {
     const state = await readAutomationState(config);
     const result = AutomationState.saveProof(state, product, proof, Date.now());
+    await writeAutomationState(state);
+    return result;
+  });
+}
+
+async function beginProductAddAction(productId, ownerId) {
+  const config = await discoverConfig(true);
+  if (!automationActive(config)) return { ok: false, reason: "disarmed" };
+  const product = configuredProduct(config, productId);
+  if (!product) return { ok: false, reason: "product-disabled" };
+  return withAutomationStateLock(async () => {
+    const state = await readAutomationState(config);
+    const result = AutomationState.beginAddAction(state, product, ownerId, Date.now());
+    await writeAutomationState(state);
+    return result;
+  });
+}
+
+async function reserveProductTargetPersistence(productId, ownerId, kind) {
+  const config = await discoverConfig(true);
+  if (!automationActive(config)) return { ok: false, reason: "disarmed" };
+  const product = configuredProduct(config, productId);
+  if (!product) return { ok: false, reason: "product-disabled" };
+  return withAutomationStateLock(async () => {
+    const state = await readAutomationState(config);
+    const result = AutomationState.reserveTargetPersistence(
+      state,
+      product,
+      ownerId,
+      String(kind || ""),
+      { windowMs: Number(config.blitzWindowSeconds || 20) * 1000 },
+      Date.now()
+    );
+    await writeAutomationState(state);
+    return result;
+  });
+}
+
+async function markProductAddAction(productId, ownerId, outcome) {
+  const config = await discoverConfig(true);
+  if (!config) return { ok: false, reason: "desktop-not-found" };
+  const product = config.products.find((candidate) => candidate.id === productId);
+  if (!product) return { ok: false, reason: "product-disabled" };
+  return withAutomationStateLock(async () => {
+    const state = await readAutomationState(config);
+    const result = AutomationState.markAddAction(state, product, ownerId, outcome, Date.now());
     await writeAutomationState(state);
     return result;
   });
@@ -846,18 +1005,44 @@ async function handleMessage(message, sender) {
       return consumeDirectEntryContext(sender, message.productId);
     case "CART_CONFIRM_EVENT":
       return postEvent(message.payload);
+    case "CART_CONFIRM_QUICK_ADD_MISSION":
+      return postQuickAddMission(message.product);
+    case "CART_CONFIRM_CATALOG_RESULTS":
+      return postCatalogResults(message.capture);
     case "CART_CONFIRM_CLAIM_PRODUCT":
       return claimProduct(String(message.productId || ""), `tab:${sender?.tab?.id ?? "unknown"}`);
     case "CART_CONFIRM_PRODUCT_STATE":
       return getProductState(String(message.productId || ""));
     case "CART_CONFIRM_COMPLETE_PRODUCT":
       return completeProduct(String(message.productId || ""));
+    case "CART_CONFIRM_RELEASE_PRODUCT":
+      return releaseProduct(
+        String(message.productId || ""),
+        `tab:${sender?.tab?.id ?? "unknown"}`
+      );
     case "CART_CONFIRM_RECORD_ATTEMPT":
       return recordProductAttempt(String(message.productId || ""));
     case "CART_CONFIRM_RESERVE_STORE_ACTION":
       return reserveStoreAction(String(message.productId || ""), message.kind);
+    case "CART_CONFIRM_RESERVE_TARGET_PERSISTENCE":
+      return reserveProductTargetPersistence(
+        String(message.productId || ""),
+        `tab:${sender?.tab?.id ?? "unknown"}`,
+        message.kind
+      );
     case "CART_CONFIRM_SAVE_PROOF":
       return saveProductProof(String(message.productId || ""), message.proof);
+    case "CART_CONFIRM_BEGIN_ADD_ACTION":
+      return beginProductAddAction(
+        String(message.productId || ""),
+        `tab:${sender?.tab?.id ?? "unknown"}`
+      );
+    case "CART_CONFIRM_MARK_ADD_ACTION":
+      return markProductAddAction(
+        String(message.productId || ""),
+        `tab:${sender?.tab?.id ?? "unknown"}`,
+        String(message.outcome || "")
+      );
     case "CART_CONFIRM_BEGIN_SUBMISSION":
       return beginProductSubmission(
         String(message.productId || ""),
@@ -898,6 +1083,11 @@ chrome.webRequest.onHeadersReceived.addListener((details) => {
   if (!Traffic.isOverloadStatus(details.statusCode)) return;
   const retailer = retailerFromUrl(details.url);
   if (!retailer) return;
+  if (!Traffic.isRelevantOverloadSignal(
+    details.type,
+    recentAuthorizedStoreActions.get(retailer),
+    Date.now()
+  )) return;
   const retryAfter = (details.responseHeaders || [])
     .find((header) => String(header.name || "").toLowerCase() === "retry-after")?.value || "";
   void recordOverload(retailer, details.statusCode, retryAfter).catch(() => {});
