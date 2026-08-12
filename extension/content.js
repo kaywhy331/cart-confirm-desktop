@@ -3,9 +3,10 @@
 (() => {
   const Retailers = globalThis.CartConfirmRetailers;
   const QuickAdd = globalThis.CartConfirmQuickAdd;
+  const CatalogSearch = globalThis.CartConfirmCatalogSearch;
   const Safety = globalThis.CartConfirmSafety;
   const ScheduleGate = globalThis.CartConfirmScheduleGate;
-  if (!Retailers || !QuickAdd || !Safety || !ScheduleGate) return;
+  if (!Retailers || !QuickAdd || !CatalogSearch || !Safety || !ScheduleGate) return;
 
   const ACTIVE_PRODUCT_KEY = "cartConfirmActiveProductId";
   const CONFIG_REFRESH_MS = 5_000;
@@ -26,6 +27,8 @@
   let config = null;
   let configFingerprint = "";
   let scanTimer = null;
+  let catalogCaptureTimer = null;
+  let catalogCaptureFingerprint = "";
   let retryTimer = null;
   let scanning = false;
   let backgroundActiveProductId = "";
@@ -105,6 +108,48 @@
   async function requestConfig(force = false) {
     const response = await runtimeMessage({ type: "CART_CONFIRM_GET_CONFIG", force });
     return response.ok ? response.config : null;
+  }
+
+  function sameCatalogQuery(left, right) {
+    return String(left || "").replace(/\s+/g, " ").trim().toLocaleLowerCase("en-US")
+      === String(right || "").replace(/\s+/g, " ").trim().toLocaleLowerCase("en-US");
+  }
+
+  async function captureCatalogResults() {
+    const search = config?.catalogSearch;
+    if (!search?.id || new Date(search.expiresAt).getTime() <= Date.now()) return;
+    const context = CatalogSearch.searchPageContext(location.href, Retailers);
+    if (
+      !context
+      || !search.retailers.includes(context.retailer)
+      || !sameCatalogQuery(context.query, search.query)
+    ) return;
+
+    let capture;
+    try {
+      capture = CatalogSearch.inspectSearchPage(document, location.href, Retailers);
+    } catch {
+      return;
+    }
+    const fingerprint = `${search.id}:${context.retailer}:${CatalogSearch.resultsFingerprint(capture)}`;
+    if (fingerprint === catalogCaptureFingerprint) return;
+    // Record the attempt before sending so a busy retailer MutationObserver
+    // cannot turn a single rendered result set into repeated loopback posts.
+    catalogCaptureFingerprint = fingerprint;
+    await runtimeMessage({
+      type: "CART_CONFIRM_CATALOG_RESULTS",
+      capture: {
+        searchId: search.id,
+        retailer: capture.retailer,
+        query: capture.query,
+        results: capture.results
+      }
+    });
+  }
+
+  function scheduleCatalogCapture(delay = 400) {
+    clearTimeout(catalogCaptureTimer);
+    catalogCaptureTimer = setTimeout(() => void captureCatalogResults(), delay);
   }
 
   async function automationStillActive(product) {
@@ -1426,7 +1471,8 @@
       armed: next.automationEnabled,
       paused: next.monitoringPaused,
       version: next.configVersion,
-      products: next.products
+      products: next.products,
+      catalogSearch: next.catalogSearch
     });
     const changed = fingerprint !== configFingerprint;
     config = next;
@@ -1445,6 +1491,8 @@
       || previousContextEntry !== backgroundActiveEntry;
     if (ScheduleGate.calendarOwned(activeProduct())) clearRetry();
     if (changed || contextChanged) scheduleScan(0);
+    if (config.catalogSearch) scheduleCatalogCapture(changed ? 250 : 400);
+    else clearTimeout(catalogCaptureTimer);
   }
 
   document.addEventListener("click", (event) => {
@@ -1479,13 +1527,16 @@
     return false;
   });
 
-  const observer = new MutationObserver(() => scheduleScan());
+  const observer = new MutationObserver(() => {
+    scheduleScan();
+    scheduleCatalogCapture();
+  });
   observer.observe(document.documentElement, {
     subtree: true,
     childList: true,
     characterData: true,
     attributes: true,
-    attributeFilter: ["disabled", "aria-disabled", "aria-label", "href", "value"]
+    attributeFilter: ["disabled", "aria-disabled", "aria-hidden", "aria-label", "hidden", "href", "style", "value"]
   });
 
   void refreshConfig(true);

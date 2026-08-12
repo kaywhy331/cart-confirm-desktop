@@ -32,6 +32,15 @@ const {
   validateEvent
 } = require("./lib/core");
 const { planBulkImport, quickAddMission } = require("./lib/mission-import");
+const {
+  acceptCatalogResults,
+  beginCatalogSearch,
+  clearCatalogState,
+  emptyCatalogState,
+  normalizeCatalogState,
+  officialSearchUrl,
+  planCatalogMissionImport
+} = require("./lib/catalog");
 const { migrateStoredSettings } = require("./lib/migrations");
 const { canBypassStoreOverload, consumeStoreAction } = require("./lib/action-budget");
 const {
@@ -108,6 +117,7 @@ let status = createInitialStatus();
 let productStatuses = {};
 let events = [];
 let runtimeState = null;
+let catalogState = emptyCatalogState();
 let startupWasDisarmed = false;
 let schedulerTimer = null;
 let discordPollTimer = null;
@@ -147,6 +157,10 @@ function settingsPath() {
 
 function runtimeStatePath() {
   return path.join(app.getPath("userData"), "runtime-state.json");
+}
+
+function catalogPath() {
+  return path.join(app.getPath("userData"), "catalog.json");
 }
 
 function discordTokenPath() {
@@ -232,6 +246,22 @@ function loadPersistedRuntimeState() {
   }
 }
 
+function loadCatalogState() {
+  let stored = {};
+  try {
+    stored = JSON.parse(fs.readFileSync(catalogPath(), "utf8"));
+  } catch {
+    stored = {};
+  }
+  catalogState = normalizeCatalogState(stored);
+  persistCatalogState();
+}
+
+function persistCatalogState() {
+  fs.mkdirSync(path.dirname(catalogPath()), { recursive: true });
+  fs.writeFileSync(catalogPath(), JSON.stringify(catalogState, null, 2), { mode: 0o600 });
+}
+
 function persistSettings() {
   fs.mkdirSync(path.dirname(settingsPath()), { recursive: true });
   fs.writeFileSync(settingsPath(), JSON.stringify(settings, null, 2), { mode: 0o600 });
@@ -285,6 +315,7 @@ function snapshot() {
       ...signal,
       desired: settings.products.some((product) => product.id === signal.productId)
     })),
+    catalog: catalogState,
     discord: {
       enabled: settings.discordEnabled,
       configured: hasDiscordToken(discordTokenPath()),
@@ -403,6 +434,44 @@ function quickAddMissionRequest(input) {
       product: { id: product.id, title: product.title, maxPrice: product.maxPrice }
     }
   };
+}
+
+function catalogResultsRequest(input) {
+  try {
+    const accepted = acceptCatalogResults(catalogState, input, Date.now());
+    catalogState = accepted.state;
+    persistCatalogState();
+    broadcast();
+    return {
+      statusCode: 202,
+      payload: { ok: true, accepted: accepted.accepted }
+    };
+  } catch (error) {
+    return {
+      statusCode: 409,
+      payload: { ok: false, reason: "catalog-search-mismatch", error: error.message }
+    };
+  }
+}
+
+async function startCatalogSearch(input) {
+  if (settings.automationEnabled) {
+    throw new Error("Switch Autopilot off before searching retailer catalogs.");
+  }
+  catalogState = beginCatalogSearch(catalogState, input, {
+    id: crypto.randomUUID(),
+    now: Date.now()
+  });
+  persistCatalogState();
+  configVersion += 1;
+  broadcast();
+
+  const openings = await Promise.all(catalogState.activeSearch.retailers.map(async (retailer) => ({
+    retailer,
+    url: officialSearchUrl(retailer, catalogState.activeSearch.query),
+    via: await openPageInChrome(officialSearchUrl(retailer, catalogState.activeSearch.query))
+  })));
+  return { snapshot: snapshot(), openings };
 }
 
 function addEvent(event) {
@@ -1097,6 +1166,15 @@ function readJsonRequest(req, res, handler) {
 }
 
 function extensionConfig() {
+  const activeCatalogSearch = catalogState.activeSearch
+    && new Date(catalogState.activeSearch.expiresAt).getTime() > Date.now()
+    ? {
+        id: catalogState.activeSearch.id,
+        query: catalogState.activeSearch.query,
+        retailers: catalogState.activeSearch.retailers,
+        expiresAt: catalogState.activeSearch.expiresAt
+      }
+    : null;
   return {
     // Howl source and resolved tracking URLs are sharing-only. Chrome receives
     // only the canonical purchasing fields used by the automation pipeline.
@@ -1118,6 +1196,7 @@ function extensionConfig() {
     blitzRetryDelayMs: settings.blitzRetryDelayMs,
     blitzWindowSeconds: settings.blitzWindowSeconds,
     firstPartyOnly: true,
+    catalogSearch: activeCatalogSearch,
     token: settings.companionToken,
     configVersion,
     appVersion: app.getVersion()
@@ -1176,6 +1255,15 @@ function startServerOnPort(port) {
           return;
         }
         readJsonRequest(req, res, (body) => quickAddMissionRequest(body));
+        return;
+      }
+
+      if (req.method === "POST" && requestUrl.pathname === "/catalog/results") {
+        if (req.headers["x-cart-assist-token"] !== settings.companionToken) {
+          writeJson(req, res, 401, { error: "invalid-token" });
+          return;
+        }
+        readJsonRequest(req, res, (body) => catalogResultsRequest(body));
         return;
       }
 
@@ -1367,6 +1455,30 @@ function registerIpc() {
       summary: plan.summary,
       issues: plan.issues
     };
+  });
+
+  ipcMain.handle("cart-assist:catalog-search", (_event, input) => startCatalogSearch(input));
+
+  ipcMain.handle("cart-assist:catalog-add-missions", (_event, selectedIds) => {
+    if (settings.automationEnabled) {
+      throw new Error("Switch Autopilot off before adding catalog results to Missions.");
+    }
+    const plan = planCatalogMissionImport(catalogState, selectedIds, settings.products);
+    const nextSnapshot = plan.additions.length
+      ? appendMissionProducts(
+          plan.additions,
+          `${plan.additions.length} catalog mission${plan.additions.length === 1 ? "" : "s"} added Off for review.`
+        )
+      : snapshot();
+    return { snapshot: nextSnapshot, summary: plan.summary };
+  });
+
+  ipcMain.handle("cart-assist:catalog-clear", () => {
+    catalogState = clearCatalogState();
+    persistCatalogState();
+    configVersion += 1;
+    broadcast();
+    return snapshot();
   });
 
   ipcMain.handle("cart-assist:stop-all", () => {
@@ -1844,6 +1956,7 @@ if (!gotLock) {
     app.setAppUserModelId("com.kevinyang.cartconfirm");
     loadSettings();
     loadPersistedRuntimeState();
+    loadCatalogState();
     discordToken = loadDiscordToken(discordTokenPath(), safeStorage);
     if (hasDiscordToken(discordTokenPath()) && !discordToken) {
       settings = { ...settings, discordEnabled: false };

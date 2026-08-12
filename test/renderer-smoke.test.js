@@ -62,6 +62,7 @@ function snapshotFixture() {
     productStatuses: {},
     events: [],
     signals: [],
+    catalog: { version: 1, activeSearch: null, items: [] },
     discord: {
       enabled: false,
       configured: false,
@@ -87,6 +88,9 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   let testEventCalls = 0;
   const savedSettingsInputs = [];
   const bulkImportInputs = [];
+  const catalogSearchInputs = [];
+  const catalogAddInputs = [];
+  let catalogClearCalls = 0;
   const copiedAffiliateUrls = [];
   const style = window.document.createElement("style");
   style.textContent = stylesSource;
@@ -131,6 +135,70 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
         summary: { candidates: 2, imported: 2, duplicates: 0, invalid: 0, overCapacity: 0 },
         issues: []
       };
+    },
+    searchCatalog: async (input) => {
+      catalogSearchInputs.push(input);
+      const next = snapshotFixture();
+      next.catalog = {
+        version: 1,
+        activeSearch: {
+          id: "catalog-search-1",
+          query: input.query,
+          retailers: input.retailers,
+          filters: { includeWords: [], excludeWords: [], maxPrice: null },
+          startedAt: new Date().toISOString(),
+          expiresAt: new Date(Date.now() + 600_000).toISOString(),
+          status: { amazon: { state: "captured", count: 1, updatedAt: new Date().toISOString() } }
+        },
+        items: [{
+          id: "amazon:B0CAT12345",
+          retailer: "amazon",
+          sku: "B0CAT12345",
+          title: "Pokémon Catalog Box",
+          productUrl: "https://www.amazon.com/dp/B0CAT12345",
+          price: 44.99,
+          observedAt: new Date().toISOString(),
+          searchId: "catalog-search-1",
+          query: input.query
+        }]
+      };
+      return { snapshot: next, openings: [{ retailer: "amazon", via: "chrome" }] };
+    },
+    addCatalogMissions: async (selectedIds) => {
+      catalogAddInputs.push(selectedIds);
+      const next = snapshotFixture();
+      next.settings.products.push({
+        ...next.settings.products[0],
+        id: "amazon:B0CAT12345",
+        retailer: "amazon",
+        sku: "B0CAT12345",
+        title: "Pokémon Catalog Box",
+        productUrl: "https://www.amazon.com/dp/B0CAT12345",
+        action: "watch",
+        maxPrice: 0,
+        maxOrderTotal: 0,
+        enabled: false
+      });
+      next.catalog = {
+        version: 1,
+        activeSearch: null,
+        items: [{
+          id: "amazon:B0CAT12345",
+          retailer: "amazon",
+          sku: "B0CAT12345",
+          title: "Pokémon Catalog Box",
+          productUrl: "https://www.amazon.com/dp/B0CAT12345",
+          price: 44.99,
+          observedAt: new Date().toISOString(),
+          searchId: "catalog-search-1",
+          query: "pokemon"
+        }]
+      };
+      return { snapshot: next, summary: { selected: 1, imported: 1, duplicates: 0, missing: 0, overCapacity: 0 } };
+    },
+    clearCatalog: async () => {
+      catalogClearCalls += 1;
+      return snapshotFixture();
     },
     openProduct: async () => {
       openProductCalls += 1;
@@ -579,6 +647,30 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   assert.equal(doc.querySelectorAll(".mission-card").length, 2);
   assert.equal([...doc.querySelectorAll("[data-view='enabled']")].every((input) => !input.checked), true);
   assert.match(doc.getElementById("message").textContent, /2 imported Off for review/);
+
+  // A keyword search opens only selected official retailer searches, renders
+  // captured listing data, and imports selections as inert missions.
+  doc.getElementById("catalogQuery").value = "pokemon";
+  doc.getElementById("catalogTarget").checked = false;
+  doc.getElementById("catalogWalmart").checked = false;
+  doc.getElementById("catalogAmazon").checked = true;
+  doc.getElementById("catalogSearchForm").dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true }));
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.deepEqual(Array.from(catalogSearchInputs[0].retailers), ["amazon"]);
+  assert.equal(doc.querySelectorAll(".catalog-card").length, 1);
+  assert.match(doc.querySelector(".catalog-card").textContent, /Pokémon Catalog Box/);
+  assert.match(doc.querySelector(".catalog-card").textContent, /\$44\.99/);
+  assert.equal(doc.querySelector(".catalog-card input").checked, true);
+  doc.getElementById("catalogAddButton").click();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.deepEqual(Array.from(catalogAddInputs[0]), ["amazon:B0CAT12345"]);
+  assert.equal(doc.querySelectorAll(".mission-card").length, 2);
+  assert.equal([...doc.querySelectorAll(".mission-card")].at(-1).querySelector("[data-view='enabled']").checked, false);
+  assert.match(doc.getElementById("message").textContent, /Off, watch-only, and at a \$0 cap/);
+  doc.getElementById("catalogClearButton").click();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(catalogClearCalls, 1);
+  assert.equal(doc.querySelectorAll(".catalog-card").length, 0);
 
   window.close();
 });

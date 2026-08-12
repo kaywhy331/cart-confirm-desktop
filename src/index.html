@@ -90,6 +90,66 @@
           </div>
         </section>
 
+        <section class="panel catalog-panel collapsible-panel" id="catalogPanel">
+          <div class="panel-heading">
+            <div>
+              <span class="eyebrow">Visible retailer results</span>
+              <h2>Catalog Inbox</h2>
+            </div>
+            <div class="action-row">
+              <button class="button ghost compact" id="catalogClearButton" type="button">Clear</button>
+              <button class="button ghost compact panel-toggle" type="button" aria-controls="catalogPanelBody" aria-expanded="true">Minimize</button>
+            </div>
+          </div>
+          <div class="panel-content" id="catalogPanelBody">
+            <p class="catalog-explainer">Enter a keyword to open one official search page per selected retailer. The companion catalogs up to 20 visible result cards from each page—no private APIs, hidden batching, scrolling, or continuous crawler.</p>
+            <form class="catalog-search-form" id="catalogSearchForm">
+              <label class="field catalog-query-field">
+                <span>Keyword search</span>
+                <input id="catalogQuery" type="search" minlength="2" maxlength="80" autocomplete="off" spellcheck="false" placeholder="Example: Pokémon cards" required>
+              </label>
+              <fieldset class="catalog-retailers">
+                <legend>Retailers</legend>
+                <label class="toggle-row"><input id="catalogTarget" type="checkbox" value="target" checked><span>Target</span></label>
+                <label class="toggle-row"><input id="catalogWalmart" type="checkbox" value="walmart" checked><span>Walmart</span></label>
+                <label class="toggle-row"><input id="catalogAmazon" type="checkbox" value="amazon" checked><span>Amazon</span></label>
+              </fieldset>
+              <details class="catalog-filters">
+                <summary>Optional result filters</summary>
+                <div class="catalog-filter-grid">
+                  <label class="field">
+                    <span>Must include words</span>
+                    <input id="catalogIncludeWords" type="text" maxlength="120" autocomplete="off" spellcheck="false" placeholder="pokemon booster">
+                  </label>
+                  <label class="field">
+                    <span>Exclude words</span>
+                    <input id="catalogExcludeWords" type="text" maxlength="120" autocomplete="off" spellcheck="false" placeholder="digital used">
+                  </label>
+                  <label class="field">
+                    <span>Maximum displayed price</span>
+                    <span class="money-input"><span>$</span><input id="catalogMaxPrice" type="number" min="0.01" max="1000000" step="0.01" inputmode="decimal" placeholder="50.00"></span>
+                  </label>
+                </div>
+              </details>
+              <div class="catalog-search-actions">
+                <button class="button primary" id="catalogSearchButton" type="submit">Search / refresh</button>
+                <span class="catalog-status" id="catalogStatus" role="status" aria-live="polite">Enter a keyword to begin.</span>
+              </div>
+            </form>
+            <div class="catalog-inbox-heading">
+              <span id="catalogCount">0 results</span>
+              <div class="action-row">
+                <button class="button ghost compact" id="catalogSelectAllButton" type="button">Select available</button>
+                <button class="button secondary compact" id="catalogAddButton" type="button">Add selected to Missions</button>
+              </div>
+            </div>
+            <p class="catalog-safety">Displayed listing prices are informational only. Imported entries always start <strong>Off</strong>, watch-only, and at a <strong>$0 cap</strong> until you review them.</p>
+            <div class="catalog-list" id="catalogList">
+              <div class="empty-state">No catalog results yet.</div>
+            </div>
+          </div>
+        </section>
+
         <details class="advanced-box" id="settingsBox">
           <summary>Speed and traffic settings (optional)</summary>
           <div class="settings-explainer">

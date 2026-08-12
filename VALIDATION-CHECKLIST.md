@@ -105,6 +105,10 @@ For each of Target, Walmart, and Amazon you plan to automate:
 
 ### Mission import checks
 
+- [ ] With Autopilot off, run a **Catalog Inbox** keyword search against one retailer. Confirm exactly one official search page opens and the inbox lists only visible result cards with the correct retailer, item ID, title, canonical URL, displayed price (or **Not shown**), and observation time.
+- [ ] Repeat with include words, exclude words, and a maximum displayed price. Confirm nonmatching titles, missing prices under a maximum-price filter, and prices above the maximum stay out of the inbox. Confirm no pagination, scrolling, repeated retailer requests, or private API calls are initiated by Cart Confirm.
+- [ ] Import one catalog result. Confirm it is added only once and starts **Off**, **Watch & alert only**, with both caps at $0. Confirm selecting an existing mission reports/skips the duplicate and the 50-mission limit is never exceeded.
+
 - [ ] With the desktop connected and Autopilot off, use the Chrome toolbar
       **Quick add** popup on one product page from each supported retailer.
       Confirm the preview shows the exact TCIN / Walmart item ID / ASIN, title,

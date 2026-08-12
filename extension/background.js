@@ -158,6 +158,14 @@ function publicConfig(config) {
     blitzRetryDelayMs: Number(config.blitzRetryDelayMs || 750),
     blitzWindowSeconds: Number(config.blitzWindowSeconds || 20),
     firstPartyOnly: true,
+    catalogSearch: config.catalogSearch && typeof config.catalogSearch === "object"
+      ? {
+          id: String(config.catalogSearch.id || ""),
+          query: String(config.catalogSearch.query || ""),
+          retailers: Array.isArray(config.catalogSearch.retailers) ? config.catalogSearch.retailers : [],
+          expiresAt: String(config.catalogSearch.expiresAt || "")
+        }
+      : null,
     configVersion: config.configVersion,
     appVersion: config.appVersion
   };
@@ -717,6 +725,43 @@ async function postQuickAddMission(product) {
   }
 }
 
+async function postCatalogResults(capture) {
+  let config = await discoverConfig(true);
+  if (!config) return { ok: false, reason: "desktop-not-found", error: "Cart Confirm desktop is not reachable." };
+
+  const send = () => fetchWithTimeout(`${config.baseUrl}/catalog/results`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Cart-Assist-Token": config.token
+    },
+    body: JSON.stringify(capture)
+  });
+
+  try {
+    let response = await send();
+    if (response.status === 401) {
+      config = await discoverConfig(true);
+      if (!config) return { ok: false, reason: "desktop-not-found" };
+      response = await send();
+    }
+    const result = await response.json().catch(() => ({}));
+    if (response.ok) {
+      cached = null;
+      void discoverConfig(true);
+    }
+    return {
+      ok: response.ok,
+      ...result,
+      reason: result.reason || (response.ok ? "" : "catalog-capture-rejected")
+    };
+  } catch {
+    cached = null;
+    await setDisconnectedBadge();
+    return { ok: false, reason: "desktop-unreachable" };
+  }
+}
+
 async function reserveStoreAction(productId, kind) {
   let config = await discoverConfig(true);
   if (!automationActive(config)) return { ok: false, reason: "disarmed" };
@@ -962,6 +1007,8 @@ async function handleMessage(message, sender) {
       return postEvent(message.payload);
     case "CART_CONFIRM_QUICK_ADD_MISSION":
       return postQuickAddMission(message.product);
+    case "CART_CONFIRM_CATALOG_RESULTS":
+      return postCatalogResults(message.capture);
     case "CART_CONFIRM_CLAIM_PRODUCT":
       return claimProduct(String(message.productId || ""), `tab:${sender?.tab?.id ?? "unknown"}`);
     case "CART_CONFIRM_PRODUCT_STATE":

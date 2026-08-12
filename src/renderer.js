@@ -29,6 +29,21 @@ const elements = {
   bulkImportResult: document.getElementById("bulkImportResult"),
   bulkImportSubmitButton: document.getElementById("bulkImportSubmitButton"),
   bulkImportCancelButton: document.getElementById("bulkImportCancelButton"),
+  catalogSearchForm: document.getElementById("catalogSearchForm"),
+  catalogQuery: document.getElementById("catalogQuery"),
+  catalogTarget: document.getElementById("catalogTarget"),
+  catalogWalmart: document.getElementById("catalogWalmart"),
+  catalogAmazon: document.getElementById("catalogAmazon"),
+  catalogIncludeWords: document.getElementById("catalogIncludeWords"),
+  catalogExcludeWords: document.getElementById("catalogExcludeWords"),
+  catalogMaxPrice: document.getElementById("catalogMaxPrice"),
+  catalogSearchButton: document.getElementById("catalogSearchButton"),
+  catalogClearButton: document.getElementById("catalogClearButton"),
+  catalogSelectAllButton: document.getElementById("catalogSelectAllButton"),
+  catalogAddButton: document.getElementById("catalogAddButton"),
+  catalogStatus: document.getElementById("catalogStatus"),
+  catalogCount: document.getElementById("catalogCount"),
+  catalogList: document.getElementById("catalogList"),
   testButton: document.getElementById("testButton"),
   openAllButton: document.getElementById("openAllButton"),
   worstCase: document.getElementById("worstCase"),
@@ -124,6 +139,11 @@ let settingsSaveTimer = null;
 let selectedConfigurationProfileId = "built-in:recommended";
 let eventFilterProductId = null;
 let bulkImportInFlight = false;
+let catalogSearchInFlight = false;
+let catalogImportInFlight = false;
+let renderedCatalogSearchId = "";
+const catalogSelectedIds = new Set();
+const catalogSeenIds = new Set();
 // Persisted feed entries are history, not fresh alarm triggers. Only events
 // received after this renderer process starts may sound an alarm.
 let lastAlarmEventStamp = new Date().toISOString();
@@ -841,6 +861,228 @@ async function submitBulkImport() {
   }
 }
 
+function catalogRetailerInputs() {
+  return [
+    ["target", elements.catalogTarget],
+    ["walmart", elements.catalogWalmart],
+    ["amazon", elements.catalogAmazon]
+  ];
+}
+
+function catalogSearchInput() {
+  return {
+    query: elements.catalogQuery.value.trim(),
+    retailers: catalogRetailerInputs().filter(([, input]) => input.checked).map(([retailer]) => retailer),
+    filters: {
+      includeWords: elements.catalogIncludeWords.value,
+      excludeWords: elements.catalogExcludeWords.value,
+      maxPrice: elements.catalogMaxPrice.value
+    }
+  };
+}
+
+function setCatalogFormFromSearch(search) {
+  if (!search) return;
+  elements.catalogQuery.value = search.query || "";
+  for (const [retailer, input] of catalogRetailerInputs()) {
+    input.checked = (search.retailers || []).includes(retailer);
+  }
+  elements.catalogIncludeWords.value = (search.filters?.includeWords || []).join(" ");
+  elements.catalogExcludeWords.value = (search.filters?.excludeWords || []).join(" ");
+  elements.catalogMaxPrice.value = search.filters?.maxPrice ?? "";
+}
+
+function catalogStatusText(catalog) {
+  const search = catalog?.activeSearch;
+  if (!search) return catalog?.items?.length
+    ? "Showing the locally saved results from the last search."
+    : "Enter a keyword to begin.";
+  if (new Date(search.expiresAt).getTime() <= Date.now()) {
+    return `“${search.query}” expired. Select Search / refresh to capture the pages again.`;
+  }
+  const stores = (search.retailers || []).map((retailer) => {
+    const entry = search.status?.[retailer] || {};
+    const label = STORE_LABELS[retailer] || retailer;
+    return entry.state === "captured"
+      ? `${label}: ${Number(entry.count) || 0} captured`
+      : `${label}: waiting for visible results`;
+  });
+  return `“${search.query}” · ${stores.join(" · ")}`;
+}
+
+function renderCatalog(catalog = {}) {
+  const search = catalog.activeSearch || null;
+  const searchId = String(search?.id || "");
+  if (searchId !== renderedCatalogSearchId) {
+    renderedCatalogSearchId = searchId;
+    catalogSelectedIds.clear();
+    catalogSeenIds.clear();
+    setCatalogFormFromSearch(search);
+  }
+
+  const items = Array.isArray(catalog.items) ? catalog.items : [];
+  const existingIds = new Set((currentSnapshot?.settings?.products || []).map((product) => product.id));
+  const currentIds = new Set(items.map((item) => item.id));
+  for (const id of [...catalogSelectedIds]) {
+    if (!currentIds.has(id) || existingIds.has(id)) catalogSelectedIds.delete(id);
+  }
+  for (const id of [...catalogSeenIds]) {
+    if (!currentIds.has(id)) catalogSeenIds.delete(id);
+  }
+  for (const item of items) {
+    if (!catalogSeenIds.has(item.id)) {
+      catalogSeenIds.add(item.id);
+      if (!existingIds.has(item.id)) catalogSelectedIds.add(item.id);
+    }
+  }
+
+  elements.catalogList.replaceChildren();
+  if (!items.length) {
+    const empty = document.createElement("div");
+    empty.className = "empty-state";
+    empty.textContent = search ? "Waiting for visible retailer result cards…" : "No catalog results yet.";
+    elements.catalogList.append(empty);
+  }
+  for (const item of items) {
+    const alreadyAdded = existingIds.has(item.id);
+    const card = document.createElement("article");
+    card.className = `catalog-card${alreadyAdded ? " already-added" : ""}`;
+    card.dataset.retailer = item.retailer;
+
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.checked = catalogSelectedIds.has(item.id) && !alreadyAdded;
+    checkbox.disabled = alreadyAdded || catalogImportInFlight;
+    checkbox.setAttribute("aria-label", `Select ${item.title}`);
+    checkbox.addEventListener("change", () => {
+      if (checkbox.checked) catalogSelectedIds.add(item.id);
+      else catalogSelectedIds.delete(item.id);
+      renderCatalog(currentSnapshot?.catalog || {});
+    });
+
+    const main = document.createElement("div");
+    main.className = "catalog-result-main";
+    const title = document.createElement("strong");
+    title.className = "catalog-result-title";
+    title.textContent = item.title;
+    const meta = document.createElement("div");
+    meta.className = "catalog-result-meta";
+    meta.textContent = `${STORE_LABELS[item.retailer] || item.retailer} · ${SKU_LABELS[item.retailer] || "Item ID"} ${item.sku} · ${relativeTime(item.observedAt)}`;
+    const productUrl = document.createElement("div");
+    productUrl.className = "catalog-result-url";
+    productUrl.textContent = item.productUrl;
+    productUrl.title = item.productUrl;
+    main.append(title, meta, productUrl);
+
+    const price = document.createElement("div");
+    price.className = "catalog-result-price";
+    price.textContent = item.price === null ? "Not shown" : money(item.price);
+    const note = document.createElement("small");
+    note.textContent = alreadyAdded ? "Already in Missions" : "listing only";
+    price.append(note);
+    card.append(checkbox, main, price);
+    elements.catalogList.append(card);
+  }
+
+  const availableCount = items.filter((item) => !existingIds.has(item.id)).length;
+  elements.catalogCount.textContent = `${items.length} result${items.length === 1 ? "" : "s"} · ${availableCount} available`;
+  elements.catalogStatus.textContent = catalogStatusText(catalog);
+  const busy = catalogSearchInFlight || catalogImportInFlight;
+  elements.catalogSearchButton.disabled = busy || isArmed();
+  elements.catalogClearButton.disabled = busy || (!search && !items.length);
+  elements.catalogSelectAllButton.disabled = busy || availableCount === 0;
+  elements.catalogAddButton.disabled = busy || isArmed() || catalogSelectedIds.size === 0;
+  elements.catalogAddButton.textContent = catalogSelectedIds.size
+    ? `Add selected (${catalogSelectedIds.size}) to Missions`
+    : "Add selected to Missions";
+}
+
+async function submitCatalogSearch() {
+  if (catalogSearchInFlight || catalogImportInFlight) return;
+  if (isArmed()) {
+    setMessage("Switch Autopilot off before searching retailer catalogs.", "error");
+    return;
+  }
+  if (!elements.catalogQuery.checkValidity()) {
+    elements.catalogQuery.reportValidity();
+    return;
+  }
+  const input = catalogSearchInput();
+  if (!input.retailers.length) {
+    setMessage("Choose at least one retailer to search.", "error");
+    return;
+  }
+  if (elements.catalogMaxPrice.value && !elements.catalogMaxPrice.checkValidity()) {
+    elements.catalogMaxPrice.reportValidity();
+    return;
+  }
+
+  catalogSearchInFlight = true;
+  renderCatalog(currentSnapshot?.catalog || {});
+  try {
+    const result = await window.cartAssist.searchCatalog(input);
+    render(result.snapshot);
+    const defaultBrowser = (result.openings || []).some((opening) => opening.via === "default-browser");
+    setMessage(
+      `${result.openings?.length || input.retailers.length} official search page${input.retailers.length === 1 ? "" : "s"} opened. Visible results will arrive in this inbox.${defaultBrowser ? " Chrome was not found, so capture requires opening these searches in the Chrome profile that has Quick add loaded." : ""}`,
+      defaultBrowser ? "warn" : "success"
+    );
+  } catch (error) {
+    setMessage(error.message || "The catalog search could not start.", "error");
+  } finally {
+    catalogSearchInFlight = false;
+    renderCatalog(currentSnapshot?.catalog || {});
+  }
+}
+
+async function addSelectedCatalogMissions() {
+  if (catalogSearchInFlight || catalogImportInFlight) return;
+  if (editingId) {
+    setMessage("Finish the open mission editor before importing catalog results.", "error");
+    return;
+  }
+  if (isArmed()) {
+    setMessage("Switch Autopilot off before adding catalog results to Missions.", "error");
+    return;
+  }
+  const selectedIds = [...catalogSelectedIds];
+  if (!selectedIds.length) return;
+  catalogImportInFlight = true;
+  renderCatalog(currentSnapshot?.catalog || {});
+  try {
+    const result = await window.cartAssist.addCatalogMissions(selectedIds);
+    render(result.snapshot);
+    const summary = result.summary || {};
+    const extras = [];
+    if (summary.duplicates) extras.push(`${summary.duplicates} duplicate${summary.duplicates === 1 ? "" : "s"} skipped`);
+    if (summary.overCapacity) extras.push(`${summary.overCapacity} over the 50-mission limit`);
+    if (summary.missing) extras.push(`${summary.missing} no longer available`);
+    setMessage(
+      summary.imported
+        ? `${summary.imported} catalog mission${summary.imported === 1 ? "" : "s"} added Off, watch-only, and at a $0 cap for review.${extras.length ? ` ${extras.join(" · ")}.` : ""}`
+        : extras.join(" · ") || "No selected catalog results were imported.",
+      summary.imported ? "success" : "warn"
+    );
+  } catch (error) {
+    setMessage(error.message || "The selected catalog results could not be imported.", "error");
+  } finally {
+    catalogImportInFlight = false;
+    renderCatalog(currentSnapshot?.catalog || {});
+  }
+}
+
+async function clearCatalog() {
+  if (catalogSearchInFlight || catalogImportInFlight) return;
+  if (!window.confirm("Clear the Catalog Inbox and stop accepting results for its current search?")) return;
+  try {
+    const next = await window.cartAssist.clearCatalog();
+    render(next);
+    setMessage("Catalog Inbox cleared.", "success");
+  } catch (error) {
+    setMessage(error.message || "The Catalog Inbox could not be cleared.", "error");
+  }
+}
+
 function renderMissions() {
   // While a mission editor is open, leave the list DOM alone: background
   // snapshot broadcasts must not steal focus from the person typing.
@@ -1408,6 +1650,7 @@ function render(snapshot) {
   elements.versionText.textContent = `${app.name} v${app.version}`;
 
   renderMissions();
+  renderCatalog(snapshot.catalog || {});
   renderDiscord(snapshot.discord, settings);
   renderSignals(snapshot.signals || []);
   checkForAlarmEvents(events);
@@ -1497,6 +1740,19 @@ elements.bulkImportText.addEventListener("keydown", (event) => {
     void submitBulkImport();
   }
 });
+elements.catalogSearchForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  void submitCatalogSearch();
+});
+elements.catalogClearButton.addEventListener("click", () => void clearCatalog());
+elements.catalogSelectAllButton.addEventListener("click", () => {
+  const existingIds = new Set((currentSnapshot?.settings?.products || []).map((product) => product.id));
+  for (const item of currentSnapshot?.catalog?.items || []) {
+    if (!existingIds.has(item.id)) catalogSelectedIds.add(item.id);
+  }
+  renderCatalog(currentSnapshot?.catalog || {});
+});
+elements.catalogAddButton.addEventListener("click", () => void addSelectedCatalogMissions());
 
 elements.showDiscordButton.addEventListener("click", () => {
   elements.discordLauncher.hidden = true;

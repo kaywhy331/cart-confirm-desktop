@@ -6,6 +6,9 @@ contextBridge.exposeInMainWorld("cartAssist", {
   getSnapshot: () => ipcRenderer.invoke("cart-assist:snapshot"),
   saveSettings: (settings) => ipcRenderer.invoke("cart-assist:save-settings", settings),
   bulkImportMissions: (text) => ipcRenderer.invoke("cart-assist:bulk-import", text),
+  searchCatalog: (input) => ipcRenderer.invoke("cart-assist:catalog-search", input),
+  addCatalogMissions: (selectedIds) => ipcRenderer.invoke("cart-assist:catalog-add-missions", selectedIds),
+  clearCatalog: () => ipcRenderer.invoke("cart-assist:catalog-clear"),
   openProduct: (productId) => ipcRenderer.invoke("cart-assist:open-product", productId),
   stopAll: () => ipcRenderer.invoke("cart-assist:stop-all"),
   openBuyList: (options = {}) => ipcRenderer.invoke("cart-assist:open-buy-list", {
