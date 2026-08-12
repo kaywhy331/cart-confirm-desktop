@@ -100,7 +100,7 @@ Checked on 2026-08-12:
 
 - [ ] `WINDOWS_CERTIFICATE` / `WINDOWS_CERTIFICATE_PASSWORD` secrets — **neither
       is set.** The repo currently has zero Actions secrets configured, so a
-      tag push would fail at the "Require the Windows signing certificate"
+      tag push would fail at the "Require the Windows signing credentials"
       step even if the tag itself were valid.
 - [x] PR #13 merged to `main` at `197790e1`; post-merge CI run `31596412474`
       passed source verification and unsigned Windows packaging.
