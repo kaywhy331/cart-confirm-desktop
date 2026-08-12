@@ -1,13 +1,41 @@
-# Signed Windows Release Checklist
+# Windows Release Checklists
 
-Cart Confirm has no unsigned release path by design — `.github/workflows/release.yml`
-fails closed if any of the following are missing. This doc exists so that running
-a release is a checklist, not a judgment call, and so it's clear which parts
-require repo-owner action versus which are already automated.
+Cart Confirm has two deliberately separate release lanes:
 
-Executor agents (this includes Trix) do not hold merge, tag, or release authority
-on this repo. This doc is preparation only — it does not perform any of the steps
-below.
+- `.github/workflows/unsigned-prerelease.yml` publishes a manually authorized,
+  clearly labeled **unsigned prerelease**. Windows reports **Unknown publisher**
+  and may show a Microsoft Defender SmartScreen warning.
+- `.github/workflows/release.yml` publishes the signed stable release from a
+  verified `v*` tag and fails closed without the Windows signing certificate.
+
+An unsigned prerelease never weakens or substitutes for the signed stable lane.
+This doc keeps both paths explicit and auditable.
+
+Publishing either lane requires explicit repo-owner authorization. Do not infer
+release authority from ordinary implementation, merge, or packaging requests.
+
+## Unsigned prerelease
+
+Use this only when accepting **Unknown publisher** is deliberate and temporary.
+The manual workflow:
+
+1. Requires the exact confirmation phrase `PUBLISH UNSIGNED PRERELEASE`.
+2. Runs only from the current `main` commit.
+3. Requires the version-specific `unsigned-v<package version>` tag to be unused.
+4. Runs source verification, tests, `npm audit`, and the Windows build.
+5. Requires exactly two executables, verifies both checksum entries, and requires
+   Authenticode status `NotSigned` for each executable.
+6. Creates a GitHub **prerelease**, never a stable release, with the unsigned and
+   SmartScreen warning in its release notes.
+
+To publish, open **Actions → Unsigned Windows prerelease → Run workflow**, select
+`main`, and enter the confirmation phrase. Bump `package.json` before publishing
+another unsigned prerelease; the workflow refuses to replace an existing tag.
+
+The first explicitly authorized unsigned prerelease is available as
+[`unsigned-v3.1.8`](https://github.com/kaywhy331/cart-confirm-desktop/releases/tag/unsigned-v3.1.8).
+
+## Signed stable release
 
 ## What the workflow already enforces (no action needed)
 
@@ -23,8 +51,8 @@ below.
    `Valid` Authenticode signature status, and cross-checks every file in
    `dist/SHA256SUMS.txt` against a freshly computed hash.
 
-If any of these fail, no GitHub Release is created. There is no manual override
-in the workflow, and none should be added.
+If any of these fail, no stable GitHub Release is created. There is no unsigned
+override in the stable workflow; use the separately labeled prerelease lane.
 
 ## What a repo owner (Kevin) needs to do once, before the first signed release
 
@@ -66,7 +94,7 @@ in the workflow, and none should be added.
    artifacts and `SHA256SUMS.txt` attached, and spot-check one checksum
    locally before announcing the release.
 
-## Current release-candidate status
+## Current release status
 
 Checked on 2026-08-12:
 
@@ -74,12 +102,12 @@ Checked on 2026-08-12:
       is set.** The repo currently has zero Actions secrets configured, so a
       tag push would fail at the "Require the Windows signing certificate"
       step even if the tag itself were valid.
+- [x] PR #13 merged to `main` at `197790e1`; post-merge CI run `31596412474`
+      passed source verification and unsigned Windows packaging.
+- [x] Unsigned prerelease `unsigned-v3.1.8` published with both executables and
+      `SHA256SUMS.txt` after independent checksum and PE signature-table checks.
 - [ ] Signed, GitHub-verified `v3.1.8` tag — not yet created.
-- [ ] PR #13 review/merge — still open as a mergeable draft. At the audited
-      `a7b2016` head, its `pull_request` CI run passed both source verification
-      and unsigned Windows packaging. The continuation edits require fresh PR
-      CI after push, and the manual validation in `VALIDATION-CHECKLIST.md`
-      remains an operator gate.
 
-Nothing here should be improvised if a step is ambiguous or a secret is
-missing — stop and escalate rather than working around a failing gate.
+Nothing in the signed lane should be improvised if a step is ambiguous or a
+secret is missing. The unsigned lane must remain visibly separate and must never
+publish a stable `v*` release.
