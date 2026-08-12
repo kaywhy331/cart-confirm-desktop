@@ -204,7 +204,7 @@ Run:
 BUILD-WINDOWS.cmd
 ```
 
-The separately named NSIS installer, portable executable, and `SHA256SUMS.txt` are written to `dist\`. Pull-request artifacts are intentionally unsigned. A release requires a GitHub-verified signed tag matching `package.json`, plus `WINDOWS_CERTIFICATE` and `WINDOWS_CERTIFICATE_PASSWORD` secrets; the workflow verifies both Authenticode signatures and checksums before publishing. See [`RELEASE.md`](RELEASE.md) for the full signed-release checklist.
+The separately named NSIS installer, portable executable, and `SHA256SUMS.txt` are written to `dist\`. CI artifacts are intentionally unsigned. A manually authorized unsigned GitHub prerelease may publish those files with a prominent **Unknown publisher** warning; stable releases still require a GitHub-verified signed tag matching `package.json`, plus `WINDOWS_CERTIFICATE` and `WINDOWS_CERTIFICATE_PASSWORD` secrets. Both release workflows verify checksums and enforce their expected Authenticode state before publishing. See [`RELEASE.md`](RELEASE.md) for both release checklists.
 
 ## Verify the source
 

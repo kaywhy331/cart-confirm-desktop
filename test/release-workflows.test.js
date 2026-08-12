@@ -1,0 +1,47 @@
+"use strict";
+
+const test = require("node:test");
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
+
+const root = path.resolve(__dirname, "..");
+const signed = fs.readFileSync(path.join(root, ".github", "workflows", "release.yml"), "utf8");
+const unsigned = fs.readFileSync(
+  path.join(root, ".github", "workflows", "unsigned-prerelease.yml"),
+  "utf8"
+);
+
+test("the stable release lane remains signed and tag-gated", () => {
+  assert.match(signed, /tags: \["v\*"\]/);
+  assert.match(signed, /verification\.verified/);
+  assert.match(signed, /WINDOWS_CERTIFICATE/);
+  assert.match(signed, /WINDOWS_CERTIFICATE_PASSWORD/);
+  assert.match(signed, /Get-AuthenticodeSignature/);
+  assert.match(signed, /Status -ne "Valid"/);
+  assert.doesNotMatch(signed, /unsigned-v/);
+});
+
+test("the unsigned lane is manual, main-only, and visibly prerelease-only", () => {
+  assert.match(unsigned, /workflow_dispatch:/);
+  assert.doesNotMatch(unsigned, /^\s+push:/m);
+  assert.match(unsigned, /PUBLISH UNSIGNED PRERELEASE/);
+  assert.match(unsigned, /refs\/heads\/main/);
+  assert.match(unsigned, /GITHUB_SHA -ne \$mainSha/);
+  assert.match(unsigned, /unsigned-v\$packageVersion/);
+  assert.match(unsigned, /matching-refs\/tags\/\$tag/);
+  assert.match(unsigned, /Could not verify whether tag/);
+  assert.match(unsigned, /--prerelease/);
+  assert.match(unsigned, /Unknown publisher/);
+});
+
+test("the unsigned lane verifies artifacts and refuses signed executables", () => {
+  assert.match(unsigned, /Expected exactly two Windows executables/);
+  assert.match(unsigned, /SHA256SUMS\.txt/);
+  assert.match(unsigned, /Get-FileHash/);
+  assert.match(unsigned, /Duplicate checksum entry/);
+  assert.match(unsigned, /Get-AuthenticodeSignature/);
+  assert.match(unsigned, /Status -ne "NotSigned"/);
+  assert.match(unsigned, /CSC_IDENTITY_AUTO_DISCOVERY: "false"/);
+  assert.doesNotMatch(unsigned, /WINDOWS_CERTIFICATE/);
+});

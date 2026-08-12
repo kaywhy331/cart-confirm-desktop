@@ -1,0 +1,133 @@
+name: Unsigned Windows prerelease
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: Type PUBLISH UNSIGNED PRERELEASE to continue
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: unsigned-windows-prerelease
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: windows-latest
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+    steps:
+      - name: Require explicit authorization from current main
+        shell: pwsh
+        env:
+          CONFIRMATION: ${{ inputs.confirmation }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ($env:CONFIRMATION -cne "PUBLISH UNSIGNED PRERELEASE") {
+            throw "Unsigned prerelease publication requires the exact confirmation phrase."
+          }
+          if ($env:GITHUB_REF -ne "refs/heads/main") {
+            throw "Unsigned prereleases may be dispatched only from main."
+          }
+          $mainSha = (gh api "repos/$env:GITHUB_REPOSITORY/git/ref/heads/main" | ConvertFrom-Json).object.sha
+          if ($env:GITHUB_SHA -ne $mainSha) {
+            throw "The dispatched commit is not the current main commit."
+          }
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+      - name: Require an unused unsigned version tag
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $packageVersion = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          if ($packageVersion -notmatch '^\d+\.\d+\.\d+$') {
+            throw "package.json must contain a three-part numeric version."
+          }
+          $tag = "unsigned-v$packageVersion"
+          $matchingRefs = gh api "repos/$env:GITHUB_REPOSITORY/git/matching-refs/tags/$tag"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Could not verify whether tag $tag already exists."
+          }
+          if (@($matchingRefs | ConvertFrom-Json).Count -ne 0) {
+            throw "Tag $tag already exists; bump the package version before publishing another prerelease."
+          }
+      - run: npm ci --no-fund
+      - run: npm run verify
+      - run: npm audit --audit-level=moderate
+      - run: npm run dist:win
+      - name: Verify checksums and require unsigned executables
+        shell: pwsh
+        run: |
+          $artifacts = @(Get-ChildItem dist -Filter *.exe)
+          if ($artifacts.Count -ne 2) {
+            throw "Expected exactly two Windows executables, found $($artifacts.Count)."
+          }
+          foreach ($artifact in $artifacts) {
+            $signature = Get-AuthenticodeSignature $artifact.FullName
+            if ($signature.Status -ne "NotSigned") {
+              throw "$($artifact.Name) must be explicitly unsigned; Authenticode status was $($signature.Status)."
+            }
+          }
+          $checksums = @(Get-Content dist/SHA256SUMS.txt)
+          if ($checksums.Count -ne 2) {
+            throw "Expected exactly two checksum entries, found $($checksums.Count)."
+          }
+          $seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+          foreach ($line in $checksums) {
+            if ($line -notmatch '^(?<hash>[0-9a-f]{64})\s{2}(?<name>[^\\/]+\.exe)$') {
+              throw "Malformed checksum entry: $line"
+            }
+            $expectedName = $Matches.name
+            if (-not $seen.Add($expectedName)) {
+              throw "Duplicate checksum entry for $expectedName."
+            }
+            $artifact = $artifacts | Where-Object Name -CEQ $expectedName
+            if ($null -eq $artifact) {
+              throw "Checksum names an unexpected artifact: $expectedName"
+            }
+            $actual = (Get-FileHash $artifact.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($actual -ne $Matches.hash) {
+              throw "Checksum mismatch for $($artifact.Name)."
+            }
+          }
+      - name: Publish clearly labeled prerelease
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $packageVersion = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $tag = "unsigned-v$packageVersion"
+          $checksums = Get-Content dist/SHA256SUMS.txt
+          $notes = @(
+            "## Unsigned prerelease",
+            "",
+            "These Windows executables are intentionally **unsigned**. Windows will show **Unknown publisher** and may display a Microsoft Defender SmartScreen warning. This is not the signed stable release.",
+            "",
+            "Built by GitHub Actions from merged main commit $env:GITHUB_SHA. Source verification, the test suite, npm audit, Windows packaging, checksums, and the absence of Authenticode signatures all passed before publication.",
+            "",
+            "Verify both downloads with the attached SHA256SUMS.txt before running them.",
+            ""
+          ) + @($checksums | ForEach-Object { "    $_" })
+          $notes | Set-Content release-notes.md
+          $assets = @(Get-ChildItem dist -Filter *.exe | Sort-Object Name | ForEach-Object FullName)
+          $assets += (Resolve-Path dist/SHA256SUMS.txt).Path
+          $arguments = @(
+            "release", "create", $tag,
+            "--repo", $env:GITHUB_REPOSITORY,
+            "--target", $env:GITHUB_SHA,
+            "--prerelease",
+            "--title", "Cart Confirm v$packageVersion (Unsigned prerelease)",
+            "--notes-file", "release-notes.md"
+          ) + $assets
+          & gh @arguments
+          if ($LASTEXITCODE -ne 0) {
+            throw "GitHub prerelease publication failed."
+          }
