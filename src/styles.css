@@ -422,6 +422,15 @@ h1 { font-size: 21px; letter-spacing: -0.025em; }
 .row-actions { display: flex; flex: 0 0 auto; gap: 6px; }
 
 .product-url-field { margin-bottom: 10px; }
+.mission-profile-row {
+  display: grid;
+  grid-template-columns: minmax(180px, 0.6fr) auto minmax(220px, 1fr);
+  align-items: end;
+  gap: 9px;
+  margin-bottom: 10px;
+}
+.mission-profile-row .field { margin: 0; }
+.mission-profile-row small { align-self: center; color: var(--subtle); font-size: 9.5px; line-height: 1.45; }
 .product-fields {
   display: grid;
   grid-template-columns: minmax(110px, 0.75fr) minmax(64px, 0.35fr) minmax(150px, 0.95fr) minmax(150px, 0.95fr);
@@ -604,6 +613,109 @@ button:disabled:hover { transform: none; }
 }
 .catalog-result-price { color: var(--accent); font-size: 11px; font-weight: 800; white-space: nowrap; }
 .catalog-result-price small { display: block; margin-top: 3px; color: var(--subtle); font-size: 8.5px; font-weight: 600; text-align: right; }
+
+.catalog-import-defaults {
+  display: grid;
+  grid-template-columns: minmax(180px, 0.45fr) minmax(0, 1fr);
+  align-items: end;
+  gap: 11px;
+  margin-top: 10px;
+}
+.catalog-import-defaults .field, .catalog-import-defaults .catalog-safety { margin: 0; }
+
+/* Central MSRP, reusable mission profiles, and bulk item updates */
+.item-defaults-panel .panel-content { display: grid; gap: 12px; }
+.defaults-block {
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(3, 8, 17, 0.3);
+}
+.defaults-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 11px;
+}
+.defaults-heading strong { color: #eaf4ff; font-size: 12px; }
+.defaults-heading p { max-width: 600px; margin-top: 4px; color: var(--subtle); font-size: 10px; line-height: 1.45; }
+.defaults-default-profile { min-width: 210px; margin: 0; }
+.item-profile-form {
+  display: grid;
+  grid-template-columns: minmax(160px, 1.2fr) repeat(5, minmax(105px, 0.8fr));
+  align-items: end;
+  gap: 8px;
+}
+.item-profile-form .field { margin: 0; }
+.item-profile-form .toggle-row { min-height: 38px; }
+.item-profile-form .action-row { grid-column: 1 / -1; }
+.saved-item-profiles { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 10px; }
+.profile-chip {
+  padding: 6px 9px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.6);
+  color: var(--muted);
+  font-size: 9.5px;
+  cursor: pointer;
+}
+.profile-chip.selected { border-color: rgba(125, 211, 252, 0.5); color: var(--accent); }
+.msrp-research-status { margin-bottom: 9px; color: var(--subtle); font-size: 10px; line-height: 1.5; }
+.msrp-research-controls {
+  display: grid;
+  grid-template-columns: minmax(240px, 1fr) auto auto minmax(210px, auto);
+  align-items: end;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.msrp-research-controls .field { margin: 0; }
+.msrp-research-controls .toggle-row { min-height: 34px; }
+.msrp-suggestions { display: grid; gap: 7px; margin-bottom: 10px; }
+.msrp-suggestion {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  padding: 9px 10px;
+  border: 1px solid rgba(253, 230, 138, 0.24);
+  border-radius: 10px;
+  background: rgba(113, 63, 18, 0.09);
+}
+.msrp-suggestion strong { display: block; color: var(--warning); font-size: 10.5px; }
+.msrp-suggestion p { margin-top: 4px; color: var(--muted); font-size: 9.5px; line-height: 1.45; }
+.msrp-suggestion small { display: block; overflow: hidden; margin-top: 4px; color: var(--subtle); font-size: 8.5px; text-overflow: ellipsis; white-space: nowrap; }
+.msrp-list { display: grid; gap: 8px; margin-bottom: 9px; }
+.msrp-row {
+  display: grid;
+  grid-template-columns: minmax(110px, 0.75fr) minmax(130px, 1fr) minmax(180px, 1.25fr) repeat(3, minmax(90px, 0.58fr)) minmax(150px, 1fr) auto;
+  align-items: end;
+  gap: 7px;
+  padding: 9px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(5, 11, 22, 0.45);
+}
+.msrp-row .field { margin: 0; }
+.msrp-row .field > span:first-child { font-size: 9px; }
+.msrp-source { min-width: 0; }
+.msrp-source small { display: block; overflow: hidden; margin-top: 4px; color: var(--subtle); font-size: 8.5px; text-overflow: ellipsis; white-space: nowrap; }
+.msrp-source .action-row { gap: 4px; margin-top: 5px; }
+.msrp-source .action-row .button { min-height: 25px; padding: 0 6px; font-size: 8px; }
+.bulk-mission-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
+.bulk-mission-option {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 8px;
+  padding: 8px 9px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  color: var(--muted);
+  font-size: 10px;
+}
+.bulk-mission-option span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bulk-profile-actions { display: flex; gap: 8px; margin-top: 10px; }
+.bulk-profile-actions select { max-width: 280px; }
 
 /* Discord signal setup and inbox */
 .discord-launcher {
@@ -1049,7 +1161,10 @@ footer {
   .step-header { flex-wrap: wrap; }
   .product-row-top { flex-wrap: wrap; }
   .title-input { flex-basis: 100%; order: 5; }
-  .product-fields, .automation-grid, .discord-setup, .catalog-filter-grid { grid-template-columns: 1fr; }
+  .product-fields, .automation-grid, .discord-setup, .catalog-filter-grid, .catalog-import-defaults, .item-profile-form, .msrp-row, .bulk-mission-list, .mission-profile-row, .msrp-research-controls { grid-template-columns: 1fr; }
+  .item-profile-form .action-row { grid-column: auto; }
+  .defaults-heading { flex-direction: column; }
+  .defaults-default-profile { width: 100%; }
   .settings-explainer { grid-template-columns: 1fr; }
   .configuration-profile-heading { align-items: stretch; flex-direction: column; }
   .schedule-week { grid-template-columns: repeat(2, minmax(0, 1fr)); }

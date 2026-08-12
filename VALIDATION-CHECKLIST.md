@@ -107,14 +107,17 @@ For each of Target, Walmart, and Amazon you plan to automate:
 
 - [ ] With Autopilot off, run a **Catalog Inbox** keyword search against one retailer. Confirm exactly one official search page opens and the inbox lists only visible result cards with the correct retailer, item ID, title, canonical URL, displayed price (or **Not shown**), and observation time.
 - [ ] Repeat with include words, exclude words, and a maximum displayed price. Confirm nonmatching titles, missing prices under a maximum-price filter, and prices above the maximum stay out of the inbox. Confirm no pagination, scrolling, repeated retailer requests, or private API calls are initiated by Cart Confirm.
-- [ ] Import one catalog result. Confirm it is added only once and starts **Off**, **Watch & alert only**, with both caps at $0. Confirm selecting an existing mission reports/skips the duplicate and the 50-mission limit is never exceeded.
+- [ ] In **Item defaults**, leave one product type without prices and approve a different type for Target, Walmart, and Amazon. Import matching and nonmatching catalog results with **Shipping auto-buy** selected. Confirm matching rows receive only their retailer's approved MSRP, shipping, auto-buy, and a sufficient final-total cap; unknown rows retain the profile fields but stay Off at $0. Confirm displayed listing prices never become caps.
+- [ ] Use Catalog Inbox **Select all** and **Select none**, import one result only once, and confirm existing missions are skipped and the 50-mission limit is never exceeded.
 
 - [ ] With the desktop connected and Autopilot off, use the Chrome toolbar
       **Quick add** popup on one product page from each supported retailer.
       Confirm the preview shows the exact TCIN / Walmart item ID / ASIN, title,
       and current retailer-page price. Add it and confirm Missions receives an
-      enabled **Watch & alert only** row whose maximum unit price exactly matches
-      the preview, without any cart or checkout action.
+      row whose maximum unit price exactly matches the preview and whose other
+      fields match the selected default item profile. With the built-in default,
+      confirm shipping + auto-buy and a sufficient final-total cap. Confirm
+      Autopilot remains Off and no cart or checkout action occurs during import.
 - [ ] Change an existing Quick-added mission's cap, then Quick-add the same
       product again. Confirm the popup reports a duplicate and the existing
       mission, cap, action, and enabled state remain unchanged.
@@ -122,13 +125,27 @@ For each of Target, Walmart, and Amazon you plan to automate:
       Quick add shows **Not readable** and cannot add the mission. Also confirm
       Quick add is blocked while Autopilot is armed.
 - [ ] Confirm the toolbar action is named **Quick add**. Open it and verify the
-      top-right ×, the smaller × beside **Add watch mission**, Escape, and a
+      top-right ×, the smaller × beside **Add with default profile**, Escape, and a
       click outside the popup each close it without creating a mission.
 - [ ] In desktop **Bulk import**, paste tracked and duplicate Target, Walmart,
       and Amazon product URLs plus one unsupported line. Confirm supported IDs
       are detected once, tracking parameters are removed, and the invalid line
-      is reported. Confirm every imported row starts Off as **Watch & alert
-      only** with a $0 cap and remains inert until manually reviewed and enabled.
+      is reported. Confirm the default profile is applied; a matching approved
+      MSRP can make a row ready, while an unknown product remains Off with a $0 cap.
+- [ ] Create, update, select, restart with, and delete a custom item profile.
+      Confirm selecting it in a mission applies all allowlisted fields. In bulk
+      update, select individual rows, all, and none; confirm only selected rows
+      change and an unknown $0 row cannot become enabled.
+- [ ] In **Select and use missions**, choose two missions and select **Copy selected
+      list**. Paste into a plain-text editor and confirm each entry is exactly
+      `Title - $ExpectedPrice`, followed by its product URL, with one blank line
+      between entries. Confirm a mission without a positive cap says **Price not set**.
+- [ ] Configure a test OpenAI API key only on a machine where OS encryption is
+      available. Confirm the key is never echoed or written to settings JSON.
+      Run MSRP research, open every cited source, and confirm suggestions do not
+      change approved MSRP or mission caps until **Accept MSRP** is selected.
+      Confirm acceptance updates only that retailer/type and existing missions
+      still require an explicit profile/bulk apply. Remove the key afterward.
 - [ ] Open **Speed and traffic settings (optional)** and apply each ready-made
       setup with Autopilot off. Confirm only the timing/media inputs change and
       that all missions, caps, quantities, actions, and enabled states remain

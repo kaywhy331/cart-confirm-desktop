@@ -8,6 +8,7 @@ const { JSDOM } = require("jsdom");
 
 const html = fs.readFileSync(path.join(__dirname, "..", "src", "index.html"), "utf8");
 const configProfilesSource = fs.readFileSync(path.join(__dirname, "..", "lib", "config-profiles.js"), "utf8");
+const itemDefaultsSource = fs.readFileSync(path.join(__dirname, "..", "lib", "item-defaults.js"), "utf8");
 const rendererSource = fs.readFileSync(path.join(__dirname, "..", "src", "renderer.js"), "utf8");
 const stylesSource = fs.readFileSync(path.join(__dirname, "..", "src", "styles.css"), "utf8");
 
@@ -50,6 +51,9 @@ function snapshotFixture() {
       discordChannelId: "",
       discordAutoOpen: true,
       configurationProfiles: [],
+      msrpCatalog: [],
+      itemProfiles: [],
+      defaultItemProfileId: "built-in:shipping-auto-buy",
       firstPartyOnly: true
     },
     status: {
@@ -63,6 +67,16 @@ function snapshotFixture() {
     events: [],
     signals: [],
     catalog: { version: 1, activeSearch: null, items: [] },
+    msrpResearch: {
+      configured: false,
+      credentialUsable: false,
+      enabled: false,
+      due: true,
+      inFlight: false,
+      lastRunAt: "",
+      lastError: "",
+      suggestions: []
+    },
     discord: {
       enabled: false,
       configured: false,
@@ -91,7 +105,9 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   const catalogSearchInputs = [];
   const catalogAddInputs = [];
   let catalogClearCalls = 0;
+  const acceptedMsrpSuggestionIds = [];
   const copiedAffiliateUrls = [];
+  const copiedMissionSelections = [];
   const style = window.document.createElement("style");
   style.textContent = stylesSource;
   window.document.head.append(style);
@@ -132,7 +148,7 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
       ];
       return {
         snapshot: next,
-        summary: { candidates: 2, imported: 2, duplicates: 0, invalid: 0, overCapacity: 0 },
+        summary: { candidates: 2, imported: 2, ready: 0, needsPrice: 2, duplicates: 0, invalid: 0, overCapacity: 0 },
         issues: []
       };
     },
@@ -194,12 +210,36 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
           query: "pokemon"
         }]
       };
-      return { snapshot: next, summary: { selected: 1, imported: 1, duplicates: 0, missing: 0, overCapacity: 0 } };
+      return { snapshot: next, summary: { selected: 1, imported: 1, ready: 0, needsPrice: 1, duplicates: 0, missing: 0, overCapacity: 0 } };
     },
     clearCatalog: async () => {
       catalogClearCalls += 1;
       return snapshotFixture();
     },
+    acceptMsrpSuggestion: async (suggestionId) => {
+      acceptedMsrpSuggestionIds.push(suggestionId);
+      const next = snapshotFixture();
+      next.settings.msrpCatalog = [window.CartConfirmItemDefaults.normalizeMsrpRecord({
+        id: "msrp:pokemon-etb",
+        productLine: "Pokémon",
+        productType: "Elite Trainer Box",
+        matchTerms: ["elite trainer box", "etb"],
+        prices: { target: 49.99 },
+        sources: {
+          target: {
+            label: "Target official listing",
+            url: "https://www.target.com/p/example",
+            verifiedAt: "2026-08-12T12:00:00Z"
+          }
+        }
+      })];
+      return next;
+    },
+    dismissMsrpSuggestion: async () => snapshotFixture(),
+    researchMsrp: async () => snapshotFixture(),
+    saveMsrpResearchKey: async () => snapshotFixture(),
+    removeMsrpResearchKey: async () => snapshotFixture(),
+    openResearchSource: async () => "",
     openProduct: async () => {
       openProductCalls += 1;
       return { productId: "target:95298172", via: "companion-tab" };
@@ -216,6 +256,10 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
     copyAffiliateLink: async (input) => {
       copiedAffiliateUrls.push(input.affiliateUrl);
       return input;
+    },
+    copyMissionList: async (selectedIds) => {
+      copiedMissionSelections.push([...selectedIds]);
+      return { count: selectedIds.length, text: "copied" };
     },
     connectDiscord: async () => snapshotFixture(),
     disconnectDiscord: async () => snapshotFixture(),
@@ -237,6 +281,7 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   };
 
   window.eval(configProfilesSource);
+  window.eval(itemDefaultsSource);
   window.eval(rendererSource);
   await new Promise((resolve) => setTimeout(resolve, 20));
   const doc = window.document;
@@ -315,6 +360,73 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   assert.equal(savedSettingsInputs.at(-1).configurationProfiles.length, 0);
   assert.equal(profileSelect.options.length, 3);
   assert.equal(doc.getElementById("deleteConfigurationProfileButton").hidden, true);
+
+  // Item profiles support create/update/delete and bulk application without
+  // changing unselected missions or enabling an unknown zero-dollar cap.
+  doc.getElementById("itemProfileName").value = "Two shipped";
+  doc.getElementById("itemProfileQuantity").value = "2";
+  doc.getElementById("itemProfileBuffer").value = "12";
+  doc.getElementById("itemProfileForm").dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true }));
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  const customItemProfile = savedSettingsInputs.at(-1).itemProfiles[0];
+  assert.equal(customItemProfile.name, "Two shipped");
+  assert.equal(customItemProfile.settings.quantity, 2);
+  assert.equal(customItemProfile.settings.maxOrderBuffer, 12);
+  assert.equal(doc.getElementById("itemProfileDeleteButton").hidden, false);
+
+  doc.getElementById("itemProfileName").value = "Two shipped updated";
+  doc.getElementById("itemProfileForm").dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true }));
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(savedSettingsInputs.at(-1).itemProfiles.length, 1);
+  assert.equal(savedSettingsInputs.at(-1).itemProfiles[0].name, "Two shipped updated");
+
+  doc.getElementById("bulkMissionSelectAllButton").click();
+  doc.getElementById("copySelectedMissionListButton").click();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.deepEqual(copiedMissionSelections, [["target:95298172"]]);
+  assert.match(doc.getElementById("message").textContent, /1 selected mission copied as a consolidated list/);
+  doc.getElementById("bulkItemProfile").value = customItemProfile.id;
+  doc.getElementById("applyBulkItemProfileButton").click();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(savedSettingsInputs.at(-1).products[0].quantity, 2);
+  assert.equal(savedSettingsInputs.at(-1).products[0].maxPrice, 40);
+  assert.equal(savedSettingsInputs.at(-1).products[0].maxOrderTotal, 92);
+  assert.equal(savedSettingsInputs.at(-1).products[0].enabled, true);
+
+  doc.getElementById("itemProfileDeleteButton").click();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(savedSettingsInputs.at(-1).itemProfiles.length, 0);
+  assert.equal(doc.getElementById("itemProfileDeleteButton").hidden, true);
+
+  // Citation acceptance goes through the explicit review control and does
+  // not modify the current mission list in the renderer payload.
+  const suggested = snapshotFixture();
+  suggested.settings.msrpCatalog = [window.CartConfirmItemDefaults.normalizeMsrpRecord({
+    id: "msrp:pokemon-etb",
+    productLine: "Pokémon",
+    productType: "Elite Trainer Box",
+    matchTerms: ["elite trainer box", "etb"],
+    prices: {}
+  })];
+  suggested.msrpResearch.suggestions = [{
+    id: "suggestion-1",
+    recordId: "msrp:pokemon-etb",
+    retailer: "target",
+    price: 49.99,
+    sourceUrl: "https://www.target.com/p/example",
+    sourceTitle: "Target official listing",
+    rationale: "Current first-party listing",
+    researchedAt: "2026-08-12T12:00:00Z",
+    model: "gpt-5.6"
+  }];
+  pushUpdate(suggested);
+  const acceptMsrpButton = [...doc.querySelectorAll(".msrp-suggestion button")]
+    .find((button) => button.textContent === "Accept MSRP");
+  assert.ok(acceptMsrpButton);
+  acceptMsrpButton.click();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.deepEqual(acceptedMsrpSuggestionIds, ["suggestion-1"]);
+  assert.match(doc.querySelector(".mission-card [data-view='sub']").textContent, /\$40\.00 cap/);
 
   // Discord stays out of the dashboard until requested, then opens as the
   // bottom card and shares the Missions/Activity minimize behavior.
@@ -443,7 +555,8 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   await new Promise((resolve) => setTimeout(resolve, 10));
   assert.equal(copiedAffiliateUrls.length, 2);
 
-  // A Discord inbox signal is identified as new and prefills a safe watch mission.
+  // A Discord inbox signal is identified as new and prefills the default
+  // shipping auto-buy profile while remaining Off for deliberate review.
   const signaled = snapshotFixture();
   signaled.signals = [{
     id: "discord:123",
@@ -466,15 +579,20 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   editCard = doc.querySelector(".mission-edit-card");
   assert.equal(editCard.querySelector("[data-field='retailer']").value, "walmart");
   assert.equal(editCard.querySelector("[data-field='maxPrice']").value, "31.97");
-  assert.equal(editCard.querySelector("[data-field='action']").value, "watch");
+  assert.equal(editCard.querySelector("[data-field='action']").value, "checkout");
+  assert.equal(editCard.querySelector("[data-field='fulfillmentMode']").value, "shipping");
+  assert.equal(editCard.querySelector("[data-field='enabled']").checked, false);
   editCard.querySelector(".mission-cancel").click();
   assert.equal(doc.querySelector(".mission-edit-card"), null);
   assert.ok(doc.querySelector(".mission-card"));
 
-  // New mission defaults to watch and derives a title from the pasted link.
+  // New mission defaults to the requested shipping auto-buy profile and stays
+  // Off until an approved MSRP or manual cap is applied.
   doc.getElementById("newMissionButton").click();
   editCard = doc.querySelector(".mission-edit-card");
-  assert.equal(editCard.querySelector("[data-field='action']").value, "watch");
+  assert.equal(editCard.querySelector("[data-field='action']").value, "checkout");
+  assert.equal(editCard.querySelector("[data-field='fulfillmentMode']").value, "shipping");
+  assert.equal(editCard.querySelector("[data-field='enabled']").checked, false);
   const urlInput = editCard.querySelector("[data-field='productUrl']");
   urlInput.value = "https://www.target.com/p/pokemon-scarlet-violet-booster-box/-/A-95298172";
   urlInput.dispatchEvent(new window.Event("change", { bubbles: true }));
@@ -632,7 +750,7 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   assert.ok(doc.querySelector(".mission-empty"), "empty CTA returns after cancel");
 
   // Bulk import accepts mixed retailer URLs and renders the backend's safe,
-  // disabled watch missions without silently enabling a $0 cap.
+  // default-profile missions without silently enabling a $0 cap.
   doc.getElementById("bulkImportButton").click();
   const bulkDialog = doc.getElementById("bulkImportDialog");
   assert.equal(bulkDialog.hasAttribute("open"), true);
@@ -646,10 +764,11 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   assert.equal(bulkDialog.hasAttribute("open"), false);
   assert.equal(doc.querySelectorAll(".mission-card").length, 2);
   assert.equal([...doc.querySelectorAll("[data-view='enabled']")].every((input) => !input.checked), true);
-  assert.match(doc.getElementById("message").textContent, /2 imported Off for review/);
+  assert.match(doc.getElementById("message").textContent, /2 imported with the default profile/);
+  assert.match(doc.getElementById("message").textContent, /2 left Off pending price approval/);
 
   // A keyword search opens only selected official retailer searches, renders
-  // captured listing data, and imports selections as inert missions.
+  // captured listing data, and imports selections with the chosen profile.
   doc.getElementById("catalogQuery").value = "pokemon";
   doc.getElementById("catalogTarget").checked = false;
   doc.getElementById("catalogWalmart").checked = false;
@@ -666,7 +785,7 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   assert.deepEqual(Array.from(catalogAddInputs[0]), ["amazon:B0CAT12345"]);
   assert.equal(doc.querySelectorAll(".mission-card").length, 2);
   assert.equal([...doc.querySelectorAll(".mission-card")].at(-1).querySelector("[data-view='enabled']").checked, false);
-  assert.match(doc.getElementById("message").textContent, /Off, watch-only, and at a \$0 cap/);
+  assert.match(doc.getElementById("message").textContent, /selected profile/);
   doc.getElementById("catalogClearButton").click();
   await new Promise((resolve) => setTimeout(resolve, 10));
   assert.equal(catalogClearCalls, 1);
