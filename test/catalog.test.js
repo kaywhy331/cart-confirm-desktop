@@ -56,6 +56,28 @@ test("catalog searches are bounded, filtered, and tied to an active local search
   }, NOW + 1_000), /active catalog search/);
 });
 
+test("the desktop trust boundary accepts at most 20 results from one retailer capture", () => {
+  const results = Array.from({ length: 25 }, (_, index) => {
+    const sku = String(1011209000 + index);
+    return {
+      retailer: "target",
+      sku,
+      title: `Pokémon Card ${index}`,
+      productUrl: `https://www.target.com/p/card-${index}/-/A-${sku}`,
+      price: 10
+    };
+  });
+  const accepted = acceptCatalogResults(activeState(), {
+    searchId: "search-1",
+    retailer: "target",
+    query: "pokemon cards",
+    results
+  }, NOW + 1_000);
+  assert.equal(accepted.accepted, 20);
+  assert.equal(accepted.state.items.length, 20);
+  assert.equal(accepted.state.activeSearch.status.target.count, 20);
+});
+
 test("catalog imports create only disabled watch-only zero-dollar missions and honor duplicates/capacity", () => {
   const accepted = acceptCatalogResults(activeState(), {
     searchId: "search-1",

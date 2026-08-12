@@ -81,6 +81,22 @@ Fast-load mode keeps the authenticated browser workflow but removes nonessential
 8. If an older companion is already loaded, select **Reload** on its extension card and approve the expanded first-party subdomain permission used for overload detection.
 9. Sign in normally to every store you plan to use and verify saved delivery, payment, and store preferences.
 
+When launching from PowerShell instead of double-clicking, include the current-directory prefix:
+
+```powershell
+.\RUN-ON-WINDOWS.cmd
+```
+
+To update an existing Git checkout, close Cart Confirm first, then run:
+
+```powershell
+git pull --ff-only
+npm ci --no-fund
+.\RUN-ON-WINDOWS.cmd
+```
+
+If Chrome still shows `UPD` after the app restarts, reload the unpacked extension once from `chrome://extensions`.
+
 The extension badge reads `STOP` when monitoring is paused, `IDLE` when monitoring is active but Autopilot is disarmed, and `ARM` when Autopilot is armed. Keep the desktop app open while running the buy list.
 
 ## Configure a buy list

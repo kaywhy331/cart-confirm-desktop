@@ -46,14 +46,15 @@ in the workflow, and none should be added.
 ## Per-release steps
 
 1. Confirm `main` is at the exact commit intended for release, and that
-   `package.json`'s `version` is the version being released (e.g. `2.2.0`).
-2. Confirm PR #1 (or whichever PR carries the release commit) has been reviewed
+   `package.json`'s `version` is the version being released (for example,
+   `3.1.8`).
+2. Confirm the PR carrying the release commit has been reviewed
    and merged through the normal process — this doc does not cover merge
    approval, only the tag/build/sign gate downstream of it.
 3. From a checkout of that commit, create and push a signed annotated tag:
    ```sh
-   git tag -s v2.2.0 -m "Cart Confirm v2.2.0"
-   git push origin v2.2.0
+   git tag -s v3.1.8 -m "Cart Confirm v3.1.8"
+   git push origin v3.1.8
    ```
    (`-s` signs with your configured GPG key; use `-a` plus a separate SSH
    signing setup if you're using SSH-based signing instead — either way, the
@@ -65,17 +66,20 @@ in the workflow, and none should be added.
    artifacts and `SHA256SUMS.txt` attached, and spot-check one checksum
    locally before announcing the release.
 
-## Status as of this checklist
+## Current release-candidate status
 
-Checked via `gh secret list --repo kaywhy331/cart-confirm-desktop` on 2026-08-06:
+Checked on 2026-08-12:
 
 - [ ] `WINDOWS_CERTIFICATE` / `WINDOWS_CERTIFICATE_PASSWORD` secrets — **neither
       is set.** The repo currently has zero Actions secrets configured, so a
       tag push would fail at the "Require the Windows signing certificate"
       step even if the tag itself were valid.
-- [ ] Signed, GitHub-verified `v2.2.0` tag — not yet created.
-- [ ] PR #1 review/merge — still open as a draft pending the manual validation
-      in `VALIDATION-CHECKLIST.md`.
+- [ ] Signed, GitHub-verified `v3.1.8` tag — not yet created.
+- [ ] PR #13 review/merge — still open as a mergeable draft. At the audited
+      `a7b2016` head, its `pull_request` CI run passed both source verification
+      and unsigned Windows packaging. The continuation edits require fresh PR
+      CI after push, and the manual validation in `VALIDATION-CHECKLIST.md`
+      remains an operator gate.
 
 Nothing here should be improvised if a step is ambiguous or a secret is
 missing — stop and escalate rather than working around a failing gate.
