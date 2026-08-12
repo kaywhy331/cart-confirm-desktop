@@ -90,7 +90,7 @@ test("catalog imports create only disabled watch-only zero-dollar missions and h
   }, NOW + 1_000).state;
   const existing = [{ id: "amazon:B0ABC12345" }];
   const plan = planCatalogMissionImport(accepted, ["amazon:B0ABC12345", "amazon:B0XYZ67890", "missing"], existing, 2);
-  assert.deepEqual(plan.summary, { selected: 3, imported: 1, duplicates: 1, missing: 1, overCapacity: 0 });
+  assert.deepEqual(plan.summary, { selected: 3, imported: 1, ready: 0, needsPrice: 1, duplicates: 1, missing: 1, overCapacity: 0 });
   assert.equal(plan.additions[0].id, "amazon:B0XYZ67890");
   assert.equal(plan.additions[0].enabled, false);
   assert.equal(plan.additions[0].action, "watch");
@@ -134,5 +134,66 @@ test("catalog import reports every selection beyond the 50-mission capacity", ()
   });
   const plan = planCatalogMissionImport(state, state.items.map((item) => item.id));
   assert.equal(plan.additions.length, 50);
-  assert.deepEqual(plan.summary, { selected: 52, imported: 50, duplicates: 0, missing: 0, overCapacity: 2 });
+  assert.deepEqual(plan.summary, { selected: 52, imported: 50, ready: 0, needsPrice: 50, duplicates: 0, missing: 0, overCapacity: 2 });
+});
+
+test("catalog imports use an approved MSRP and item profile without trusting listing price", () => {
+  const state = activeState();
+  state.items = [{
+    id: "target:1011209279",
+    retailer: "target",
+    sku: "1011209279",
+    title: "Pokémon Journey Together Elite Trainer Box",
+    productUrl: "https://www.target.com/p/box/-/A-1011209279",
+    price: 1,
+    observedAt: new Date(NOW).toISOString(),
+    searchId: "search-1",
+    query: "pokemon cards"
+  }];
+  const profile = require("../lib/item-defaults").BUILT_IN_ITEM_PROFILES[0];
+  const msrpCatalog = [require("../lib/item-defaults").normalizeMsrpRecord({
+    id: "msrp:pokemon-etb",
+    productLine: "Pokémon",
+    productType: "ETB",
+    matchTerms: ["elite trainer box", "etb"],
+    prices: { target: 49.99 },
+    sourceLabel: "Approved"
+  })];
+  const plan = planCatalogMissionImport(state, [state.items[0].id], [], 50, { profile, msrpCatalog });
+  assert.equal(plan.summary.ready, 1);
+  assert.equal(plan.summary.needsPrice, 0);
+  assert.equal(plan.additions[0].maxPrice, 49.99, "listing price must not become the purchase cap");
+  assert.equal(plan.additions[0].action, "checkout");
+  assert.equal(plan.additions[0].fulfillmentMode, "shipping");
+  assert.equal(plan.additions[0].enabled, true);
+});
+
+test("a broad catalog search term cannot assign MSRP to a nonmatching result title", () => {
+  const state = activeState();
+  state.activeSearch.query = "pokemon etb";
+  state.items = [{
+    id: "target:1011209279",
+    retailer: "target",
+    sku: "1011209279",
+    title: "Pokémon Booster Bundle",
+    productUrl: "https://www.target.com/p/bundle/-/A-1011209279",
+    price: 1,
+    observedAt: new Date(NOW).toISOString(),
+    searchId: "search-1",
+    query: "pokemon etb"
+  }];
+  const profile = require("../lib/item-defaults").BUILT_IN_ITEM_PROFILES[0];
+  const msrpCatalog = [require("../lib/item-defaults").normalizeMsrpRecord({
+    id: "msrp:pokemon-etb",
+    productLine: "Pokémon",
+    productType: "ETB",
+    matchTerms: ["elite trainer box", "etb"],
+    prices: { target: 49.99 },
+    sourceLabel: "Approved"
+  })];
+  const plan = planCatalogMissionImport(state, [state.items[0].id], [], 50, { profile, msrpCatalog });
+  assert.equal(plan.summary.ready, 0);
+  assert.equal(plan.summary.needsPrice, 1);
+  assert.equal(plan.additions[0].maxPrice, 0);
+  assert.equal(plan.additions[0].enabled, false);
 });

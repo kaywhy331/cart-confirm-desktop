@@ -139,13 +139,85 @@
             <div class="catalog-inbox-heading">
               <span id="catalogCount">0 results</span>
               <div class="action-row">
-                <button class="button ghost compact" id="catalogSelectAllButton" type="button">Select available</button>
+                <button class="button ghost compact" id="catalogSelectAllButton" type="button">Select all</button>
+                <button class="button ghost compact" id="catalogSelectNoneButton" type="button">Select none</button>
                 <button class="button secondary compact" id="catalogAddButton" type="button">Add selected to Missions</button>
               </div>
             </div>
-            <p class="catalog-safety">Displayed listing prices are informational only. Imported entries always start <strong>Off</strong>, watch-only, and at a <strong>$0 cap</strong> until you review them.</p>
+            <div class="catalog-import-defaults">
+              <label class="field">
+                <span>Apply item profile</span>
+                <select id="catalogItemProfile"></select>
+              </label>
+              <p class="catalog-safety">The profile defaults to <strong>shipping + auto-buy</strong>. A mission turns On only when its title matches an approved retailer MSRP; otherwise it stays Off for price review.</p>
+            </div>
             <div class="catalog-list" id="catalogList">
               <div class="empty-state">No catalog results yet.</div>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel item-defaults-panel collapsible-panel" id="itemDefaultsPanel">
+          <div class="panel-heading">
+            <div>
+              <span class="eyebrow">One setup, reusable defaults</span>
+              <h2>Item defaults</h2>
+            </div>
+            <button class="button ghost compact panel-toggle" type="button" aria-controls="itemDefaultsPanelBody" aria-expanded="true">Minimize</button>
+          </div>
+          <div class="panel-content" id="itemDefaultsPanelBody">
+            <div class="defaults-block">
+              <div class="defaults-heading">
+                <div>
+                  <strong>Mission profiles</strong>
+                  <p>Create a complete quantity, action, fulfillment, alert, and order-total setup, then apply it while importing or in bulk.</p>
+                </div>
+                <label class="field defaults-default-profile">
+                  <span>Default for imports</span>
+                  <select id="defaultItemProfile"></select>
+                </label>
+              </div>
+              <form class="item-profile-form" id="itemProfileForm">
+                <input id="itemProfileId" type="hidden">
+                <label class="field"><span>Profile name</span><input id="itemProfileName" type="text" maxlength="40" placeholder="Example: Two shipped"></label>
+                <label class="field"><span>Quantity</span><input id="itemProfileQuantity" type="number" min="1" max="99" step="1" value="1" required></label>
+                <label class="field"><span>Action</span><select id="itemProfileAction"><option value="checkout">Submit order automatically</option><option value="review">Prepare checkout, I submit</option><option value="cart">Add to cart only</option><option value="watch">Watch &amp; alert only</option></select></label>
+                <label class="field"><span>Fulfillment</span><select id="itemProfileFulfillment"><option value="shipping">Shipping / delivery</option><option value="pickup">Store pickup</option></select></label>
+                <label class="field"><span>Order-total allowance</span><span class="money-input"><span>$</span><input id="itemProfileBuffer" type="number" min="0" max="1000000" step="0.01" value="15" required></span></label>
+                <label class="field"><span>Alert</span><select id="itemProfileAlert"><option value="standard">Standard ping</option><option value="alarm">Loud alarm</option><option value="silent">Silent log</option></select></label>
+                <label class="toggle-row"><input id="itemProfileEnabled" type="checkbox" checked><span>Turn matching priced items On</span></label>
+                <div class="action-row"><button class="button primary compact" type="submit">Save profile</button><button class="button ghost compact" id="itemProfileResetButton" type="button">New profile</button><button class="button danger compact" id="itemProfileDeleteButton" type="button" hidden>Delete</button></div>
+              </form>
+              <div class="saved-item-profiles" id="savedItemProfiles"></div>
+            </div>
+
+            <div class="defaults-block">
+              <div class="defaults-heading">
+                <div>
+                  <strong>Approved store MSRP</strong>
+                  <p>Match stable product types such as ETB, blister, single pack, SPC, and UPC. Blank store prices never become caps.</p>
+                </div>
+                <button class="button secondary compact" id="researchMsrpButton" type="button">Research due prices</button>
+              </div>
+              <div class="msrp-research-status" id="msrpResearchStatus">Optional cited research is not configured. Manual prices work offline.</div>
+              <div class="msrp-research-controls">
+                <label class="field"><span>OpenAI API key (encrypted locally)</span><input id="msrpResearchApiKey" type="password" maxlength="520" autocomplete="off" spellcheck="false" placeholder="sk-…"></label>
+                <button class="button secondary compact" id="saveMsrpResearchKeyButton" type="button">Save key</button>
+                <button class="button ghost compact" id="removeMsrpResearchKeyButton" type="button">Remove key</button>
+                <label class="toggle-row"><input id="msrpResearchEnabled" type="checkbox"><span>Research once every 30 days</span></label>
+              </div>
+              <div class="msrp-suggestions" id="msrpSuggestions"></div>
+              <div class="msrp-list" id="msrpList"></div>
+              <button class="button ghost compact" id="addMsrpRecordButton" type="button">+ Add product type</button>
+            </div>
+
+            <div class="defaults-block bulk-defaults-block">
+              <div class="defaults-heading">
+                <div><strong>Select and use missions</strong><p>Select individual items, all, or none; then copy a consolidated title/price/link list or apply one profile and refreshed approved MSRP caps.</p></div>
+                <div class="action-row"><button class="button ghost compact" id="bulkMissionSelectAllButton" type="button">Select all</button><button class="button ghost compact" id="bulkMissionSelectNoneButton" type="button">Select none</button></div>
+              </div>
+              <div class="bulk-mission-list" id="bulkMissionList"></div>
+              <div class="bulk-profile-actions"><select id="bulkItemProfile"></select><button class="button primary compact" id="applyBulkItemProfileButton" type="button">Apply profile to selected</button><button class="button secondary compact" id="copySelectedMissionListButton" type="button">Copy selected list</button></div>
             </div>
           </div>
         </section>
@@ -356,7 +428,7 @@
     </div>
     <p>Paste Target, Walmart, or Amazon product URLs—one per line or separated by spaces.</p>
     <textarea id="bulkImportText" maxlength="50000" spellcheck="false" placeholder="https://www.target.com/p/.../-/A-1011209279&#10;https://www.walmart.com/ip/.../95163305&#10;https://www.amazon.com/.../dp/B0ABC12345"></textarea>
-    <p class="bulk-import-safety">URL-only imports start <strong>Off</strong> as watch missions with a $0 cap. Review each mission’s current price before enabling it.</p>
+    <p class="bulk-import-safety">URL imports use the default item profile. A title that matches an approved store MSRP can be ready immediately; otherwise it stays <strong>Off</strong> with a $0 cap until price review.</p>
     <div class="bulk-import-result" id="bulkImportResult" role="status" aria-live="polite"></div>
     <div class="dialog-actions">
       <button class="button primary" id="bulkImportSubmitButton" type="button">Import URLs</button>
@@ -410,6 +482,17 @@
         <span>Product link</span>
         <input data-field="productUrl" type="url" autocomplete="off" spellcheck="false" placeholder="Paste the product page address, e.g. https://www.target.com/p/..." required>
       </label>
+
+      <div class="mission-profile-row">
+        <label class="field">
+          <span>Item profile</span>
+          <select data-field="itemProfileId"></select>
+        </label>
+        <button class="button secondary compact mission-apply-profile" type="button">Apply profile + approved MSRP</button>
+        <small>Applies the reusable settings and the matching store MSRP. If no approved price matches, this mission stays Off.</small>
+        <input data-field="msrpRecordId" type="hidden">
+        <input data-field="priceSource" type="hidden">
+      </div>
 
       <div class="product-fields">
         <label class="field">
@@ -485,6 +568,7 @@
   </template>
 
   <script src="../lib/config-profiles.js"></script>
+  <script src="../lib/item-defaults.js"></script>
   <script src="renderer.js"></script>
 </body>
 </html>

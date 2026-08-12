@@ -94,7 +94,7 @@ async function loadPreview() {
   } else if (!QuickAdd.hasUsablePrice(inspected.product.price)) {
     setStatus("The exact item was found, but its current retailer price is not readable yet.", "error");
   } else {
-    setStatus("Ready to add a watch mission using the current retailer price.");
+    setStatus("Ready to add this item using the desktop default profile and current retailer price.");
   }
   elements.refreshButton.disabled = false;
 }
@@ -109,7 +109,11 @@ elements.addButton.addEventListener("click", async () => {
   });
   if (result.ok) {
     setStatus(
-      result.duplicate ? "This item is already in Missions; its existing cap was left unchanged." : "Watch mission added to Cart Confirm.",
+      result.duplicate
+        ? "This item is already in Missions; its existing settings were left unchanged."
+        : result.product?.action === "checkout"
+          ? "Shipping auto-buy mission added. Review it in Cart Confirm before arming Autopilot."
+          : "Mission added with the desktop default profile.",
       "success"
     );
     elements.addButton.textContent = result.duplicate ? "Already in Missions" : "Added";

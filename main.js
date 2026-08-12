@@ -32,6 +32,7 @@ const {
   validateEvent
 } = require("./lib/core");
 const { planBulkImport, quickAddMission } = require("./lib/mission-import");
+const { formatMissionList, selectedMissionProducts } = require("./lib/mission-list");
 const {
   acceptCatalogResults,
   beginCatalogSearch,
@@ -42,6 +43,7 @@ const {
   planCatalogMissionImport
 } = require("./lib/catalog");
 const { migrateStoredSettings } = require("./lib/migrations");
+const { itemProfileById } = require("./lib/item-defaults");
 const { canBypassStoreOverload, consumeStoreAction } = require("./lib/action-budget");
 const {
   assertNoNewPastProductSchedules,
@@ -83,6 +85,20 @@ const {
   loadDiscordToken,
   saveDiscordToken
 } = require("./lib/discord-credentials");
+const {
+  clearEncryptedCredential,
+  hasEncryptedCredential,
+  loadEncryptedCredential,
+  normalizeOpenAiApiKey,
+  saveEncryptedCredential
+} = require("./lib/secure-credential");
+const {
+  approveMsrpSuggestion,
+  emptyMsrpResearchState,
+  normalizeMsrpResearchState,
+  researchIsDue,
+  researchMsrpWithOpenAi
+} = require("./lib/msrp-research");
 const { processDiscordMessageBatch } = require("./lib/discord-ingestion");
 const { upsertSignal } = require("./lib/signal-inbox");
 const { planSignalRoute } = require("./lib/signal-routing");
@@ -118,6 +134,9 @@ let productStatuses = {};
 let events = [];
 let runtimeState = null;
 let catalogState = emptyCatalogState();
+let msrpResearchState = emptyMsrpResearchState();
+let msrpResearchInFlight = false;
+let msrpResearchKey = "";
 let startupWasDisarmed = false;
 let schedulerTimer = null;
 let discordPollTimer = null;
@@ -165,6 +184,14 @@ function catalogPath() {
 
 function discordTokenPath() {
   return path.join(app.getPath("userData"), "discord-bot-token.bin");
+}
+
+function msrpResearchPath() {
+  return path.join(app.getPath("userData"), "msrp-research.json");
+}
+
+function msrpResearchKeyPath() {
+  return path.join(app.getPath("userData"), "openai-msrp-key.bin");
 }
 
 function emptyDiscordRuntime(channelId = "") {
@@ -262,6 +289,53 @@ function persistCatalogState() {
   fs.writeFileSync(catalogPath(), JSON.stringify(catalogState, null, 2), { mode: 0o600 });
 }
 
+function loadMsrpResearchState() {
+  let stored = {};
+  try {
+    stored = JSON.parse(fs.readFileSync(msrpResearchPath(), "utf8"));
+  } catch {
+    stored = {};
+  }
+  msrpResearchState = normalizeMsrpResearchState(stored, settings.msrpCatalog);
+  persistMsrpResearchState();
+}
+
+function persistMsrpResearchState() {
+  fs.mkdirSync(path.dirname(msrpResearchPath()), { recursive: true });
+  fs.writeFileSync(msrpResearchPath(), JSON.stringify(msrpResearchState, null, 2), { mode: 0o600 });
+}
+
+async function runMsrpResearch() {
+  if (settings.automationEnabled) throw new Error("Switch Autopilot off before researching MSRP defaults.");
+  if (msrpResearchInFlight) throw new Error("MSRP research is already running.");
+  if (!msrpResearchKey) throw new Error("Configure an OpenAI API key before researching prices.");
+  msrpResearchInFlight = true;
+  msrpResearchState = { ...msrpResearchState, lastError: "" };
+  broadcast();
+  try {
+    const result = await researchMsrpWithOpenAi({ apiKey: msrpResearchKey, catalog: settings.msrpCatalog });
+    msrpResearchState = normalizeMsrpResearchState({
+      ...msrpResearchState,
+      lastRunAt: result.researchedAt,
+      lastError: "",
+      suggestions: result.suggestions
+    }, settings.msrpCatalog);
+    persistMsrpResearchState();
+  } catch (error) {
+    msrpResearchState = {
+      ...msrpResearchState,
+      lastRunAt: new Date().toISOString(),
+      lastError: error.message || "MSRP research failed."
+    };
+    persistMsrpResearchState();
+    throw error;
+  } finally {
+    msrpResearchInFlight = false;
+    broadcast();
+  }
+  return snapshot();
+}
+
 function persistSettings() {
   fs.mkdirSync(path.dirname(settingsPath()), { recursive: true });
   fs.writeFileSync(settingsPath(), JSON.stringify(settings, null, 2), { mode: 0o600 });
@@ -299,6 +373,10 @@ function publicSettings() {
     discordChannelId: settings.discordChannelId,
     discordAutoOpen: settings.discordAutoOpen,
     configurationProfiles: settings.configurationProfiles,
+    msrpCatalog: settings.msrpCatalog,
+    itemProfiles: settings.itemProfiles,
+    defaultItemProfileId: settings.defaultItemProfileId,
+    msrpResearchEnabled: settings.msrpResearchEnabled,
     firstPartyOnly: true
   };
 }
@@ -316,6 +394,16 @@ function snapshot() {
       desired: settings.products.some((product) => product.id === signal.productId)
     })),
     catalog: catalogState,
+    msrpResearch: {
+      configured: hasEncryptedCredential(msrpResearchKeyPath()),
+      credentialUsable: Boolean(msrpResearchKey),
+      enabled: settings.msrpResearchEnabled,
+      due: researchIsDue(msrpResearchState),
+      inFlight: msrpResearchInFlight,
+      lastRunAt: msrpResearchState.lastRunAt,
+      lastError: msrpResearchState.lastError,
+      suggestions: msrpResearchState.suggestions
+    },
     discord: {
       enabled: settings.discordEnabled,
       configured: hasDiscordToken(discordTokenPath()),
@@ -397,7 +485,8 @@ function quickAddMissionRequest(input) {
 
   let product;
   try {
-    product = quickAddMission(input);
+    const profile = itemProfileById(settings.defaultItemProfileId, settings.itemProfiles);
+    product = quickAddMission(input, { profile, msrpCatalog: settings.msrpCatalog });
   } catch (error) {
     return {
       statusCode: 400,
@@ -424,14 +513,22 @@ function quickAddMissionRequest(input) {
 
   appendMissionProducts(
     [product],
-    `${product.title || `${retailerLabel(product.retailer)} ${product.sku}`} was added from Chrome as a watch mission.`
+    `${product.title || `${retailerLabel(product.retailer)} ${product.sku}`} was added from Chrome with ${product.action === "checkout" ? "the auto-buy" : "the selected"} item profile.`
   );
   return {
     statusCode: 201,
     payload: {
       ok: true,
       duplicate: false,
-      product: { id: product.id, title: product.title, maxPrice: product.maxPrice }
+      product: {
+        id: product.id,
+        title: product.title,
+        maxPrice: product.maxPrice,
+        maxOrderTotal: product.maxOrderTotal,
+        action: product.action,
+        fulfillmentMode: product.fulfillmentMode,
+        enabled: product.enabled
+      }
     }
   };
 }
@@ -1443,11 +1540,15 @@ function registerIpc() {
     if (settings.automationEnabled) {
       throw new Error("Switch Autopilot off before importing missions.");
     }
-    const plan = planBulkImport(input, settings.products);
+    const profile = itemProfileById(settings.defaultItemProfileId, settings.itemProfiles);
+    const plan = planBulkImport(input, settings.products, MAX_PRODUCTS, {
+      profile,
+      msrpCatalog: settings.msrpCatalog
+    });
     const nextSnapshot = plan.additions.length
       ? appendMissionProducts(
           plan.additions,
-          `${plan.additions.length} disabled watch mission${plan.additions.length === 1 ? "" : "s"} imported for review.`
+          `${plan.additions.length} mission${plan.additions.length === 1 ? "" : "s"} imported with the default item profile.`
         )
       : snapshot();
     return {
@@ -1459,15 +1560,24 @@ function registerIpc() {
 
   ipcMain.handle("cart-assist:catalog-search", (_event, input) => startCatalogSearch(input));
 
-  ipcMain.handle("cart-assist:catalog-add-missions", (_event, selectedIds) => {
+  ipcMain.handle("cart-assist:catalog-add-missions", (_event, input) => {
     if (settings.automationEnabled) {
       throw new Error("Switch Autopilot off before adding catalog results to Missions.");
     }
-    const plan = planCatalogMissionImport(catalogState, selectedIds, settings.products);
+    const selectedIds = Array.isArray(input) ? input : input?.selectedIds;
+    const requestedProfileId = Array.isArray(input)
+      ? settings.defaultItemProfileId
+      : String(input?.profileId || settings.defaultItemProfileId);
+    const profile = itemProfileById(requestedProfileId, settings.itemProfiles);
+    if (!profile) throw new Error("Choose a valid item profile before importing catalog results.");
+    const plan = planCatalogMissionImport(catalogState, selectedIds, settings.products, MAX_PRODUCTS, {
+      profile,
+      msrpCatalog: settings.msrpCatalog
+    });
     const nextSnapshot = plan.additions.length
       ? appendMissionProducts(
           plan.additions,
-          `${plan.additions.length} catalog mission${plan.additions.length === 1 ? "" : "s"} added Off for review.`
+          `${plan.additions.length} catalog mission${plan.additions.length === 1 ? "" : "s"} added with ${profile.name}.`
         )
       : snapshot();
     return { snapshot: nextSnapshot, summary: plan.summary };
@@ -1479,6 +1589,68 @@ function registerIpc() {
     configVersion += 1;
     broadcast();
     return snapshot();
+  });
+
+  ipcMain.handle("cart-assist:msrp-key-save", (_event, apiKey) => {
+    const key = normalizeOpenAiApiKey(apiKey);
+    saveEncryptedCredential(msrpResearchKeyPath(), key, safeStorage, normalizeOpenAiApiKey);
+    msrpResearchKey = key;
+    persistSettings();
+    configVersion += 1;
+    broadcast();
+    return snapshot();
+  });
+
+  ipcMain.handle("cart-assist:msrp-key-remove", () => {
+    clearEncryptedCredential(msrpResearchKeyPath());
+    msrpResearchKey = "";
+    settings = { ...settings, msrpResearchEnabled: false };
+    persistSettings();
+    configVersion += 1;
+    broadcast();
+    return snapshot();
+  });
+
+  ipcMain.handle("cart-assist:msrp-research", () => runMsrpResearch());
+
+  ipcMain.handle("cart-assist:msrp-suggestion-accept", (_event, suggestionId) => {
+    if (settings.automationEnabled) throw new Error("Switch Autopilot off before approving MSRP defaults.");
+    const suggestion = msrpResearchState.suggestions.find((candidate) => candidate.id === String(suggestionId || ""));
+    if (!suggestion) throw new Error("That MSRP suggestion is no longer available.");
+    settings = normalizeSettings({
+      ...settings,
+      msrpCatalog: approveMsrpSuggestion(settings.msrpCatalog, suggestion)
+    }, settings);
+    msrpResearchState = {
+      ...msrpResearchState,
+      suggestions: msrpResearchState.suggestions.filter((candidate) => candidate.id !== suggestion.id)
+    };
+    persistSettings();
+    persistMsrpResearchState();
+    configVersion += 1;
+    broadcast();
+    return snapshot();
+  });
+
+  ipcMain.handle("cart-assist:msrp-suggestion-dismiss", (_event, suggestionId) => {
+    msrpResearchState = {
+      ...msrpResearchState,
+      suggestions: msrpResearchState.suggestions.filter((candidate) => candidate.id !== String(suggestionId || ""))
+    };
+    persistMsrpResearchState();
+    broadcast();
+    return snapshot();
+  });
+
+  ipcMain.handle("cart-assist:open-research-source", (_event, sourceUrl) => {
+    let url;
+    try {
+      url = new URL(String(sourceUrl || ""));
+    } catch {
+      throw new Error("That research source URL is invalid.");
+    }
+    if (url.protocol !== "https:" || url.username || url.password) throw new Error("Only HTTPS research sources can be opened.");
+    return shell.openExternal(url.toString());
   });
 
   ipcMain.handle("cart-assist:stop-all", () => {
@@ -1523,6 +1695,13 @@ function registerIpc() {
     });
     clipboard.writeText(destination.url);
     return destination;
+  });
+
+  ipcMain.handle("cart-assist:copy-mission-list", (_event, selectedIds) => {
+    const selected = selectedMissionProducts(settings.products, selectedIds);
+    const text = formatMissionList(selected);
+    clipboard.writeText(text);
+    return { count: selected.length, text };
   });
 
   ipcMain.handle("cart-assist:discord-connect", async (_event, input) => {
@@ -1860,6 +2039,16 @@ function startScheduler() {
 
     quietMonitorTick();
 
+    if (
+      settings.msrpResearchEnabled
+      && msrpResearchKey
+      && !settings.automationEnabled
+      && !msrpResearchInFlight
+      && researchIsDue(msrpResearchState)
+    ) {
+      void runMsrpResearch().catch(() => {});
+    }
+
     // Startup and Stop are hard pause boundaries. Scheduled work remains
     // pending until an explicit Arm, Test, or Open action resumes monitoring.
     if (settings.monitoringPaused) return;
@@ -1957,7 +2146,18 @@ if (!gotLock) {
     loadSettings();
     loadPersistedRuntimeState();
     loadCatalogState();
+    loadMsrpResearchState();
     discordToken = loadDiscordToken(discordTokenPath(), safeStorage);
+    msrpResearchKey = loadEncryptedCredential(msrpResearchKeyPath(), safeStorage, normalizeOpenAiApiKey);
+    if (hasEncryptedCredential(msrpResearchKeyPath()) && !msrpResearchKey) {
+      settings = { ...settings, msrpResearchEnabled: false };
+      msrpResearchState = {
+        ...msrpResearchState,
+        lastError: "The saved OpenAI API key could not be decrypted on this computer. Paste a replacement key or remove it."
+      };
+      persistSettings();
+      persistMsrpResearchState();
+    }
     if (hasDiscordToken(discordTokenPath()) && !discordToken) {
       settings = { ...settings, discordEnabled: false };
       runtimeState.discord.lastError = "The saved Discord token could not be decrypted on this computer. Paste a replacement token or remove the saved token.";

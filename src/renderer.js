@@ -1,6 +1,7 @@
 "use strict";
 
 const ConfigProfiles = globalThis.CartConfirmConfigProfiles;
+const ItemDefaults = globalThis.CartConfirmItemDefaults;
 const elements = {
   autopilotToggle: document.getElementById("autopilotToggle"),
   autopilotState: document.getElementById("autopilotState"),
@@ -40,10 +41,40 @@ const elements = {
   catalogSearchButton: document.getElementById("catalogSearchButton"),
   catalogClearButton: document.getElementById("catalogClearButton"),
   catalogSelectAllButton: document.getElementById("catalogSelectAllButton"),
+  catalogSelectNoneButton: document.getElementById("catalogSelectNoneButton"),
+  catalogItemProfile: document.getElementById("catalogItemProfile"),
   catalogAddButton: document.getElementById("catalogAddButton"),
   catalogStatus: document.getElementById("catalogStatus"),
   catalogCount: document.getElementById("catalogCount"),
   catalogList: document.getElementById("catalogList"),
+  defaultItemProfile: document.getElementById("defaultItemProfile"),
+  itemProfileForm: document.getElementById("itemProfileForm"),
+  itemProfileId: document.getElementById("itemProfileId"),
+  itemProfileName: document.getElementById("itemProfileName"),
+  itemProfileQuantity: document.getElementById("itemProfileQuantity"),
+  itemProfileAction: document.getElementById("itemProfileAction"),
+  itemProfileFulfillment: document.getElementById("itemProfileFulfillment"),
+  itemProfileBuffer: document.getElementById("itemProfileBuffer"),
+  itemProfileAlert: document.getElementById("itemProfileAlert"),
+  itemProfileEnabled: document.getElementById("itemProfileEnabled"),
+  itemProfileResetButton: document.getElementById("itemProfileResetButton"),
+  itemProfileDeleteButton: document.getElementById("itemProfileDeleteButton"),
+  savedItemProfiles: document.getElementById("savedItemProfiles"),
+  msrpList: document.getElementById("msrpList"),
+  addMsrpRecordButton: document.getElementById("addMsrpRecordButton"),
+  researchMsrpButton: document.getElementById("researchMsrpButton"),
+  msrpResearchStatus: document.getElementById("msrpResearchStatus"),
+  msrpResearchApiKey: document.getElementById("msrpResearchApiKey"),
+  saveMsrpResearchKeyButton: document.getElementById("saveMsrpResearchKeyButton"),
+  removeMsrpResearchKeyButton: document.getElementById("removeMsrpResearchKeyButton"),
+  msrpResearchEnabled: document.getElementById("msrpResearchEnabled"),
+  msrpSuggestions: document.getElementById("msrpSuggestions"),
+  bulkMissionSelectAllButton: document.getElementById("bulkMissionSelectAllButton"),
+  bulkMissionSelectNoneButton: document.getElementById("bulkMissionSelectNoneButton"),
+  bulkMissionList: document.getElementById("bulkMissionList"),
+  bulkItemProfile: document.getElementById("bulkItemProfile"),
+  applyBulkItemProfileButton: document.getElementById("applyBulkItemProfileButton"),
+  copySelectedMissionListButton: document.getElementById("copySelectedMissionListButton"),
   testButton: document.getElementById("testButton"),
   openAllButton: document.getElementById("openAllButton"),
   worstCase: document.getElementById("worstCase"),
@@ -144,6 +175,8 @@ let catalogImportInFlight = false;
 let renderedCatalogSearchId = "";
 const catalogSelectedIds = new Set();
 const catalogSeenIds = new Set();
+const bulkMissionSelectedIds = new Set();
+let editingItemProfileId = "";
 // Persisted feed entries are history, not fresh alarm triggers. Only events
 // received after this renderer process starts may sound an alarm.
 let lastAlarmEventStamp = new Date().toISOString();
@@ -359,6 +392,55 @@ function profileOptionGroup(label, profiles) {
   return group;
 }
 
+function allItemProfiles(settings = currentSnapshot?.settings) {
+  return ItemDefaults.allItemProfiles(settings?.itemProfiles || []);
+}
+
+function itemProfileOptions(select, selectedId, settings = currentSnapshot?.settings) {
+  const builtIns = ItemDefaults.BUILT_IN_ITEM_PROFILES;
+  const custom = settings?.itemProfiles || [];
+  select.replaceChildren(
+    profileOptionGroup("Ready-made profiles", builtIns),
+    ...(custom.length ? [profileOptionGroup("Your profiles", custom)] : [])
+  );
+  select.value = allItemProfiles(settings).some((profile) => profile.id === selectedId)
+    ? selectedId
+    : (settings?.defaultItemProfileId || ItemDefaults.DEFAULT_ITEM_PROFILE_ID);
+}
+
+function profileSeedFromFields(card) {
+  return {
+    retailer: field(card, "retailer").value,
+    title: field(card, "title").value,
+    maxPrice: Number(field(card, "maxPrice").value),
+    msrpRecordId: field(card, "msrpRecordId").value,
+    priceSource: field(card, "priceSource").value
+  };
+}
+
+function applyProfileToEditor(card) {
+  const profileId = field(card, "itemProfileId").value;
+  const profile = ItemDefaults.itemProfileById(profileId, currentSnapshot?.settings?.itemProfiles || []);
+  if (!profile) throw new Error("Choose an item profile.");
+  const applied = ItemDefaults.applyItemProfile(
+    profileSeedFromFields(card),
+    profile,
+    currentSnapshot?.settings?.msrpCatalog || []
+  );
+  field(card, "maxPrice").value = String(applied.maxPrice || 0);
+  field(card, "maxOrderTotal").value = String(applied.maxOrderTotal || 0);
+  field(card, "quantity").value = String(applied.quantity);
+  field(card, "action").value = applied.action;
+  field(card, "alertLevel").value = applied.alertLevel;
+  field(card, "fulfillmentMode").value = applied.fulfillmentMode;
+  field(card, "signalAutoOpen").checked = applied.signalAutoOpen;
+  field(card, "enabled").checked = applied.enabled;
+  field(card, "msrpRecordId").value = applied.msrpRecordId || "";
+  field(card, "priceSource").value = applied.priceSource || "";
+  field(card, "action").dispatchEvent(new Event("change", { bubbles: true }));
+  return applied;
+}
+
 function renderConfigurationProfiles(settings) {
   const customProfiles = settings.configurationProfiles || [];
   const profiles = allConfigurationProfiles(settings);
@@ -395,6 +477,9 @@ function globalSettings(products) {
     storeNavigationIntervalSeconds: Number(elements.storeNavigationIntervalSeconds.value),
     overloadCooldownSeconds: Number(elements.overloadCooldownSeconds.value),
     configurationProfiles: currentSnapshot?.settings?.configurationProfiles || [],
+    msrpCatalog: currentSnapshot?.settings?.msrpCatalog || [],
+    itemProfiles: currentSnapshot?.settings?.itemProfiles || [],
+    defaultItemProfileId: currentSnapshot?.settings?.defaultItemProfileId || ItemDefaults.DEFAULT_ITEM_PROFILE_ID,
     scheduledOpenEnabled: false,
     scheduledRetailer: currentSnapshot?.settings?.scheduledRetailer || "target",
     scheduledOpenAt: "",
@@ -594,23 +679,33 @@ function buildViewCard(product, status) {
   return card;
 }
 
-function buildEditCard(product) {
+function buildEditCard(product, options = {}) {
   const card = elements.missionEditTemplate.content.firstElementChild.cloneNode(true);
   const retailer = product?.retailer || "target";
+  const initialProfile = ItemDefaults.itemProfileById(
+    product?.itemProfileId || currentSnapshot?.settings?.defaultItemProfileId || ItemDefaults.DEFAULT_ITEM_PROFILE_ID,
+    currentSnapshot?.settings?.itemProfiles || []
+  ) || ItemDefaults.BUILT_IN_ITEM_PROFILES[0];
   field(card, "retailer").value = retailer;
   field(card, "title").value = product?.title || "";
   field(card, "productUrl").value = product?.productUrl || "";
   field(card, "sku").value = product?.sku || "";
   field(card, "maxPrice").value = product ? String(Number(product.maxPrice || 0)) : "";
   field(card, "maxOrderTotal").value = String(Number(product?.maxOrderTotal || 0));
-  field(card, "quantity").value = product?.quantity || 1;
-  field(card, "action").value = product?.action || "watch";
-  field(card, "alertLevel").value = product?.alertLevel || "standard";
-  field(card, "fulfillmentMode").value = product?.fulfillmentMode || "manual";
+  field(card, "quantity").value = product?.quantity || initialProfile.settings.quantity;
+  field(card, "action").value = product?.action || initialProfile.settings.action;
+  field(card, "alertLevel").value = product?.alertLevel || initialProfile.settings.alertLevel;
+  field(card, "fulfillmentMode").value = product?.fulfillmentMode || initialProfile.settings.fulfillmentMode;
   field(card, "signalEntry").value = product?.signalEntry || "product";
   field(card, "signalAutoOpen").checked = product ? product.signalAutoOpen !== false : true;
+  itemProfileOptions(
+    field(card, "itemProfileId"),
+    product?.itemProfileId || currentSnapshot?.settings?.defaultItemProfileId || ItemDefaults.DEFAULT_ITEM_PROFILE_ID
+  );
+  field(card, "msrpRecordId").value = product?.msrpRecordId || "";
+  field(card, "priceSource").value = product?.priceSource || "";
   field(card, "openAt").value = toLocalInputValue(product?.openAt);
-  field(card, "enabled").checked = product ? product.enabled !== false : true;
+  field(card, "enabled").checked = product ? product.enabled !== false : false;
   updateEditStore(card);
 
   const advanced = card.querySelector(".advanced-fields");
@@ -644,6 +739,14 @@ function buildEditCard(product) {
     if (!field(card, "title").value.trim()) {
       field(card, "title").value = deriveTitleFromUrl(url);
     }
+    if (options.isNew) {
+      try {
+        applyProfileToEditor(card);
+      } catch {
+        // URL validation and final save surface actionable errors. Profile
+        // matching itself remains a convenience during editing.
+      }
+    }
   });
   field(card, "sku").addEventListener("change", () => {
     if (field(card, "retailer").value === "amazon") {
@@ -656,6 +759,24 @@ function buildEditCard(product) {
     updateSignalEntryOptions(card);
   });
   field(card, "fulfillmentMode").addEventListener("change", validateFulfillmentSelection);
+  field(card, "maxPrice").addEventListener("change", () => {
+    field(card, "priceSource").value = Number(field(card, "maxPrice").value) > 0 ? "manual" : "";
+    if (options.isNew) updateNewMissionPriceDefaults(card);
+  });
+  field(card, "quantity").addEventListener("change", () => {
+    if (options.isNew) updateNewMissionPriceDefaults(card);
+  });
+  card.querySelector(".mission-apply-profile").addEventListener("click", () => {
+    try {
+      const applied = applyProfileToEditor(card);
+      setMessage(applied.enabled
+        ? `Profile applied with a $${applied.maxPrice.toFixed(2)} approved MSRP cap.`
+        : "Profile applied. No approved MSRP matched, so the mission remains Off until you set or approve a price.",
+      applied.enabled ? "success" : "warn");
+    } catch (error) {
+      setMessage(error.message || "The item profile could not be applied.", "error");
+    }
+  });
   card.querySelector(".mission-done").addEventListener("click", () => void finishEdit(card));
   const cancel = () => {
     editingId = null;
@@ -726,6 +847,9 @@ function collectMission(card) {
     action: field(card, "action").value,
     alertLevel: field(card, "alertLevel").value,
     fulfillmentMode: field(card, "fulfillmentMode").value,
+    itemProfileId: field(card, "itemProfileId").value,
+    msrpRecordId: field(card, "msrpRecordId").value,
+    priceSource: field(card, "priceSource").value || (Number(field(card, "maxPrice").value) > 0 ? "manual" : ""),
     signalAutoOpen: field(card, "signalAutoOpen").checked,
     signalEntry: field(card, "signalEntry").value,
     enabled: field(card, "enabled").checked
@@ -759,6 +883,21 @@ async function finishEdit(card) {
   }
 }
 
+function updateNewMissionPriceDefaults(card) {
+  const price = Number(field(card, "maxPrice").value);
+  const quantity = Number(field(card, "quantity").value);
+  const profile = ItemDefaults.itemProfileById(
+    field(card, "itemProfileId").value,
+    currentSnapshot?.settings?.itemProfiles || []
+  );
+  if (!profile || !Number.isFinite(price) || price <= 0 || !Number.isInteger(quantity) || quantity <= 0) return;
+  const profileSettings = ItemDefaults.normalizeItemProfileSettings(profile.settings);
+  if (["review", "checkout"].includes(field(card, "action").value)) {
+    field(card, "maxOrderTotal").value = String(Math.round((price * quantity + profileSettings.maxOrderBuffer) * 100) / 100);
+  }
+  if (profileSettings.enabled) field(card, "enabled").checked = true;
+}
+
 async function startEdit(product, seed = null) {
   if (editingId) {
     setMessage("Finish the open mission editor first (Done or Cancel).", "error");
@@ -778,7 +917,7 @@ async function startEdit(product, seed = null) {
     }
   }
   editingId = product ? product.id : "new";
-  editCardNode = buildEditCard(product || seed);
+  editCardNode = buildEditCard(product || seed, { isNew: !product });
   renderMissions();
   editCardNode.querySelector("[data-field='productUrl']").focus();
 }
@@ -808,7 +947,9 @@ function openBulkImportDialog() {
 
 function bulkImportSummaryText(summary = {}) {
   const parts = [];
-  if (summary.imported) parts.push(`${summary.imported} imported Off for review`);
+  if (summary.imported) parts.push(`${summary.imported} imported with the default profile`);
+  if (summary.ready) parts.push(`${summary.ready} ready with approved MSRP`);
+  if (summary.needsPrice) parts.push(`${summary.needsPrice} left Off pending price approval`);
   if (summary.duplicates) parts.push(`${summary.duplicates} duplicate${summary.duplicates === 1 ? "" : "s"} skipped`);
   if (summary.invalid) parts.push(`${summary.invalid} invalid line${summary.invalid === 1 ? "" : "s"}`);
   if (summary.overCapacity) parts.push(`${summary.overCapacity} over the 50-mission limit`);
@@ -991,10 +1132,298 @@ function renderCatalog(catalog = {}) {
   elements.catalogSearchButton.disabled = busy || isArmed();
   elements.catalogClearButton.disabled = busy || (!search && !items.length);
   elements.catalogSelectAllButton.disabled = busy || availableCount === 0;
+  elements.catalogSelectNoneButton.disabled = busy || catalogSelectedIds.size === 0;
+  elements.catalogItemProfile.disabled = busy || isArmed();
   elements.catalogAddButton.disabled = busy || isArmed() || catalogSelectedIds.size === 0;
   elements.catalogAddButton.textContent = catalogSelectedIds.size
     ? `Add selected (${catalogSelectedIds.size}) to Missions`
     : "Add selected to Missions";
+}
+
+function newCustomId(prefix) {
+  return `${prefix}:${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function resetItemProfileForm() {
+  editingItemProfileId = "";
+  elements.itemProfileId.value = "";
+  elements.itemProfileName.value = "";
+  elements.itemProfileQuantity.value = "1";
+  elements.itemProfileAction.value = "checkout";
+  elements.itemProfileFulfillment.value = "shipping";
+  elements.itemProfileBuffer.value = "15";
+  elements.itemProfileAlert.value = "standard";
+  elements.itemProfileEnabled.checked = true;
+  elements.itemProfileDeleteButton.hidden = true;
+}
+
+function fillItemProfileForm(profile) {
+  if (!profile?.id.startsWith("custom:")) return;
+  editingItemProfileId = profile.id;
+  elements.itemProfileId.value = profile.id;
+  elements.itemProfileName.value = profile.name;
+  elements.itemProfileQuantity.value = String(profile.settings.quantity);
+  elements.itemProfileAction.value = profile.settings.action;
+  elements.itemProfileFulfillment.value = profile.settings.fulfillmentMode;
+  elements.itemProfileBuffer.value = String(profile.settings.maxOrderBuffer);
+  elements.itemProfileAlert.value = profile.settings.alertLevel;
+  elements.itemProfileEnabled.checked = profile.settings.enabled;
+  elements.itemProfileDeleteButton.hidden = false;
+}
+
+function renderItemProfilePickers(settings) {
+  const selectedDefault = settings.defaultItemProfileId || ItemDefaults.DEFAULT_ITEM_PROFILE_ID;
+  for (const select of [elements.defaultItemProfile, elements.catalogItemProfile, elements.bulkItemProfile]) {
+    const current = select.value;
+    itemProfileOptions(select, current || selectedDefault, settings);
+  }
+  elements.defaultItemProfile.value = selectedDefault;
+  const profiles = allItemProfiles(settings);
+  elements.savedItemProfiles.replaceChildren(...profiles.map((profile) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `profile-chip${profile.id === editingItemProfileId ? " selected" : ""}`;
+    button.textContent = `${profile.name} · ×${profile.settings.quantity} · ${ACTION_LABELS[profile.settings.action]}`;
+    button.title = profile.description || `${profile.settings.fulfillmentMode}, $${profile.settings.maxOrderBuffer.toFixed(2)} total allowance`;
+    button.addEventListener("click", () => {
+      if (profile.id.startsWith("custom:")) fillItemProfileForm(profile);
+      else resetItemProfileForm();
+      renderItemProfilePickers(currentSnapshot.settings);
+    });
+    return button;
+  }));
+}
+
+function msrpRowRecord(row, existingRecord = null) {
+  const existingId = row.dataset.id;
+  const nextPrices = Object.fromEntries(ItemDefaults.RETAILERS.map((retailer) => [
+    retailer,
+    row.querySelector(`[data-msrp='${retailer}']`).value
+  ]));
+  const now = new Date().toISOString();
+  const sources = Object.fromEntries(ItemDefaults.RETAILERS.map((retailer) => {
+    const nextPrice = Number(nextPrices[retailer]);
+    const previousPrice = Number(existingRecord?.prices?.[retailer]);
+    const unchanged = Number.isFinite(nextPrice) && nextPrice > 0 && nextPrice === previousPrice;
+    return [retailer, unchanged
+      ? existingRecord?.sources?.[retailer] || {}
+      : (Number.isFinite(nextPrice) && nextPrice > 0
+          ? { label: "Operator approved", url: "", verifiedAt: now }
+          : {})];
+  }));
+  return ItemDefaults.normalizeMsrpRecord({
+    id: existingId || newCustomId("msrp"),
+    productLine: row.querySelector("[data-msrp='line']").value,
+    productType: row.querySelector("[data-msrp='type']").value,
+    matchTerms: row.querySelector("[data-msrp='terms']").value,
+    excludeTerms: row.dataset.excludeTerms || "",
+    prices: nextPrices,
+    sources,
+    sourceLabel: row.dataset.sourceLabel || "",
+    sourceUrl: row.dataset.sourceUrl || "",
+    verifiedAt: now
+  });
+}
+
+function msrpInput(fieldName, value, label, type = "text") {
+  const wrapper = document.createElement("label");
+  wrapper.className = "field";
+  const caption = document.createElement("span");
+  caption.textContent = label;
+  const input = document.createElement("input");
+  input.dataset.msrp = fieldName;
+  input.type = type;
+  input.value = value ?? "";
+  if (type === "number") {
+    input.min = "0.01";
+    input.max = "1000000";
+    input.step = "0.01";
+    input.placeholder = "Needs approval";
+  }
+  wrapper.append(caption, input);
+  return wrapper;
+}
+
+function buildMsrpRow(record) {
+  const row = document.createElement("div");
+  row.className = "msrp-row";
+  row.dataset.id = record.id;
+  row.dataset.excludeTerms = (record.excludeTerms || []).join(", ");
+  row.dataset.sourceLabel = record.sourceLabel || "";
+  row.dataset.sourceUrl = record.sourceUrl || "";
+  row.append(
+    msrpInput("line", record.productLine, "Product line"),
+    msrpInput("type", record.productType, "Product type"),
+    msrpInput("terms", (record.matchTerms || []).join(", "), "Title match terms"),
+    msrpInput("target", record.prices?.target, "Target", "number"),
+    msrpInput("walmart", record.prices?.walmart, "Walmart", "number"),
+    msrpInput("amazon", record.prices?.amazon, "Amazon", "number")
+  );
+  const source = document.createElement("div");
+  source.className = "msrp-source";
+  const save = document.createElement("button");
+  save.type = "button";
+  save.className = "button secondary compact";
+  save.textContent = "Save prices";
+  const note = document.createElement("small");
+  const approvedStores = ItemDefaults.RETAILERS.filter((retailer) => Number(record.prices?.[retailer]) > 0);
+  note.textContent = approvedStores.length
+    ? approvedStores.map((retailer) => {
+        const evidence = record.sources?.[retailer] || {};
+        return `${STORE_LABELS[retailer]}: ${evidence.label || "Operator approved"}`;
+      }).join(" · ")
+    : "Needs approval";
+  source.append(save, note);
+  const sourceActions = document.createElement("div");
+  sourceActions.className = "action-row";
+  for (const retailer of approvedStores) {
+    const evidence = record.sources?.[retailer] || {};
+    if (!evidence.url) continue;
+    const open = document.createElement("button");
+    open.type = "button";
+    open.className = "button ghost compact";
+    open.textContent = `${STORE_LABELS[retailer]} source`;
+    open.title = evidence.url;
+    open.addEventListener("click", () => void runAction(
+      () => window.cartAssist.openResearchSource(evidence.url),
+      `${STORE_LABELS[retailer]} MSRP source opened.`
+    ));
+    sourceActions.append(open);
+  }
+  if (sourceActions.childElementCount) source.append(sourceActions);
+  const remove = document.createElement("button");
+  remove.type = "button";
+  remove.className = "button ghost compact";
+  remove.textContent = "✕";
+  remove.setAttribute("aria-label", `Remove ${record.productType}`);
+  save.addEventListener("click", () => void runAction(async () => {
+    if (isArmed()) throw new Error("Switch Autopilot off before changing MSRP defaults.");
+    const nextRecord = msrpRowRecord(row, record);
+    const catalog = (currentSnapshot.settings.msrpCatalog || []).map((candidate) => (
+      candidate.id === record.id ? nextRecord : candidate
+    ));
+    const next = await window.cartAssist.saveSettings({ ...currentSnapshot.settings, msrpCatalog: catalog });
+    render(next);
+    return nextRecord.productType;
+  }, (name) => `${name} MSRP saved as an approved local default.`));
+  remove.addEventListener("click", () => void runAction(async () => {
+    if (isArmed()) throw new Error("Switch Autopilot off before changing MSRP defaults.");
+    const next = await window.cartAssist.saveSettings({
+      ...currentSnapshot.settings,
+      msrpCatalog: currentSnapshot.settings.msrpCatalog.filter((candidate) => candidate.id !== record.id)
+    });
+    render(next);
+    return record.productType;
+  }, (name) => `${name} MSRP type removed.`));
+  row.append(source, remove);
+  return row;
+}
+
+function renderMsrpCatalog(settings) {
+  elements.msrpList.replaceChildren(...(settings.msrpCatalog || []).map(buildMsrpRow));
+  if (!(settings.msrpCatalog || []).length) {
+    const empty = document.createElement("div");
+    empty.className = "empty-state";
+    empty.textContent = "No MSRP product types yet.";
+    elements.msrpList.append(empty);
+  }
+  const research = currentSnapshot?.msrpResearch || {};
+  elements.researchMsrpButton.disabled = isArmed() || research.inFlight || !research.credentialUsable;
+  elements.msrpResearchEnabled.checked = Boolean(settings.msrpResearchEnabled);
+  elements.msrpResearchEnabled.disabled = !research.credentialUsable || research.inFlight;
+  elements.removeMsrpResearchKeyButton.hidden = !research.configured;
+  elements.saveMsrpResearchKeyButton.disabled = research.inFlight;
+  elements.msrpResearchStatus.textContent = research.inFlight
+    ? "Researching current prices with cited web search…"
+    : research.lastError
+      ? research.lastError
+      : research.configured
+        ? `Cited research is configured${research.lastRunAt ? ` · last run ${relativeTime(research.lastRunAt)}` : ""}. Suggestions require review.`
+        : "Optional cited research is not configured. Manual prices work offline.";
+  const byRecord = new Map((settings.msrpCatalog || []).map((record) => [record.id, record]));
+  elements.msrpSuggestions.replaceChildren(...(research.suggestions || []).map((suggestion) => {
+    const record = byRecord.get(suggestion.recordId);
+    const card = document.createElement("article");
+    card.className = "msrp-suggestion";
+    const content = document.createElement("div");
+    const title = document.createElement("strong");
+    title.textContent = `${record?.productType || suggestion.recordId} · ${STORE_LABELS[suggestion.retailer]} · ${money(suggestion.price)} suggested`;
+    const rationale = document.createElement("p");
+    rationale.textContent = suggestion.rationale || "Cited web-search suggestion; review the source before approval.";
+    const source = document.createElement("small");
+    source.textContent = `${suggestion.sourceTitle || new URL(suggestion.sourceUrl).hostname} · ${suggestion.sourceUrl}`;
+    source.title = suggestion.sourceUrl;
+    content.append(title, rationale, source);
+    const actions = document.createElement("div");
+    actions.className = "action-row";
+    const open = document.createElement("button");
+    open.type = "button";
+    open.className = "button ghost compact";
+    open.textContent = "Open source";
+    open.addEventListener("click", () => void runAction(
+      () => window.cartAssist.openResearchSource(suggestion.sourceUrl),
+      "Research source opened in your browser."
+    ));
+    const accept = document.createElement("button");
+    accept.type = "button";
+    accept.className = "button primary compact";
+    accept.textContent = "Accept MSRP";
+    accept.disabled = isArmed();
+    accept.addEventListener("click", () => void runAction(async () => {
+      const next = await window.cartAssist.acceptMsrpSuggestion(suggestion.id);
+      render(next);
+      return next;
+    }, `${STORE_LABELS[suggestion.retailer]} ${money(suggestion.price)} approved as MSRP. Existing mission caps were not changed.`));
+    const dismiss = document.createElement("button");
+    dismiss.type = "button";
+    dismiss.className = "button ghost compact";
+    dismiss.textContent = "Dismiss";
+    dismiss.addEventListener("click", () => void runAction(async () => {
+      const next = await window.cartAssist.dismissMsrpSuggestion(suggestion.id);
+      render(next);
+      return next;
+    }, "MSRP suggestion dismissed."));
+    actions.append(open, accept, dismiss);
+    card.append(content, actions);
+    return card;
+  }));
+}
+
+function renderBulkMissionDefaults(settings) {
+  const currentIds = new Set(settings.products.map((product) => product.id));
+  for (const id of [...bulkMissionSelectedIds]) if (!currentIds.has(id)) bulkMissionSelectedIds.delete(id);
+  elements.bulkMissionList.replaceChildren(...settings.products.map((product) => {
+    const label = document.createElement("label");
+    label.className = "bulk-mission-option";
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.checked = bulkMissionSelectedIds.has(product.id);
+    checkbox.addEventListener("change", () => {
+      if (checkbox.checked) bulkMissionSelectedIds.add(product.id);
+      else bulkMissionSelectedIds.delete(product.id);
+      renderBulkMissionDefaults(currentSnapshot.settings);
+    });
+    const text = document.createElement("span");
+    text.textContent = `${STORE_LABELS[product.retailer]} · ${productLabel(product)} · ${ACTION_LABELS[product.action]}`;
+    label.append(checkbox, text);
+    return label;
+  }));
+  if (!settings.products.length) {
+    const empty = document.createElement("div");
+    empty.className = "empty-state";
+    empty.textContent = "Add missions before using bulk update.";
+    elements.bulkMissionList.append(empty);
+  }
+  elements.applyBulkItemProfileButton.disabled = !bulkMissionSelectedIds.size || isArmed();
+  elements.copySelectedMissionListButton.disabled = !bulkMissionSelectedIds.size;
+  elements.bulkMissionSelectAllButton.disabled = !settings.products.length;
+  elements.bulkMissionSelectNoneButton.disabled = !bulkMissionSelectedIds.size;
+}
+
+function renderItemDefaults(settings) {
+  renderItemProfilePickers(settings);
+  renderMsrpCatalog(settings);
+  renderBulkMissionDefaults(settings);
 }
 
 async function submitCatalogSearch() {
@@ -1050,16 +1479,18 @@ async function addSelectedCatalogMissions() {
   catalogImportInFlight = true;
   renderCatalog(currentSnapshot?.catalog || {});
   try {
-    const result = await window.cartAssist.addCatalogMissions(selectedIds);
+    const result = await window.cartAssist.addCatalogMissions(selectedIds, elements.catalogItemProfile.value);
     render(result.snapshot);
     const summary = result.summary || {};
     const extras = [];
     if (summary.duplicates) extras.push(`${summary.duplicates} duplicate${summary.duplicates === 1 ? "" : "s"} skipped`);
     if (summary.overCapacity) extras.push(`${summary.overCapacity} over the 50-mission limit`);
     if (summary.missing) extras.push(`${summary.missing} no longer available`);
+    if (summary.ready) extras.push(`${summary.ready} ready with approved MSRP`);
+    if (summary.needsPrice) extras.push(`${summary.needsPrice} left Off pending price approval`);
     setMessage(
       summary.imported
-        ? `${summary.imported} catalog mission${summary.imported === 1 ? "" : "s"} added Off, watch-only, and at a $0 cap for review.${extras.length ? ` ${extras.join(" · ")}.` : ""}`
+        ? `${summary.imported} catalog mission${summary.imported === 1 ? "" : "s"} added with the selected profile.${extras.length ? ` ${extras.join(" · ")}.` : ""}`
         : extras.join(" · ") || "No selected catalog results were imported.",
       summary.imported ? "success" : "warn"
     );
@@ -1424,7 +1855,7 @@ function freshSignal(signal) {
 
 function signalMissionSeed(signal) {
   const price = Number(signal.price);
-  return {
+  const seed = {
     retailer: signal.retailer,
     title: signal.title || `${STORE_LABELS[signal.retailer]} ${signal.sku}`,
     productUrl: signal.productUrl,
@@ -1432,13 +1863,23 @@ function signalMissionSeed(signal) {
     maxPrice: Number.isFinite(price) && price > 0 ? price : 0,
     maxOrderTotal: 0,
     quantity: 1,
-    action: "watch",
+    action: "checkout",
     alertLevel: "standard",
-    fulfillmentMode: "manual",
+    fulfillmentMode: "shipping",
+    itemProfileId: currentSnapshot?.settings?.defaultItemProfileId || ItemDefaults.DEFAULT_ITEM_PROFILE_ID,
+    priceSource: Number.isFinite(price) && price > 0 ? "signal-observed" : "",
     signalAutoOpen: true,
     signalEntry: "product",
     openAt: "",
-    enabled: true
+    enabled: false
+  };
+  const profile = ItemDefaults.itemProfileById(seed.itemProfileId, currentSnapshot?.settings?.itemProfiles || []);
+  if (!profile) return seed;
+  return {
+    ...ItemDefaults.applyItemProfile(seed, profile, currentSnapshot?.settings?.msrpCatalog || []),
+    // Discord data prefills the workflow but still requires the operator to
+    // review the editor and deliberately choose On before saving.
+    enabled: false
   };
 }
 
@@ -1651,6 +2092,7 @@ function render(snapshot) {
 
   renderMissions();
   renderCatalog(snapshot.catalog || {});
+  renderItemDefaults(settings);
   renderDiscord(snapshot.discord, settings);
   renderSignals(snapshot.signals || []);
   checkForAlarmEvents(events);
@@ -1752,7 +2194,167 @@ elements.catalogSelectAllButton.addEventListener("click", () => {
   }
   renderCatalog(currentSnapshot?.catalog || {});
 });
+elements.catalogSelectNoneButton.addEventListener("click", () => {
+  catalogSelectedIds.clear();
+  renderCatalog(currentSnapshot?.catalog || {});
+});
 elements.catalogAddButton.addEventListener("click", () => void addSelectedCatalogMissions());
+
+elements.defaultItemProfile.addEventListener("change", () => void runAction(async () => {
+  if (isArmed()) throw new Error("Switch Autopilot off before changing the default item profile.");
+  const next = await window.cartAssist.saveSettings({
+    ...currentSnapshot.settings,
+    defaultItemProfileId: elements.defaultItemProfile.value
+  });
+  render(next);
+  return next;
+}, "Default import profile saved."));
+
+elements.itemProfileForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  void runAction(async () => {
+    if (isArmed()) throw new Error("Switch Autopilot off before changing item profiles.");
+    const name = elements.itemProfileName.value.replace(/\s+/g, " ").trim();
+    if (!name) throw new Error("Enter a profile name.");
+    const profile = ItemDefaults.normalizeCustomItemProfile({
+      id: editingItemProfileId || newCustomId("custom"),
+      name,
+      description: "Custom reusable mission defaults.",
+      settings: {
+        quantity: elements.itemProfileQuantity.value,
+        action: elements.itemProfileAction.value,
+        fulfillmentMode: elements.itemProfileFulfillment.value,
+        alertLevel: elements.itemProfileAlert.value,
+        signalAutoOpen: true,
+        enabled: elements.itemProfileEnabled.checked,
+        maxOrderBuffer: elements.itemProfileBuffer.value
+      }
+    });
+    const existing = currentSnapshot.settings.itemProfiles || [];
+    const duplicate = existing.find((candidate) => (
+      candidate.id !== profile.id && candidate.name.toLocaleLowerCase() === profile.name.toLocaleLowerCase()
+    ));
+    if (duplicate) throw new Error("That item profile name already exists.");
+    if (!editingItemProfileId && existing.length >= ItemDefaults.MAX_ITEM_PROFILES) {
+      throw new Error(`You can save up to ${ItemDefaults.MAX_ITEM_PROFILES} item profiles.`);
+    }
+    const profiles = existing.some((candidate) => candidate.id === profile.id)
+      ? existing.map((candidate) => candidate.id === profile.id ? profile : candidate)
+      : [...existing, profile];
+    const next = await window.cartAssist.saveSettings({ ...currentSnapshot.settings, itemProfiles: profiles });
+    render(next);
+    fillItemProfileForm(profile);
+    renderItemProfilePickers(next.settings);
+    return profile.name;
+  }, (name) => `${name} item profile saved.`);
+});
+
+elements.itemProfileResetButton.addEventListener("click", () => {
+  resetItemProfileForm();
+  renderItemProfilePickers(currentSnapshot.settings);
+});
+
+elements.itemProfileDeleteButton.addEventListener("click", () => {
+  const profile = (currentSnapshot.settings.itemProfiles || []).find((candidate) => candidate.id === editingItemProfileId);
+  if (!profile || !window.confirm(`Delete the item profile "${profile.name}"?`)) return;
+  void runAction(async () => {
+    if (isArmed()) throw new Error("Switch Autopilot off before changing item profiles.");
+    const profiles = currentSnapshot.settings.itemProfiles.filter((candidate) => candidate.id !== profile.id);
+    const next = await window.cartAssist.saveSettings({
+      ...currentSnapshot.settings,
+      itemProfiles: profiles,
+      defaultItemProfileId: currentSnapshot.settings.defaultItemProfileId === profile.id
+        ? ItemDefaults.DEFAULT_ITEM_PROFILE_ID
+        : currentSnapshot.settings.defaultItemProfileId
+    });
+    resetItemProfileForm();
+    render(next);
+    return profile.name;
+  }, (name) => `${name} item profile deleted.`);
+});
+
+elements.addMsrpRecordButton.addEventListener("click", () => void runAction(async () => {
+  if (isArmed()) throw new Error("Switch Autopilot off before changing MSRP defaults.");
+  if (currentSnapshot.settings.msrpCatalog.length >= ItemDefaults.MAX_MSRP_RECORDS) {
+    throw new Error(`You can save up to ${ItemDefaults.MAX_MSRP_RECORDS} MSRP product types.`);
+  }
+  const record = ItemDefaults.normalizeMsrpRecord({
+    id: newCustomId("msrp"),
+    productLine: "Pokémon",
+    productType: "New product type",
+    matchTerms: ["replace me"],
+    prices: {},
+    sourceLabel: "Needs approval"
+  });
+  const next = await window.cartAssist.saveSettings({
+    ...currentSnapshot.settings,
+    msrpCatalog: [...currentSnapshot.settings.msrpCatalog, record]
+  });
+  render(next);
+  return next;
+}, "New MSRP product type added. Edit its match terms and approved store prices."));
+
+elements.researchMsrpButton.addEventListener("click", () => void runAction(async () => {
+  if (isArmed()) throw new Error("Switch Autopilot off before researching MSRP defaults.");
+  const next = await window.cartAssist.researchMsrp();
+  render(next);
+  return next;
+}, "Cited MSRP suggestions are ready for review; no purchase caps were changed."));
+
+elements.saveMsrpResearchKeyButton.addEventListener("click", () => void runAction(async () => {
+  const key = elements.msrpResearchApiKey.value.trim();
+  if (!key) throw new Error("Paste an OpenAI API key first.");
+  const next = await window.cartAssist.saveMsrpResearchKey(key);
+  elements.msrpResearchApiKey.value = "";
+  render(next);
+  return next;
+}, "OpenAI API key encrypted by the operating system. Enable the separate 30-day option if you want automatic research."));
+
+elements.removeMsrpResearchKeyButton.addEventListener("click", () => {
+  if (!window.confirm("Remove the encrypted OpenAI API key and disable monthly MSRP research? Approved prices remain saved.")) return;
+  void runAction(async () => {
+    const next = await window.cartAssist.removeMsrpResearchKey();
+    elements.msrpResearchApiKey.value = "";
+    render(next);
+    return next;
+  }, "OpenAI API key removed. Approved local MSRP values remain available offline.");
+});
+
+elements.msrpResearchEnabled.addEventListener("change", () => void runAction(async () => {
+  const next = await window.cartAssist.saveSettings({
+    ...currentSnapshot.settings,
+    msrpResearchEnabled: elements.msrpResearchEnabled.checked
+  });
+  render(next);
+  return elements.msrpResearchEnabled.checked;
+}, (enabled) => enabled ? "Monthly cited MSRP research enabled." : "Monthly MSRP research disabled."));
+
+elements.bulkMissionSelectAllButton.addEventListener("click", () => {
+  for (const product of savedProducts()) bulkMissionSelectedIds.add(product.id);
+  renderBulkMissionDefaults(currentSnapshot.settings);
+});
+elements.bulkMissionSelectNoneButton.addEventListener("click", () => {
+  bulkMissionSelectedIds.clear();
+  renderBulkMissionDefaults(currentSnapshot.settings);
+});
+elements.copySelectedMissionListButton.addEventListener("click", () => void runAction(
+  () => window.cartAssist.copyMissionList([...bulkMissionSelectedIds]),
+  ({ count }) => `${count} selected mission${count === 1 ? "" : "s"} copied as a consolidated list.`
+));
+elements.applyBulkItemProfileButton.addEventListener("click", () => void runAction(async () => {
+  if (isArmed()) throw new Error("Switch Autopilot off before bulk updating missions.");
+  const profile = ItemDefaults.itemProfileById(elements.bulkItemProfile.value, currentSnapshot.settings.itemProfiles);
+  if (!profile) throw new Error("Choose an item profile.");
+  const products = savedProducts().map((product) => (
+    bulkMissionSelectedIds.has(product.id)
+      ? ItemDefaults.applyItemProfile(product, profile, currentSnapshot.settings.msrpCatalog)
+      : product
+  ));
+  const ready = products.filter((product) => bulkMissionSelectedIds.has(product.id) && product.enabled).length;
+  const next = await window.cartAssist.saveSettings({ ...currentSnapshot.settings, products });
+  render(next);
+  return { selected: bulkMissionSelectedIds.size, ready };
+}, ({ selected, ready }) => `${selected} mission${selected === 1 ? "" : "s"} updated; ${ready} now On with positive caps.`));
 
 elements.showDiscordButton.addEventListener("click", () => {
   elements.discordLauncher.hidden = true;

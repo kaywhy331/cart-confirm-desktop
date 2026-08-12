@@ -8,6 +8,7 @@ const {
   quickAddMission,
   urlEntries
 } = require("../lib/mission-import");
+const { BUILT_IN_ITEM_PROFILES, normalizeMsrpRecord } = require("../lib/item-defaults");
 
 test("bulk import extracts, normalizes, deduplicates, and disables URL-only missions", () => {
   const plan = planBulkImport(`
@@ -29,6 +30,8 @@ test("bulk import extracts, normalizes, deduplicates, and disables URL-only miss
   assert.deepEqual(plan.summary, {
     candidates: 5,
     imported: 2,
+    ready: 0,
+    needsPrice: 2,
     duplicates: 2,
     invalid: 1,
     overCapacity: 0
@@ -78,4 +81,69 @@ test("quick add trusts only a matching exact ID and positive observed price", ()
     productUrl: "https://www.target.com/p/a/-/A-1011209279",
     price: null
   }), /current price/);
+});
+
+test("default-profile imports use shipping auto-buy while unknown URL prices stay Off", () => {
+  const profile = BUILT_IN_ITEM_PROFILES[0];
+  const msrpCatalog = [normalizeMsrpRecord({
+    id: "msrp:pokemon-etb",
+    productLine: "Pokémon",
+    productType: "ETB",
+    matchTerms: ["elite trainer box"],
+    prices: { target: 49.99 },
+    sourceLabel: "Approved"
+  })];
+  const plan = planBulkImport([
+    "https://www.target.com/p/pokemon-elite-trainer-box/-/A-1011209279",
+    "https://www.walmart.com/ip/unknown-item/95163305"
+  ].join("\n"), [], 50, { profile, msrpCatalog });
+  assert.equal(plan.additions[0].action, "checkout");
+  assert.equal(plan.additions[0].fulfillmentMode, "shipping");
+  assert.equal(plan.additions[0].maxPrice, 49.99);
+  assert.equal(plan.additions[0].maxOrderTotal, 64.99);
+  assert.equal(plan.additions[0].enabled, true);
+  assert.equal(plan.additions[1].action, "checkout");
+  assert.equal(plan.additions[1].fulfillmentMode, "shipping");
+  assert.equal(plan.additions[1].maxPrice, 0);
+  assert.equal(plan.additions[1].enabled, false);
+});
+
+test("Quick add applies the default profile using a positive observed page price", () => {
+  const mission = quickAddMission({
+    retailer: "amazon",
+    sku: "B0ABC12345",
+    productUrl: "https://www.amazon.com/dp/B0ABC12345",
+    title: "Unknown sealed item",
+    price: 34.99
+  }, { profile: BUILT_IN_ITEM_PROFILES[0], msrpCatalog: [] });
+  assert.equal(mission.action, "checkout");
+  assert.equal(mission.fulfillmentMode, "shipping");
+  assert.equal(mission.maxPrice, 34.99);
+  assert.equal(mission.maxOrderTotal, 49.99);
+  assert.equal(mission.enabled, true);
+  assert.equal(mission.priceSource, "observed-page");
+});
+
+test("Quick add keeps the exact observed page cap when the title also matches an MSRP category", () => {
+  const mission = quickAddMission({
+    retailer: "target",
+    sku: "1011209279",
+    productUrl: "https://www.target.com/p/pokemon-elite-trainer-box/-/A-1011209279",
+    title: "Pokémon Elite Trainer Box",
+    price: 39.99
+  }, {
+    profile: BUILT_IN_ITEM_PROFILES[0],
+    msrpCatalog: [normalizeMsrpRecord({
+      id: "msrp:pokemon-etb",
+      productLine: "Pokémon",
+      productType: "Elite Trainer Box",
+      matchTerms: ["elite trainer box"],
+      prices: { target: 49.99 },
+      sourceLabel: "Approved"
+    })]
+  });
+  assert.equal(mission.maxPrice, 39.99);
+  assert.equal(mission.maxOrderTotal, 54.99);
+  assert.equal(mission.priceSource, "observed-page");
+  assert.equal(mission.msrpRecordId, "msrp:pokemon-etb");
 });

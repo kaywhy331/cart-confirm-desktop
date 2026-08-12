@@ -320,6 +320,17 @@ test("review-only products are supported and armed product edits require disarmi
   }, armed);
   assert.throws(() => assertSafeArmedUpdate(armed, changed), /Disarm automation/);
   assert.doesNotThrow(() => assertSafeArmedUpdate(armed, { ...changed, automationEnabled: false }));
+
+  const metadataChanged = normalizeSettings({
+    products: [{
+      ...PRODUCTS[0],
+      itemProfileId: "built-in:shipping-auto-buy",
+      msrpRecordId: "msrp:pokemon-etb",
+      priceSource: "approved-msrp"
+    }],
+    automationEnabled: true
+  }, armed);
+  assert.throws(() => assertSafeArmedUpdate(armed, metadataChanged), /Disarm automation/);
 });
 
 test("returns store-aware cart and order links", () => {
