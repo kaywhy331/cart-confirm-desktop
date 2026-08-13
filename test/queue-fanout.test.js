@@ -40,8 +40,10 @@ test("the first official queue signal fans out remaining enabled missions once",
   assert.equal(decision.key, "run-1|walmart");
   assert.deepEqual(decision.productIds, ["walmart:2", "walmart:3"]);
   assert.equal(decision.spacingMs, QUEUE_FANOUT_SPACING_MS);
-  assert.equal(decision.spacingMs, 1_000);
-  assert.equal(decision.openRequestDrainMs, 5_000);
+  assert.equal(decision.spacingMs, 0);
+  assert.equal(decision.parallel, true);
+  assert.equal(decision.dedicatedTab, true);
+  assert.equal(decision.openRequestDrainMs, 3_000);
 });
 
 test("fan-out excludes tabs already waiting in the official queue", () => {

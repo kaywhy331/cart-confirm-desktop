@@ -54,3 +54,19 @@ test("an active non-mission store tab is preferred before a recent inactive tab"
   }, [recentSearch, activeCart]);
   assert.equal(chosen, activeCart);
 });
+
+test("a dedicated drop request reuses only its exact mission tab", () => {
+  const unrelated = { id: 4, active: true, url: "https://www.walmart.com/cart" };
+  assert.equal(chooseReusableTab(config, {
+    retailer: "walmart",
+    url: "https://www.walmart.com/ip/item/222222222",
+    dedicatedTab: true
+  }, [unrelated]), null);
+
+  const own = { id: 5, url: "https://www.walmart.com/ip/item/222222222" };
+  assert.equal(chooseReusableTab(config, {
+    retailer: "walmart",
+    url: "https://www.walmart.com/ip/item/222222222",
+    dedicatedTab: true
+  }, [unrelated, own]), own);
+});

@@ -9,7 +9,8 @@ const {
   getAdapter,
   isFirstPartyText,
   parsePrice,
-  parseWalmartQueue
+  parseWalmartQueue,
+  walmartHoldingQueue
 } = require("../extension/retailers");
 
 test("extension helpers recognize supported retailer product pages", () => {
@@ -70,6 +71,22 @@ test("Walmart queue URLs expose only safe item and wait state metadata", () => {
   assert.equal(extractSkuFromUrl("walmart", url), "987654321");
   assert.equal(getAdapter("walmart").pageKind(url), "queue");
   assert.equal("url" in queue, false);
+});
+
+test("Walmart product-route holding pages require exact identity and explicit queue evidence", () => {
+  const product = { sku: "987654321" };
+  const holding = { body: { textContent: "High demand. You’re in line in our virtual queue. Please stay on this page." }, querySelector: () => null };
+  assert.deepEqual(
+    walmartHoldingQueue(holding, "https://www.walmart.com/ip/pokemon/987654321", product),
+    { itemId: "987654321", queued: true, state: "holding", soldOut: false }
+  );
+  assert.equal(getAdapter("walmart").pageKind("https://www.walmart.com/ip/pokemon/987654321", holding, product), "queue");
+  assert.equal(walmartHoldingQueue(holding, "https://www.walmart.com/ip/pokemon/111111111", product), null);
+  assert.equal(walmartHoldingQueue(
+    { body: { textContent: "High demand. Please try again later." }, querySelector: () => null },
+    "https://www.walmart.com/ip/pokemon/987654321",
+    product
+  ), null);
 });
 
 test("Target checkout routes include co-cart while authentication stays manual", () => {

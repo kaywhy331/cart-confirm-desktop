@@ -25,6 +25,11 @@
       : null;
     if (ownTab) return ownTab;
 
+    // Simultaneous scheduled drops must not race to reuse the same unrelated
+    // store tab. Each request either keeps its exact mission tab or creates a
+    // dedicated one.
+    if (request.dedicatedTab === true) return null;
+
     const free = tabs.filter((candidate) => {
       const sku = tabSku(retailer, candidate?.url);
       return !sku || !otherMissionSkus.has(sku);

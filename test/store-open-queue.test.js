@@ -134,3 +134,25 @@ test("a one-second drop fan-out override opens each page exactly once in order",
   assert.deepEqual(opened, [1_000, 2_000, 3_000]);
   assert.deepEqual(waits, [1_000, 1_000]);
 });
+
+test("a parallel zero-spacing Walmart drop does not wait for another browser handoff", async () => {
+  let releaseFirst;
+  const firstGate = new Promise((resolve) => { releaseFirst = resolve; });
+  const opened = [];
+  const queue = createStoreOpenQueue({ intervalMs: () => 20_000 });
+
+  const first = queue.enqueue("walmart", async () => {
+    opened.push("first-started");
+    await firstGate;
+    opened.push("first-finished");
+  }, { spacingMs: 0, parallel: true });
+  const second = queue.enqueue("walmart", async () => {
+    opened.push("second-started");
+  }, { spacingMs: 0, parallel: true });
+
+  await second;
+  assert.deepEqual(opened, ["first-started", "second-started"]);
+  releaseFirst();
+  await first;
+  assert.deepEqual(opened, ["first-started", "second-started", "first-finished"]);
+});
