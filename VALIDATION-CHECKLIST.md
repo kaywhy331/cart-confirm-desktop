@@ -260,8 +260,13 @@ for one supervised run) and manually walk the checkout to the final review page:
       after its network response or timeout arrives.
 - [ ] When Walmart naturally serves `/qp` or an explicit product-route waiting
       room, confirm the first queued mission produces only one simultaneous
-      fan-out for that Autopilot run and that every queued tab
-      then stays still until Walmart admits it.
+      fan-out for that Autopilot run. The winning tab and every tab that later
+      reaches the queue must stay still until Walmart admits it. Each remaining
+      scheduled Walmart blitz tab must wait for the page-settle check, reload no
+      more than **Walmart queue-capture reloads** (five by default), and remain
+      idle after the cap. Press **Stop everything** during the supervised test
+      and confirm any pending final reload is cancelled. Do not manufacture a
+      retailer queue for this test.
 - [ ] Re-run section 2 and 4 whenever you change a saved address, payment
       method, or default pickup store on any automated account.
 - [ ] Re-run section 3 whenever a retailer visibly redesigns its product,

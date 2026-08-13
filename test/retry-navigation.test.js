@@ -104,3 +104,15 @@ test("review and successful checkout missions remain on their authoritative Targ
   assert.match(confirmation, /send\("order-confirmed"/);
   assert.doesNotMatch(confirmation, /location\.(?:assign|replace|reload)/);
 });
+
+test("Walmart queue recognition precedes bounded loser retries through the traffic governor", () => {
+  const scan = section("async function scan", "function scheduleScan");
+  const retry = section("async function finishQueueCaptureNavigation", "async function handleConfirmation");
+  assert.ok(scan.indexOf("handleRetailerQueue(product)") < scan.indexOf("handleQueueCaptureRetry(product)"));
+  assert.match(retry, /capture\.winnerProductId === product\.id/);
+  assert.match(retry, /QueueCapture\.maxReloads\(config\)/);
+  assert.match(retry, /CART_CONFIRM_RESERVE_NAVIGATION/);
+  assert.match(retry, /CART_CONFIRM_REVALIDATE_NAVIGATION/);
+  assert.match(retry, /QueueCapture\.recordReload[\s\S]*?location\.reload\(\)/);
+  assert.match(retry, /QueueCapture\.PAGE_SETTLE_MS/);
+});

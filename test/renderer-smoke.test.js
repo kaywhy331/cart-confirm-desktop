@@ -44,6 +44,7 @@ function snapshotFixture() {
       watcherIntervalSeconds: 60,
       blitzRetryDelayMs: 750,
       blitzWindowSeconds: 20,
+      walmartQueueCaptureReloads: 5,
       scheduledOpenEnabled: false,
       scheduledOpenAt: "",
       scheduledRetailer: "target",
@@ -313,6 +314,7 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   assert.match(doc.getElementById("testButton").textContent, /Test all/);
   assert.equal(doc.getElementById("eligibilityRefreshIntervalSeconds").value, "2");
   assert.equal(doc.getElementById("watcherIntervalSeconds").value, "60");
+  assert.equal(doc.getElementById("walmartQueueCaptureReloads").value, "5");
   assert.match(card.querySelector("[data-view='sub']").textContent, /continuous watcher/);
 
   doc.getElementById("watcherIntervalSeconds").value = "90";

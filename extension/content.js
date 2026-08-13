@@ -6,7 +6,8 @@
   const CatalogSearch = globalThis.CartConfirmCatalogSearch;
   const Safety = globalThis.CartConfirmSafety;
   const ScheduleGate = globalThis.CartConfirmScheduleGate;
-  if (!Retailers || !QuickAdd || !CatalogSearch || !Safety || !ScheduleGate) return;
+  const QueueCapture = globalThis.CartConfirmQueueCapture;
+  if (!Retailers || !QuickAdd || !CatalogSearch || !Safety || !ScheduleGate || !QueueCapture) return;
 
   const ACTIVE_PRODUCT_KEY = "cartConfirmActiveProductId";
   const CONFIG_REFRESH_MS = 5_000;
@@ -30,6 +31,8 @@
   let catalogCaptureTimer = null;
   let catalogCaptureFingerprint = "";
   let retryTimer = null;
+  let queueCaptureTimer = null;
+  let queueCaptureInFlight = false;
   let scanning = false;
   let backgroundActiveProductId = "";
   let backgroundActiveEntry = "product";
@@ -307,6 +310,12 @@
   function clearRetry() {
     clearTimeout(retryTimer);
     retryTimer = null;
+  }
+
+  function clearQueueCaptureRetry() {
+    clearTimeout(queueCaptureTimer);
+    queueCaptureTimer = null;
+    queueCaptureInFlight = false;
   }
 
   async function productAutomationState(product) {
@@ -642,6 +651,7 @@
     const queue = adapter.queueState?.(location.href, document, product);
     if (!queue || queue.itemId !== product.sku) return false;
     clearRetry();
+    clearQueueCaptureRetry();
     await send("queue-waiting", product, {
       availability: queue.soldOut ? "unavailable" : "unknown",
       reason: "retailer-queue",
@@ -649,6 +659,124 @@
         ? `${adapter.label} reports that the queued item sold out. No queue request or refresh was attempted.`
         : `${adapter.label} placed this item in its official queue. The companion will not refresh, call ticket endpoints, or bypass the queue; it will resume after the store admits this tab.`
     }, `queue:${product.id}:${queue.state}:${queue.soldOut}`, 30_000);
+    return true;
+  }
+
+  async function queueCaptureStillWaiting(product, nextConfig) {
+    config = nextConfig;
+    const nextProduct = (config?.products || []).find((candidate) => candidate.id === product.id);
+    const capture = QueueCapture.captureForProduct(config, nextProduct);
+    if (!capture || capture.winnerProductId === product.id || !nextProduct?.enabled) return null;
+    if (adapter.pageKind(location.href, document, nextProduct) === "queue") {
+      await handleRetailerQueue(nextProduct);
+      return null;
+    }
+    return { capture, product: nextProduct };
+  }
+
+  async function finishQueueCaptureNavigation(product, reservationId) {
+    const nextConfig = await requestConfig(true);
+    const waiting = await queueCaptureStillWaiting(product, nextConfig);
+    if (!waiting || adapter.securityChallenge(document)) {
+      clearQueueCaptureRetry();
+      return;
+    }
+    const traffic = await runtimeMessage({
+      type: "CART_CONFIRM_REVALIDATE_NAVIGATION",
+      retailer,
+      productId: product.id,
+      reservationId
+    });
+    if (!traffic.ok) {
+      if (traffic.reason === "not-ready" && traffic.waitMs > 0) {
+        queueCaptureTimer = setTimeout(
+          () => void finishQueueCaptureNavigation(product, reservationId),
+          traffic.waitMs
+        );
+        return;
+      }
+      await send("automation-blocked", product, {
+        reason: ["traffic-budget-exhausted", "traffic-overload"].includes(traffic.reason)
+          ? traffic.reason
+          : "manual-action-required",
+        message: "The bounded Walmart queue-capture reload stopped because the traffic governor could not revalidate it."
+      }, `queue-capture-revalidation:${product.id}:${traffic.reason}`, Number.MAX_SAFE_INTEGER);
+      clearQueueCaptureRetry();
+      return;
+    }
+    const finalConfig = await requestConfig(true);
+    const finalWaiting = await queueCaptureStillWaiting(waiting.product, finalConfig);
+    if (!finalWaiting || adapter.securityChallenge(document)) {
+      clearQueueCaptureRetry();
+      return;
+    }
+    const maximum = QueueCapture.maxReloads(config);
+    if (QueueCapture.readAttempts(sessionStorage, finalWaiting.capture, finalWaiting.product) >= maximum) {
+      clearQueueCaptureRetry();
+      return;
+    }
+    const attempts = QueueCapture.recordReload(sessionStorage, finalWaiting.capture, finalWaiting.product, maximum);
+    void send("automation-status", finalWaiting.product, {
+      message: `Walmart queue capture reload ${attempts} of ${maximum} is starting after the page-settle check.`
+    }, `queue-capture-reload:${finalWaiting.capture.runId}:${finalWaiting.product.id}:${attempts}`, Number.MAX_SAFE_INTEGER);
+    location.reload();
+  }
+
+  async function beginQueueCaptureRetry(product) {
+    queueCaptureTimer = null;
+    queueCaptureInFlight = true;
+    const nextConfig = await requestConfig(true);
+    const waiting = await queueCaptureStillWaiting(product, nextConfig);
+    if (!waiting || adapter.securityChallenge(document)) {
+      clearQueueCaptureRetry();
+      return;
+    }
+    const attempts = QueueCapture.readAttempts(sessionStorage, waiting.capture, waiting.product);
+    const maximum = QueueCapture.maxReloads(config);
+    if (attempts >= maximum) {
+      await send("automation-status", waiting.product, {
+        message: `Walmart queue capture stopped after ${maximum} final reloads without a queue for this tab.`
+      }, `queue-capture-stopped:${waiting.capture.runId}:${waiting.product.id}`, Number.MAX_SAFE_INTEGER);
+      clearQueueCaptureRetry();
+      return;
+    }
+    const reservationId = `${waiting.capture.runId}:${waiting.product.id}:queue-capture:${attempts + 1}:${Date.now()}`;
+    const reservation = await runtimeMessage({
+      type: "CART_CONFIRM_RESERVE_NAVIGATION",
+      retailer,
+      productId: waiting.product.id,
+      reservationId,
+      cadence: "eligibility",
+      notBefore: Date.now()
+    });
+    if (!reservation.ok) {
+      await send("automation-blocked", waiting.product, {
+        reason: reservation.reason === "traffic-budget-exhausted" ? reservation.reason : "manual-action-required",
+        message: "The bounded Walmart queue-capture reload stopped because the traffic governor could not reserve it."
+      }, `queue-capture-reservation:${waiting.product.id}:${reservation.reason}`, Number.MAX_SAFE_INTEGER);
+      clearQueueCaptureRetry();
+      return;
+    }
+    queueCaptureTimer = setTimeout(
+      () => void finishQueueCaptureNavigation(waiting.product, reservationId),
+      Math.max(0, Number(reservation.waitMs || 0))
+    );
+  }
+
+  function handleQueueCaptureRetry(product) {
+    const capture = QueueCapture.captureForProduct(config, product);
+    if (!capture) return false;
+    clearRetry();
+    if (capture.winnerProductId === product.id) {
+      clearQueueCaptureRetry();
+      return true;
+    }
+    if (!queueCaptureTimer && !queueCaptureInFlight) {
+      queueCaptureTimer = setTimeout(
+        () => void beginQueueCaptureRetry(product),
+        QueueCapture.PAGE_SETTLE_MS
+      );
+    }
     return true;
   }
 
@@ -1435,6 +1563,7 @@
       void send("page-observed", product, {}, `page:${product.id}:${pageAddress()}`, OBSERVATION_DEDUPE_MS);
       const kind = adapter.pageKind(location.href, document, product);
       if (kind === "queue" && await handleRetailerQueue(product)) return;
+      if (handleQueueCaptureRetry(product)) return;
       if (kind === "confirmation" && await handleConfirmation(product)) return;
       if (kind === "product") await handleProductPage(product);
       else if (kind === "cart") await handleCartPage(product);
@@ -1472,6 +1601,7 @@
       paused: next.monitoringPaused,
       version: next.configVersion,
       products: next.products,
+      queueCapture: next.queueCapture,
       catalogSearch: next.catalogSearch
     });
     const changed = fingerprint !== configFingerprint;
@@ -1479,7 +1609,10 @@
     configFingerprint = fingerprint;
     if (changed) {
       seen.clear();
-      if (!config.automationEnabled || config.monitoringPaused) clearRetry();
+      if (!config.automationEnabled || config.monitoringPaused) {
+        clearRetry();
+        clearQueueCaptureRetry();
+      }
     }
     const previousContextProductId = backgroundActiveProductId;
     const previousContextEntry = backgroundActiveEntry;
@@ -1515,6 +1648,11 @@
   }, true);
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+    if (message?.type === "CART_CONFIRM_QUEUE_CAPTURE_CHANGED") {
+      void refreshConfig(true);
+      sendResponse({ ok: true });
+      return false;
+    }
     if (message?.type !== "CART_CONFIRM_QUICK_ADD_INSPECT") return undefined;
     try {
       sendResponse({

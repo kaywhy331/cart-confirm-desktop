@@ -57,7 +57,9 @@ const {
   activateBlitzExecution,
   loadRuntimeState,
   productExecutionMode,
+  queueCaptureForRun,
   reconcileProductExecutionContexts,
+  registerQueueCapture,
   saveRuntimeState
 } = require("./lib/runtime-state");
 const { isAllowedExtensionOrigin, isTrustedCompanionRequest } = require("./lib/extension-identity");
@@ -368,6 +370,7 @@ function publicSettings() {
     watcherIntervalSeconds: settings.watcherIntervalSeconds,
     blitzRetryDelayMs: settings.blitzRetryDelayMs,
     blitzWindowSeconds: settings.blitzWindowSeconds,
+    walmartQueueCaptureReloads: settings.walmartQueueCaptureReloads,
     scheduledOpenEnabled: settings.scheduledOpenEnabled,
     scheduledOpenAt: settings.scheduledOpenAt,
     scheduledRetailer: settings.scheduledRetailer,
@@ -891,7 +894,7 @@ function sendEventNotification(event, product, queueFanout = null) {
       key,
       `${store} purchase queue`,
       queueFanout
-        ? `Official queue active. Opening ${queueFanout.productIds.length} other enabled mission${queueFanout.productIds.length === 1 ? "" : "s"} together, then waiting without refreshes.`
+        ? `Official queue active. Opening ${queueFanout.productIds.length} other enabled mission${queueFanout.productIds.length === 1 ? "" : "s"} together; scheduled Walmart loser tabs may use their configured bounded final reloads.`
         : "The companion is waiting for the official retailer queue without refreshing it."
     );
   }
@@ -915,7 +918,7 @@ function triggerQueueFanout(event) {
   persistRuntimeState();
   status = {
     ...status,
-    lastMessage: `Official ${retailerLabel(decision.retailer)} queue detected. Opening ${decision.productIds.length} other enabled mission${decision.productIds.length === 1 ? "" : "s"} together; queued tabs will not refresh.`
+    lastMessage: `Official ${retailerLabel(decision.retailer)} queue detected. Opening ${decision.productIds.length} other enabled mission${decision.productIds.length === 1 ? "" : "s"} together; queued tabs freeze while scheduled loser tabs use bounded final reloads.`
   };
 
   const runId = settings.automationRunId;
@@ -1196,6 +1199,24 @@ function handleCompanionEvent(rawEvent) {
     };
   }
   addEvent(event);
+  let queueCapture = null;
+  if (
+    event.eventType === "queue-waiting"
+    && event.availability !== "unavailable"
+    && product
+  ) {
+    const registration = registerQueueCapture(
+      runtimeState,
+      product,
+      settings.automationRunId,
+      Date.now()
+    );
+    queueCapture = registration.capture;
+    if (registration.created) {
+      persistRuntimeState();
+      configVersion += 1;
+    }
+  }
   const queueFanout = event.eventType === "queue-waiting" && product
     ? triggerQueueFanout(event)
     : null;
@@ -1203,7 +1224,8 @@ function handleCompanionEvent(rawEvent) {
   broadcast();
   return {
     accepted: true,
-    openRequestDrainMs: queueFanout?.openRequestDrainMs || 0
+    openRequestDrainMs: queueFanout?.openRequestDrainMs || 0,
+    queueCapture
   };
 }
 
@@ -1295,6 +1317,7 @@ function extensionConfig() {
     automationEnabled: settings.automationEnabled,
     monitoringPaused: settings.monitoringPaused,
     automationRunId: settings.automationRunId,
+    queueCapture: queueCaptureForRun(runtimeState, settings.automationRunId),
     fastMode: settings.fastMode,
     retryIntervalSeconds: settings.retryIntervalSeconds,
     eligibilityRefreshIntervalSeconds: settings.eligibilityRefreshIntervalSeconds,
@@ -1303,6 +1326,7 @@ function extensionConfig() {
     watcherIntervalSeconds: settings.watcherIntervalSeconds,
     blitzRetryDelayMs: settings.blitzRetryDelayMs,
     blitzWindowSeconds: settings.blitzWindowSeconds,
+    walmartQueueCaptureReloads: settings.walmartQueueCaptureReloads,
     firstPartyOnly: true,
     catalogSearch: activeCatalogSearch,
     token: settings.companionToken,
@@ -1522,6 +1546,7 @@ function registerIpc() {
     assertNoNewPastProductSchedules(normalized.products, settings.products, Date.now());
     if (normalized.automationEnabled && !wasArmed) {
       normalized = { ...normalized, automationRunId: crypto.randomUUID(), monitoringPaused: false };
+      runtimeState.queueCapture = null;
     }
     reconcileProductExecutionContexts(
       runtimeState,
@@ -1681,6 +1706,7 @@ function registerIpc() {
       ))
     };
     runtimeState.productExecutionContexts = {};
+    runtimeState.queueCapture = null;
     persistSettings();
     persistRuntimeState();
     configVersion += 1;
