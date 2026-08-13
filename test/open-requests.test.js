@@ -22,7 +22,7 @@ test("a pending request carries only its bounded product context", () => {
   const request = store.add(
     "amazon",
     "https://www.amazon.com/gp/aws/cart/add.html?ASIN.1=B0GG16Q4X1",
-    { productId: "amazon:B0GG16Q4X1", contextRequired: true }
+    { productId: "amazon:B0GG16Q4X1", contextRequired: true, dedicatedTab: true }
   );
 
   assert.deepEqual(store.pending()[0], {
@@ -31,9 +31,11 @@ test("a pending request carries only its bounded product context", () => {
     url: "https://www.amazon.com/gp/aws/cart/add.html?ASIN.1=B0GG16Q4X1",
     productId: "amazon:B0GG16Q4X1",
     contextRequired: true,
+    dedicatedTab: true,
     createdAt: 1_000
   });
   assert.equal(store.claim(request.id).productId, "amazon:B0GG16Q4X1");
+  assert.equal(store.claim(request.id).reason, "already-claimed");
 });
 
 test("waitForClaim resolves true when the companion claims the request", async () => {

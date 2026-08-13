@@ -639,7 +639,7 @@
   }
 
   async function handleRetailerQueue(product) {
-    const queue = adapter.queueState?.(location.href);
+    const queue = adapter.queueState?.(location.href, document, product);
     if (!queue || queue.itemId !== product.sku) return false;
     clearRetry();
     await send("queue-waiting", product, {
@@ -1433,7 +1433,7 @@
       if (await handleChallenge(product)) return;
 
       void send("page-observed", product, {}, `page:${product.id}:${pageAddress()}`, OBSERVATION_DEDUPE_MS);
-      const kind = adapter.pageKind(location.href);
+      const kind = adapter.pageKind(location.href, document, product);
       if (kind === "queue" && await handleRetailerQueue(product)) return;
       if (kind === "confirmation" && await handleConfirmation(product)) return;
       if (kind === "product") await handleProductPage(product);

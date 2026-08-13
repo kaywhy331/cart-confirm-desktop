@@ -142,6 +142,36 @@
     }
   }
 
+  function walmartHoldingQueue(doc, url, product) {
+    let parsed;
+    try {
+      parsed = new URL(String(url || ""));
+    } catch {
+      return null;
+    }
+    if (!["walmart.com", "www.walmart.com"].includes(parsed.hostname.toLowerCase())) return null;
+    const itemId = extractSkuFromUrl("walmart", parsed.href);
+    if (!itemId || itemId !== String(product?.sku || "")) return null;
+
+    const marker = query(doc, [
+      "[data-testid*='waiting-room' i]",
+      "[data-automation-id*='waiting-room' i]",
+      "[data-testid*='purchase-queue' i]",
+      "[data-automation-id*='purchase-queue' i]",
+      "[data-testid*='queue-page' i]",
+      "[data-automation-id*='queue-page' i]"
+    ]);
+    const text = pageText(doc, 40_000);
+    const explicitWaitingRoom = /\b(?:waiting room|virtual queue|purchase queue|you(?:'|’)re in line|your place in line)\b/i.test(text);
+    const pairedDemandWait = /\b(?:high|heavy) demand\b/i.test(text)
+      && /\b(?:please wait|wait here|stay on this page|place in line|join(?:ed)? the (?:line|queue))\b/i.test(text);
+    if (!marker && !explicitWaitingRoom && !pairedDemandWait) return null;
+    if (/\b(?:sold out|out of stock|no longer available)\b/i.test(text)) {
+      return { itemId, queued: true, state: "holding", soldOut: true };
+    }
+    return { itemId, queued: true, state: "holding", soldOut: false };
+  }
+
   // Retailer pages embed schema.org Product JSON-LD tied to the exact item.
   // It is the fallback when the visible price element cannot be located from
   // the buy box (e.g. Target's "$35 orders" shipping blurb satisfies the
@@ -671,9 +701,9 @@
       productMatches(product, url) {
         return extractSkuFromUrl("walmart", url) === product.sku;
       },
-      pageKind(url) {
+      pageKind(url, doc, product) {
         const path = new URL(url).pathname.toLowerCase();
-        if (parseWalmartQueue(url)) return "queue";
+        if (parseWalmartQueue(url) || walmartHoldingQueue(doc, url, product)) return "queue";
         if (/thank.?you|order-confirm|confirmation/.test(path)) return "confirmation";
         if (path.includes("/checkout")) return "checkout";
         if (path.includes("/cart")) return "cart";
@@ -725,8 +755,8 @@
       submitButton(doc) {
         return findAction(doc, ["button[data-automation-id*='place-order' i]", "button[data-testid*='place-order' i]"], /place (?:my |your )?order/i);
       },
-      queueState(url) {
-        return parseWalmartQueue(url);
+      queueState(url, doc, product) {
+        return parseWalmartQueue(url) || walmartHoldingQueue(doc, url, product);
       }
     },
     amazon: {
@@ -816,6 +846,7 @@
     isFirstPartyText,
     parsePrice,
     parseWalmartQueue,
+    walmartHoldingQueue,
     textOf
   });
 

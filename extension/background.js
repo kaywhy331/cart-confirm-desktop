@@ -579,7 +579,10 @@ async function processOpenRequests(config) {
     if (!response.ok) return;
     const payload = await response.json().catch(() => ({}));
     const requests = Array.isArray(payload.requests) ? payload.requests : [];
-    for (const request of requests.slice(0, 10)) {
+    const dedicated = requests.slice(0, 50).filter((request) => request?.dedicatedTab === true);
+    const ordinary = requests.slice(0, 50).filter((request) => request?.dedicatedTab !== true);
+    await Promise.all(dedicated.map((request) => reuseTabForOpenRequest(config, request).catch(() => {})));
+    for (const request of ordinary) {
       await reuseTabForOpenRequest(config, request).catch(() => {});
     }
   } catch {
@@ -596,8 +599,8 @@ function wakeOpenRequestDrain(config, durationMs) {
   if (openRequestDrainTask) return;
 
   // This is only local loopback polling. It creates no retailer requests; it
-  // lets the browser claim each desktop-scheduled tab as soon as its one-second
-  // lane releases it.
+  // lets the browser claim each desktop-scheduled tab as soon as its bounded
+  // launch lane releases it.
   openRequestDrainTask = (async () => {
     while (Date.now() < openRequestDrainUntil) {
       await processOpenRequests(config).catch(() => {});

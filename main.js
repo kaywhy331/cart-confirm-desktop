@@ -117,10 +117,12 @@ const MAX_EVENTS = 250;
 const NOTIFICATION_COOLDOWN_MS = 15_000;
 const COMPANION_TAB_FRESH_MS = 20_000;
 const COMPANION_CLAIM_TIMEOUT_MS = 7_000;
+const SIMULTANEOUS_CLAIM_TIMEOUT_MS = 250;
 // Desktop-initiated openings (manual, test, scheduled) are one page load each,
 // so they use a short fixed stagger; the configured per-store spacing governs
 // the extension's automatic retry navigation.
 const DESKTOP_OPEN_SPACING_MS = 3_000;
+const DESKTOP_DROP_SPACING_MS = 1_000;
 const DISCORD_POLL_INTERVAL_MS = 2_500;
 const DISCORD_ERROR_RETRY_MS = 10_000;
 const QUIET_STORES = Object.freeze(["target", "walmart"]);
@@ -659,7 +661,7 @@ async function openExternalRetailer(url, options = {}) {
     fallbackUrl = fallback.parsed.href;
   }
   const requestedSpacing = Number(options.spacingMs);
-  const spacingMs = Number.isFinite(requestedSpacing) && requestedSpacing >= QUEUE_FANOUT_SPACING_MS
+  const spacingMs = Number.isFinite(requestedSpacing) && requestedSpacing >= 0
     ? requestedSpacing
     : DESKTOP_OPEN_SPACING_MS;
   const actionKind = String(options.actionKind || "desktop-navigation").slice(0, 80);
@@ -679,8 +681,15 @@ async function openExternalRetailer(url, options = {}) {
       // Ask a connected companion to reuse an existing store tab first; a
       // request nobody claims falls back to opening a fresh page.
       if (companionTabLikely(retailer)) {
-        const request = openRequests.add(retailer, parsed.href, { productId, contextRequired });
-        if (await openRequests.waitForClaim(request.id, COMPANION_CLAIM_TIMEOUT_MS)) {
+        const request = openRequests.add(retailer, parsed.href, {
+          productId,
+          contextRequired,
+          dedicatedTab: options.dedicatedTab === true
+        });
+        const claimTimeoutMs = options.parallel === true && options.dedicatedTab === true
+          ? SIMULTANEOUS_CLAIM_TIMEOUT_MS
+          : COMPANION_CLAIM_TIMEOUT_MS;
+        if (await openRequests.waitForClaim(request.id, claimTimeoutMs)) {
           return {
             retailer,
             url: parsed.href,
@@ -703,7 +712,7 @@ async function openExternalRetailer(url, options = {}) {
         contextAttached: false,
         directFallback: contextRequired && launchUrl !== parsed.href
       };
-    }, { spacingMs });
+    }, { spacingMs, parallel: options.parallel === true });
     return result?.cancelled ? { retailer, url: parsed.href, via: "cancelled" } : result;
   } finally {
     pendingNavigationKeys.delete(navigationKey);
@@ -882,7 +891,7 @@ function sendEventNotification(event, product, queueFanout = null) {
       key,
       `${store} purchase queue`,
       queueFanout
-        ? `Official queue active. Entering ${queueFanout.productIds.length} other enabled mission${queueFanout.productIds.length === 1 ? "" : "s"} one second apart, then waiting without refreshes.`
+        ? `Official queue active. Opening ${queueFanout.productIds.length} other enabled mission${queueFanout.productIds.length === 1 ? "" : "s"} together, then waiting without refreshes.`
         : "The companion is waiting for the official retailer queue without refreshing it."
     );
   }
@@ -906,13 +915,15 @@ function triggerQueueFanout(event) {
   persistRuntimeState();
   status = {
     ...status,
-    lastMessage: `Official ${retailerLabel(decision.retailer)} queue detected. Entering ${decision.productIds.length} other enabled mission${decision.productIds.length === 1 ? "" : "s"} one second apart; queued tabs will not refresh.`
+    lastMessage: `Official ${retailerLabel(decision.retailer)} queue detected. Opening ${decision.productIds.length} other enabled mission${decision.productIds.length === 1 ? "" : "s"} together; queued tabs will not refresh.`
   };
 
   const runId = settings.automationRunId;
   const taskEpoch = stopEpoch;
   void Promise.allSettled(decision.productIds.map((productId) => openProduct(productId, {
     spacingMs: decision.spacingMs,
+    parallel: decision.parallel,
+    dedicatedTab: decision.dedicatedTab,
     actionKind: "official-queue-fanout",
     resumeMonitoring: false,
     stopEpoch: taskEpoch
@@ -1008,7 +1019,7 @@ function handleDiscordSignal(signal, historical) {
   const taskEpoch = stopEpoch;
   void openProduct(route.product.id, {
     urlOverride: route.url,
-    spacingMs: QUEUE_FANOUT_SPACING_MS,
+    spacingMs: DESKTOP_DROP_SPACING_MS,
     actionKind: `discord-signal-${route.entry}`,
     resumeMonitoring: false,
     stopEpoch: taskEpoch
@@ -1149,7 +1160,7 @@ async function openSignal(signalId, requestedEntry = "product") {
   }
   return openProduct(product.id, {
     urlOverride: route.url,
-    spacingMs: QUEUE_FANOUT_SPACING_MS,
+    spacingMs: DESKTOP_DROP_SPACING_MS,
     actionKind: `discord-signal-manual-${requestedEntry}`
   });
 }
@@ -2004,7 +2015,9 @@ function handleProductSchedule(decision) {
   broadcast();
   const taskEpoch = stopEpoch;
   void openProduct(decision.productId, {
-    spacingMs: QUEUE_FANOUT_SPACING_MS,
+    spacingMs: product.retailer === "walmart" ? 0 : DESKTOP_DROP_SPACING_MS,
+    parallel: product.retailer === "walmart",
+    dedicatedTab: product.retailer === "walmart",
     actionKind: "scheduled-drop"
   })
     .then((result) => {
@@ -2105,7 +2118,9 @@ function startScheduler() {
 
     const taskEpoch = stopEpoch;
     void openBuyList(scheduledRetailer, {
-      spacingMs: QUEUE_FANOUT_SPACING_MS,
+      spacingMs: scheduledRetailer === "walmart" ? 0 : DESKTOP_DROP_SPACING_MS,
+      parallel: scheduledRetailer === "walmart",
+      dedicatedTab: scheduledRetailer === "walmart",
       actionKind: "scheduled-drop"
     })
       .then(() => {

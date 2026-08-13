@@ -248,16 +248,19 @@ for one supervised run) and manually walk the checkout to the final review page:
       a new alarm.
 - [ ] Before a high-stakes multi-drop window, give two or three harmless
       same-store test missions the same near-future **Open at** time and confirm
-      each page opens exactly once, one second apart. Press **Stop everything**
-      during a spacing wait in a second supervised test and confirm the wait
-      ends immediately and the remaining pages do not open. Do not try to
-      manufacture or repeatedly refresh a retailer queue.
+      each page opens exactly once. Walmart pages must launch together in
+      dedicated tabs; other same-store pages remain one second apart. In a
+      separate supervised non-Walmart test, press **Stop everything** during a
+      spacing wait and confirm the wait ends immediately and the remaining
+      pages do not open. Do not try to manufacture or repeatedly refresh a
+      retailer queue.
 - [ ] With Autopilot on and a tab-less Target or Walmart mission checking in the
       background, press **Stop everything** while a check is in flight. Confirm
       it cannot add a feed event, reopen Chrome, or lift the `STOPPED` state
       after its network response or timeout arrives.
-- [ ] When Walmart naturally serves `/qp`, confirm the first queued mission
-      produces only one fan-out for that Autopilot run and that every queued tab
+- [ ] When Walmart naturally serves `/qp` or an explicit product-route waiting
+      room, confirm the first queued mission produces only one simultaneous
+      fan-out for that Autopilot run and that every queued tab
       then stays still until Walmart admits it.
 - [ ] Re-run section 2 and 4 whenever you change a saved address, payment
       method, or default pickup store on any automated account.

@@ -20,6 +20,8 @@ test("per-product calendar firing persists blitz context before clearing its gat
   const handler = section(mainSource, "function handleProductSchedule", "function startScheduler");
   assert.ok(handler.indexOf("activateBlitzExecution(") < handler.indexOf("clearProductOpenAt(decision.productId)"));
   assert.match(handler, /runtimeState\.productScheduleReceipts\[decision\.key\]/);
+  assert.match(handler, /parallel: product\.retailer === "walmart"/);
+  assert.match(handler, /dedicatedTab: product\.retailer === "walmart"/);
 });
 
 test("legacy store schedule assigns every released product to blitz before disabling the schedule", () => {
@@ -28,6 +30,8 @@ test("legacy store schedule assigns every released product to blitz before disab
   const release = scheduler.indexOf("settings = { ...settings, scheduledOpenEnabled: false }", activation);
   assert.notEqual(activation, -1);
   assert.ok(activation < release);
+  assert.match(scheduler, /parallel: scheduledRetailer === "walmart"/);
+  assert.match(scheduler, /dedicatedTab: scheduledRetailer === "walmart"/);
 });
 
 test("desktop and extension configs carry execution mode and timing policy", () => {
