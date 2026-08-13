@@ -113,6 +113,7 @@ test("normalizes a multi-store buy list and preserves a private token", () => {
   assert.equal(defaults.watcherIntervalSeconds, 60);
   assert.equal(defaults.blitzRetryDelayMs, 750);
   assert.equal(defaults.blitzWindowSeconds, 20);
+  assert.equal(defaults.walmartQueueCaptureReloads, 5);
 
   const existing = normalizeSettings({ products: PRODUCTS, companionToken: "existing-token" });
   const result = normalizeSettings({
@@ -126,6 +127,7 @@ test("normalizes a multi-store buy list and preserves a private token", () => {
     watcherIntervalSeconds: 90,
     blitzRetryDelayMs: 500,
     blitzWindowSeconds: 30,
+    walmartQueueCaptureReloads: 7,
     configurationProfiles: [{
       id: "custom:launch-night",
       name: "Launch night",
@@ -147,6 +149,7 @@ test("normalizes a multi-store buy list and preserves a private token", () => {
   assert.equal(result.watcherIntervalSeconds, 90);
   assert.equal(result.blitzRetryDelayMs, 500);
   assert.equal(result.blitzWindowSeconds, 30);
+  assert.equal(result.walmartQueueCaptureReloads, 7);
   assert.equal(result.configurationProfiles[0].name, "Launch night");
   assert.equal(result.configurationProfiles[0].configuration.eligibilityRefreshIntervalSeconds, 2);
   assert.equal(normalizeSettings({ products: PRODUCTS }, result).configurationProfiles.length, 1);

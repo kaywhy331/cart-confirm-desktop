@@ -149,6 +149,14 @@ function publicConfig(config) {
     automationEnabled: Boolean(config.automationEnabled),
     monitoringPaused: Boolean(config.monitoringPaused),
     automationRunId: String(config.automationRunId || ""),
+    queueCapture: config.queueCapture?.retailer === "walmart"
+      ? {
+          retailer: "walmart",
+          runId: String(config.queueCapture.runId || ""),
+          winnerProductId: String(config.queueCapture.winnerProductId || ""),
+          detectedAt: String(config.queueCapture.detectedAt || "")
+        }
+      : null,
     fastMode: Boolean(config.fastMode),
     retryIntervalSeconds: Number(config.retryIntervalSeconds || 15),
     eligibilityRefreshIntervalSeconds: Number(config.eligibilityRefreshIntervalSeconds || 2),
@@ -157,6 +165,7 @@ function publicConfig(config) {
     watcherIntervalSeconds: Number(config.watcherIntervalSeconds || 60),
     blitzRetryDelayMs: Number(config.blitzRetryDelayMs || 750),
     blitzWindowSeconds: Number(config.blitzWindowSeconds || 20),
+    walmartQueueCaptureReloads: Number(config.walmartQueueCaptureReloads || 5),
     firstPartyOnly: true,
     catalogSearch: config.catalogSearch && typeof config.catalogSearch === "object"
       ? {
@@ -682,6 +691,13 @@ async function postEvent(payload) {
       result = {};
     }
     if (response.ok) wakeOpenRequestDrain(config, result.openRequestDrainMs);
+    if (response.ok && result.queueCapture?.retailer === "walmart") {
+      cached = null;
+      const tabs = await chrome.tabs.query({ url: RETAILER_TAB_PATTERNS.walmart }).catch(() => []);
+      await Promise.all(tabs.map((tab) => (
+        chrome.tabs.sendMessage(tab.id, { type: "CART_CONFIRM_QUEUE_CAPTURE_CHANGED" }).catch(() => {})
+      )));
+    }
     return { ok: response.ok, ...result };
   } catch {
     cached = null;

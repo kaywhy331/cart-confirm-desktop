@@ -91,6 +91,7 @@ const elements = {
   eligibilityRefreshIntervalSeconds: document.getElementById("eligibilityRefreshIntervalSeconds"),
   blitzRetryDelayMs: document.getElementById("blitzRetryDelayMs"),
   blitzWindowSeconds: document.getElementById("blitzWindowSeconds"),
+  walmartQueueCaptureReloads: document.getElementById("walmartQueueCaptureReloads"),
   storeNavigationIntervalSeconds: document.getElementById("storeNavigationIntervalSeconds"),
   overloadCooldownSeconds: document.getElementById("overloadCooldownSeconds"),
   storeShortcut: document.getElementById("storeShortcut"),
@@ -364,6 +365,7 @@ function currentConfiguration() {
     eligibilityRefreshIntervalSeconds: elements.eligibilityRefreshIntervalSeconds.value,
     blitzRetryDelayMs: elements.blitzRetryDelayMs.value,
     blitzWindowSeconds: elements.blitzWindowSeconds.value,
+    walmartQueueCaptureReloads: elements.walmartQueueCaptureReloads.value,
     storeNavigationIntervalSeconds: elements.storeNavigationIntervalSeconds.value,
     overloadCooldownSeconds: elements.overloadCooldownSeconds.value
   });
@@ -474,6 +476,7 @@ function globalSettings(products) {
     eligibilityRefreshIntervalSeconds: Number(elements.eligibilityRefreshIntervalSeconds.value),
     blitzRetryDelayMs: Number(elements.blitzRetryDelayMs.value),
     blitzWindowSeconds: Number(elements.blitzWindowSeconds.value),
+    walmartQueueCaptureReloads: Number(elements.walmartQueueCaptureReloads.value),
     storeNavigationIntervalSeconds: Number(elements.storeNavigationIntervalSeconds.value),
     overloadCooldownSeconds: Number(elements.overloadCooldownSeconds.value),
     configurationProfiles: currentSnapshot?.settings?.configurationProfiles || [],
@@ -2056,6 +2059,7 @@ function populateSettingsInputs(settings) {
     [elements.eligibilityRefreshIntervalSeconds, settings.eligibilityRefreshIntervalSeconds],
     [elements.blitzRetryDelayMs, settings.blitzRetryDelayMs],
     [elements.blitzWindowSeconds, settings.blitzWindowSeconds],
+    [elements.walmartQueueCaptureReloads, settings.walmartQueueCaptureReloads],
     [elements.storeNavigationIntervalSeconds, settings.storeNavigationIntervalSeconds],
     [elements.overloadCooldownSeconds, settings.overloadCooldownSeconds]
   ];
@@ -2516,6 +2520,7 @@ function scheduleSettingsSave() {
       elements.eligibilityRefreshIntervalSeconds,
       elements.blitzRetryDelayMs,
       elements.blitzWindowSeconds,
+      elements.walmartQueueCaptureReloads,
       elements.storeNavigationIntervalSeconds,
       elements.overloadCooldownSeconds
     ]) {
@@ -2534,6 +2539,7 @@ elements.retryIntervalSeconds.addEventListener("change", scheduleSettingsSave);
 elements.eligibilityRefreshIntervalSeconds.addEventListener("change", scheduleSettingsSave);
 elements.blitzRetryDelayMs.addEventListener("change", scheduleSettingsSave);
 elements.blitzWindowSeconds.addEventListener("change", scheduleSettingsSave);
+elements.walmartQueueCaptureReloads.addEventListener("change", scheduleSettingsSave);
 elements.storeNavigationIntervalSeconds.addEventListener("change", scheduleSettingsSave);
 elements.overloadCooldownSeconds.addEventListener("change", scheduleSettingsSave);
 

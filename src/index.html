@@ -257,6 +257,14 @@
               <small>On uses less bandwidth. The buttons, sign-in, and store security checks still load.</small>
             </label>
             <label class="control-card field compact-field">
+              <span class="control-title">Walmart queue-capture reloads</span>
+              <span class="number-suffix">
+                <input id="walmartQueueCaptureReloads" type="number" min="1" max="20" step="1" inputmode="numeric" required>
+                <span>reloads</span>
+              </span>
+              <small>After the first scheduled Walmart tab enters the official queue, each remaining tab may reload this many final times. Recommended: 5.</small>
+            </label>
+            <label class="control-card field compact-field">
               <span class="control-title">Regular watch check</span>
               <span class="number-suffix">
                 <input id="watcherIntervalSeconds" type="number" min="30" max="3600" step="1" inputmode="numeric" required>

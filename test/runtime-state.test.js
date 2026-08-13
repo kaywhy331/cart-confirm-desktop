@@ -9,7 +9,9 @@ const {
   activateBlitzExecution,
   loadRuntimeState,
   productExecutionMode,
+  queueCaptureForRun,
   reconcileProductExecutionContexts,
+  registerQueueCapture,
   saveRuntimeState
 } = require("../lib/runtime-state");
 
@@ -29,6 +31,12 @@ test("runtime receipts and overload deadlines survive a process restart", () => 
       },
       queueFanoutReceipts: {
         "run-1|walmart": { status: "fired", recordedAt: "2026-08-05T12:00:01.000Z" }
+      },
+      queueCapture: {
+        retailer: "walmart",
+        runId: "run-1",
+        winnerProductId: "walmart:123456789",
+        detectedAt: "2026-08-05T12:00:01.000Z"
       },
       storeOverloadUntil: { walmart: 123456 },
       storeActionHistory: { walmart: [1000, 2000] },
@@ -52,6 +60,8 @@ test("runtime receipts and overload deadlines survive a process restart", () => 
     assert.equal(productExecutionMode(loaded, "target:1011483406", "run-1"), "blitz");
     assert.equal(productExecutionMode(loaded, "target:1011483406", "run-2"), "watcher");
     assert.equal(loaded.queueFanoutReceipts["run-1|walmart"].status, "fired");
+    assert.equal(queueCaptureForRun(loaded, "run-1").winnerProductId, "walmart:123456789");
+    assert.equal(queueCaptureForRun(loaded, "run-2"), null);
     assert.equal(loaded.storeOverloadUntil.walmart, 123456);
     assert.deepEqual(loaded.storeActionHistory.walmart, [1000, 2000]);
     assert.equal(loaded.discord.channelName, "restocks");
@@ -61,6 +71,21 @@ test("runtime receipts and overload deadlines survive a process restart", () => 
   } finally {
     fs.rmSync(directory, { recursive: true, force: true });
   }
+});
+
+test("the first current-run Walmart blitz queue capture remains immutable", () => {
+  const state = { productExecutionContexts: {}, queueCapture: null };
+  const first = { id: "walmart:111", retailer: "walmart" };
+  const second = { id: "walmart:222", retailer: "walmart" };
+  activateBlitzExecution(state, [first, second], "run-1", "schedule-key", 1_000);
+
+  const created = registerQueueCapture(state, first, "run-1", 2_000);
+  const repeated = registerQueueCapture(state, second, "run-1", 3_000);
+
+  assert.equal(created.created, true);
+  assert.equal(repeated.created, false);
+  assert.equal(repeated.capture.winnerProductId, first.id);
+  assert.equal(registerQueueCapture(state, first, "run-2", 4_000).created, false);
 });
 
 test("calendar release activates blitz durably and schedule edits clear stale context", () => {
