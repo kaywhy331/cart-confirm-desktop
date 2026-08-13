@@ -8,7 +8,8 @@ const {
   beginCatalogSearch,
   normalizeCatalogState,
   officialSearchUrl,
-  planCatalogMissionImport
+  planCatalogMissionImport,
+  planWalmartPrepCandidates
 } = require("../lib/catalog");
 
 const NOW = Date.parse("2026-08-11T12:00:00Z");
@@ -135,6 +136,50 @@ test("catalog import reports every selection beyond the 50-mission capacity", ()
   const plan = planCatalogMissionImport(state, state.items.map((item) => item.id));
   assert.equal(plan.additions.length, 50);
   assert.deepEqual(plan.summary, { selected: 52, imported: 50, ready: 0, needsPrice: 50, duplicates: 0, missing: 0, overCapacity: 2 });
+});
+
+test("Walmart prep candidates require an exact catalog item, approved profile price, and future drop", () => {
+  const state = beginCatalogSearch(null, {
+    query: "pokemon cards",
+    retailers: ["walmart"]
+  }, { id: "search-1", now: NOW });
+  const accepted = acceptCatalogResults(state, {
+    searchId: "search-1",
+    retailer: "walmart",
+    query: "pokemon cards",
+    results: [{
+      retailer: "walmart",
+      sku: "123456789",
+      title: "Pokémon Elite Trainer Box",
+      productUrl: "https://www.walmart.com/ip/pokemon-elite-trainer-box/123456789",
+      price: 999
+    }]
+  }, NOW + 1_000).state;
+  const { BUILT_IN_ITEM_PROFILES, normalizeMsrpRecord } = require("../lib/item-defaults");
+  const profile = BUILT_IN_ITEM_PROFILES[1];
+  const msrpCatalog = [{
+    id: "msrp:test-pokemon-etb",
+    productLine: "Pokémon",
+    productType: "Pokémon Elite Trainer Box",
+    matchTerms: ["elite trainer box"],
+    excludeTerms: [],
+    prices: { target: null, walmart: 49.99, amazon: null },
+    sourceLabel: "Operator-approved test price"
+  }].map(normalizeMsrpRecord);
+  const plan = planWalmartPrepCandidates(
+    accepted,
+    ["walmart:123456789"],
+    [],
+    [],
+    { profile, msrpCatalog, openAt: "2026-08-11T13:00:00Z", now: NOW }
+  );
+  assert.equal(plan.additions.length, 1);
+  assert.deepEqual(plan.summary, { selected: 1, added: 1, skipped: 0, needsPrice: 0, overCapacity: 0 });
+  assert.equal(plan.additions[0].maxPrice, 49.99, "listing price must not become the cap");
+  assert.equal(plan.additions[0].openAt, "2026-08-11T13:00:00.000Z");
+  assert.throws(() => planWalmartPrepCandidates(
+    accepted, ["walmart:123456789"], [], [], { profile, msrpCatalog, openAt: "2026-08-11T11:00:00Z", now: NOW }
+  ), /future Walmart drop time/);
 });
 
 test("catalog imports use an approved MSRP and item profile without trusting listing price", () => {

@@ -160,6 +160,30 @@ test("normalizes a multi-store buy list and preserves a private token", () => {
   assert.equal(result.products[2].signalAutoOpen, true);
 });
 
+test("an approved future Walmart prep candidate can arm monitoring before it becomes a mission", () => {
+  const candidate = {
+    ...PRODUCTS[1],
+    openAt: "2026-08-20T12:00:00.000Z",
+    action: "review",
+    fulfillmentMode: "shipping",
+    maxOrderTotal: 100,
+    enabled: true
+  };
+  const settings = normalizeSettings({
+    products: [],
+    walmartPrepCandidates: [candidate],
+    automationEnabled: true
+  });
+  assert.equal(settings.products.length, 0);
+  assert.equal(settings.walmartPrepCandidates[0].id, "walmart:123456789");
+  assert.equal(settings.automationEnabled, true);
+  assert.throws(() => normalizeSettings({
+    products: [],
+    walmartPrepCandidates: [{ ...candidate, maxPrice: 0 }],
+    automationEnabled: true
+  }), /positive maximum unit price/);
+});
+
 test("preserves only exact-SKU affiliate links resolved from the current Howl source", () => {
   const howlUrl = "https://howl.me/campaign123";
   const affiliateUrl = "https://www.target.com/p/example/-/A-1011960739?nrtv_cid=abc&clkid=123";

@@ -44,6 +44,9 @@ const elements = {
   catalogSelectNoneButton: document.getElementById("catalogSelectNoneButton"),
   catalogItemProfile: document.getElementById("catalogItemProfile"),
   catalogAddButton: document.getElementById("catalogAddButton"),
+  catalogWalmartPrepOpenAt: document.getElementById("catalogWalmartPrepOpenAt"),
+  catalogWalmartPrepButton: document.getElementById("catalogWalmartPrepButton"),
+  walmartPrepList: document.getElementById("walmartPrepList"),
   catalogStatus: document.getElementById("catalogStatus"),
   catalogCount: document.getElementById("catalogCount"),
   catalogList: document.getElementById("catalogList"),
@@ -477,6 +480,7 @@ function globalSettings(products) {
     blitzRetryDelayMs: Number(elements.blitzRetryDelayMs.value),
     blitzWindowSeconds: Number(elements.blitzWindowSeconds.value),
     walmartQueueCaptureReloads: Number(elements.walmartQueueCaptureReloads.value),
+    walmartPrepCandidates: currentSnapshot?.settings?.walmartPrepCandidates || [],
     storeNavigationIntervalSeconds: Number(elements.storeNavigationIntervalSeconds.value),
     overloadCooldownSeconds: Number(elements.overloadCooldownSeconds.value),
     configurationProfiles: currentSnapshot?.settings?.configurationProfiles || [],
@@ -510,7 +514,8 @@ async function pauseAutopilot() {
 
 async function resumeAutopilot() {
   const saved = currentSnapshot.settings;
-  const autoSubmitCount = saved.products.filter((product) => product.enabled && product.action === "checkout").length;
+  const autoSubmitCount = [...saved.products, ...(saved.walmartPrepCandidates || [])]
+    .filter((product) => product.enabled && product.action === "checkout").length;
   if (
     autoSubmitCount > 0
     && !window.confirm(`${autoSubmitCount} enabled mission${autoSubmitCount === 1 ? "" : "s"} may submit a real order. Resuming starts a new run. Switch Autopilot back on?`)
@@ -1065,7 +1070,9 @@ function renderCatalog(catalog = {}) {
   }
 
   const items = Array.isArray(catalog.items) ? catalog.items : [];
-  const existingIds = new Set((currentSnapshot?.settings?.products || []).map((product) => product.id));
+  const missionIds = new Set((currentSnapshot?.settings?.products || []).map((product) => product.id));
+  const prepIds = new Set((currentSnapshot?.settings?.walmartPrepCandidates || []).map((candidate) => candidate.id));
+  const existingIds = new Set([...missionIds, ...prepIds]);
   const currentIds = new Set(items.map((item) => item.id));
   for (const id of [...catalogSelectedIds]) {
     if (!currentIds.has(id) || existingIds.has(id)) catalogSelectedIds.delete(id);
@@ -1122,7 +1129,7 @@ function renderCatalog(catalog = {}) {
     price.className = "catalog-result-price";
     price.textContent = item.price === null ? "Not shown" : money(item.price);
     const note = document.createElement("small");
-    note.textContent = alreadyAdded ? "Already in Missions" : "listing only";
+    note.textContent = missionIds.has(item.id) ? "Already in Missions" : prepIds.has(item.id) ? "Prep monitor" : "listing only";
     price.append(note);
     card.append(checkbox, main, price);
     elements.catalogList.append(card);
@@ -1141,6 +1148,47 @@ function renderCatalog(catalog = {}) {
   elements.catalogAddButton.textContent = catalogSelectedIds.size
     ? `Add selected (${catalogSelectedIds.size}) to Missions`
     : "Add selected to Missions";
+  const walmartSelected = [...catalogSelectedIds].filter((id) => id.startsWith("walmart:"));
+  elements.catalogWalmartPrepButton.disabled = busy || isArmed() || walmartSelected.length === 0;
+  elements.catalogWalmartPrepOpenAt.disabled = busy || isArmed();
+  elements.catalogWalmartPrepButton.textContent = walmartSelected.length
+    ? `Monitor selected Walmart (${walmartSelected.length})`
+    : "Monitor selected for Walmart prep";
+  renderWalmartPrepCandidates();
+}
+
+function renderWalmartPrepCandidates() {
+  const candidates = currentSnapshot?.settings?.walmartPrepCandidates || [];
+  elements.walmartPrepList.replaceChildren();
+  if (!candidates.length) return;
+  for (const candidate of candidates) {
+    const card = document.createElement("article");
+    card.className = "catalog-card";
+    card.dataset.retailer = "walmart";
+    const main = document.createElement("div");
+    main.className = "catalog-result-main";
+    const title = document.createElement("strong");
+    title.className = "catalog-result-title";
+    title.textContent = candidate.title || candidate.sku;
+    const meta = document.createElement("div");
+    meta.className = "catalog-result-meta";
+    meta.textContent = `Prep monitor · Walmart ${candidate.sku} · drop ${new Date(candidate.openAt).toLocaleString()}`;
+    main.append(title, meta);
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "button ghost compact";
+    remove.textContent = "Remove";
+    remove.disabled = isArmed();
+    remove.addEventListener("click", () => void runAction(async () => {
+      const next = await window.cartAssist.saveSettings({
+        ...currentSnapshot.settings,
+        walmartPrepCandidates: currentSnapshot.settings.walmartPrepCandidates.filter((item) => item.id !== candidate.id)
+      });
+      render(next);
+    }, `${productLabel(candidate)} removed from Walmart prep monitoring.`));
+    card.append(main, remove);
+    elements.walmartPrepList.append(card);
+  }
 }
 
 function newCustomId(prefix) {
@@ -1499,6 +1547,37 @@ async function addSelectedCatalogMissions() {
     );
   } catch (error) {
     setMessage(error.message || "The selected catalog results could not be imported.", "error");
+  } finally {
+    catalogImportInFlight = false;
+    renderCatalog(currentSnapshot?.catalog || {});
+  }
+}
+
+async function addSelectedWalmartPrepCandidates() {
+  if (catalogSearchInFlight || catalogImportInFlight || isArmed()) return;
+  const selectedIds = [...catalogSelectedIds].filter((id) => id.startsWith("walmart:"));
+  if (!selectedIds.length) return;
+  if (!elements.catalogWalmartPrepOpenAt.value) {
+    elements.catalogWalmartPrepOpenAt.reportValidity();
+    setMessage("Choose the known Walmart drop time first.", "error");
+    return;
+  }
+  catalogImportInFlight = true;
+  renderCatalog(currentSnapshot?.catalog || {});
+  try {
+    const result = await window.cartAssist.addWalmartPrepCandidates(
+      selectedIds,
+      elements.catalogItemProfile.value,
+      new Date(elements.catalogWalmartPrepOpenAt.value).toISOString()
+    );
+    render(result.snapshot);
+    const summary = result.summary || {};
+    setMessage(
+      summary.added
+        ? `${summary.added} exact Walmart item${summary.added === 1 ? "" : "s"} authorized for lightweight prep monitoring.`
+        : `${summary.needsPrice || 0} item${summary.needsPrice === 1 ? "" : "s"} lacked approved MSRP/profile pricing; ${summary.skipped || 0} were skipped; ${summary.overCapacity || 0} exceeded the 20-candidate limit.`,
+      summary.added ? "success" : "warn"
+    );
   } finally {
     catalogImportInFlight = false;
     renderCatalog(currentSnapshot?.catalog || {});
@@ -2119,7 +2198,8 @@ elements.autopilotToggle.addEventListener("click", async () => {
         render(next);
         return { armed: false };
       }
-      const autoSubmitCount = saved.products.filter((product) => product.enabled && product.action === "checkout").length;
+      const autoSubmitCount = [...saved.products, ...(saved.walmartPrepCandidates || [])]
+        .filter((product) => product.enabled && product.action === "checkout").length;
       if (
         autoSubmitCount > 0
         && !window.confirm(`${autoSubmitCount} enabled mission${autoSubmitCount === 1 ? "" : "s"} may submit a real order. Re-arming starts a new run. Unscheduled Target and Walmart missions start as quiet background watchers and open Chrome only after a likely stock signal; Amazon must open now. Scheduled missions wait for their exact time. Verify retailer order history first. "Prepare checkout, I submit" is safer. Switch Autopilot on anyway?`)
@@ -2128,7 +2208,7 @@ elements.autopilotToggle.addEventListener("click", async () => {
       }
       const next = await window.cartAssist.saveSettings({ ...saved, automationEnabled: true });
       render(next);
-      setMessage("Autopilot ON. Starting Target and Walmart background watchers; opening only missions that require a browser now…");
+      setMessage("Autopilot ON. Starting Target/Walmart background watchers and Walmart prep monitors; opening only missions that require a browser now…");
       try {
         const launch = await window.cartAssist.openBuyList({ backgroundFirst: true });
         return { armed: true, ...launch };
@@ -2140,15 +2220,17 @@ elements.autopilotToggle.addEventListener("click", async () => {
       const count = Number(result.count || 0);
       const background = Number(result.background || 0);
       const scheduled = Number(result.scheduled || 0);
+      const prepMonitoring = Number(result.prepMonitoring || 0);
       const parts = ["Autopilot ON"];
       if (background) {
         parts.push(`${background} Target/Walmart watcher${background === 1 ? "" : "s"} armed background-first`);
       }
       if (count) parts.push(`${count} browser-required mission page${count === 1 ? "" : "s"} opened`);
-      if (!background && !count && !scheduled) parts.push("no due missions needed a browser page");
+      if (!background && !count && !scheduled && !prepMonitoring) parts.push("no due missions needed a browser page");
       if (result.reused) parts.push(`${result.reused} reused an existing Chrome tab`);
       if (result.deduped) parts.push(`${result.deduped} already queued`);
       if (scheduled) parts.push(`${scheduled} waiting for ${scheduled === 1 ? "its" : "their"} calendar time`);
+      if (prepMonitoring) parts.push(`${prepMonitoring} Walmart prep candidate${prepMonitoring === 1 ? "" : "s"} monitoring public-page changes`);
       const browserNote = result.defaultBrowser
         ? " Chrome was not found, so some pages used your default browser; Autopilot only works inside Chrome."
         : "";
@@ -2203,6 +2285,7 @@ elements.catalogSelectNoneButton.addEventListener("click", () => {
   renderCatalog(currentSnapshot?.catalog || {});
 });
 elements.catalogAddButton.addEventListener("click", () => void addSelectedCatalogMissions());
+elements.catalogWalmartPrepButton.addEventListener("click", () => void addSelectedWalmartPrepCandidates());
 
 elements.defaultItemProfile.addEventListener("change", () => void runAction(async () => {
   if (isArmed()) throw new Error("Switch Autopilot off before changing the default item profile.");
