@@ -40,7 +40,8 @@ const {
   emptyCatalogState,
   normalizeCatalogState,
   officialSearchUrl,
-  planCatalogMissionImport
+  planCatalogMissionImport,
+  planWalmartPrepCandidates
 } = require("./lib/catalog");
 const { migrateStoredSettings } = require("./lib/migrations");
 const { itemProfileById } = require("./lib/item-defaults");
@@ -67,6 +68,11 @@ const { createStoreOpenQueue } = require("./lib/store-open-queue");
 const { createOpenRequestStore } = require("./lib/open-requests");
 const { findChrome } = require("./lib/chrome-launcher");
 const { checkProductPage } = require("./lib/quiet-monitor");
+const {
+  conditionalHeaders,
+  walmartPrepObservation,
+  walmartPrepTransition
+} = require("./lib/walmart-prep-monitor");
 const { shouldRecordActivity } = require("./lib/activity");
 const {
   companionEventAllowed,
@@ -371,6 +377,7 @@ function publicSettings() {
     blitzRetryDelayMs: settings.blitzRetryDelayMs,
     blitzWindowSeconds: settings.blitzWindowSeconds,
     walmartQueueCaptureReloads: settings.walmartQueueCaptureReloads,
+    walmartPrepCandidates: settings.walmartPrepCandidates,
     scheduledOpenEnabled: settings.scheduledOpenEnabled,
     scheduledOpenAt: settings.scheduledOpenAt,
     scheduledRetailer: settings.scheduledRetailer,
@@ -778,10 +785,13 @@ async function openProduct(productId, options = {}) {
 
 async function openBuyList(retailer = "", options = {}) {
   const plan = planImmediateProductOpenings(settings, retailer);
+  const prepCandidates = (settings.walmartPrepCandidates || []).filter((candidate) => (
+    !retailer || candidate.retailer === retailer
+  ));
   if (!plan.enabled.length) {
-    throw new Error(retailer
+    if (!prepCandidates.length) throw new Error(retailer
       ? `Enable at least one ${retailerLabel(retailer)} product first.`
-      : "Enable at least one product first.");
+      : "Enable at least one product or add a Walmart prep candidate first.");
   }
 
   resumeMonitoring();
@@ -803,6 +813,7 @@ async function openBuyList(retailer = "", options = {}) {
     deduped: results.filter((result) => result.via === "already-queued").length,
     defaultBrowser: results.some((result) => result.via === "default-browser"),
     background: backgroundProducts.length,
+    prepMonitoring: prepCandidates.length,
     scheduled: plan.scheduled.length,
     armed: settings.automationEnabled
   };
@@ -1555,6 +1566,10 @@ function registerIpc() {
       normalized.automationRunId
     );
     settings = normalized;
+    const prepIds = new Set(settings.walmartPrepCandidates.map((candidate) => candidate.id));
+    runtimeState.walmartPrepObservations = Object.fromEntries(
+      Object.entries(runtimeState.walmartPrepObservations || {}).filter(([productId]) => prepIds.has(productId))
+    );
     if (settings.discordChannelId !== previousDiscordChannelId) {
       resetDiscordChannel(settings.discordChannelId);
     }
@@ -1617,6 +1632,31 @@ function registerIpc() {
         )
       : snapshot();
     return { snapshot: nextSnapshot, summary: plan.summary };
+  });
+
+  ipcMain.handle("cart-assist:catalog-add-walmart-prep", (_event, input) => {
+    if (settings.automationEnabled) throw new Error("Switch Autopilot off before adding Walmart prep candidates.");
+    const profile = itemProfileById(String(input?.profileId || settings.defaultItemProfileId), settings.itemProfiles);
+    const plan = planWalmartPrepCandidates(
+      catalogState,
+      input?.selectedIds,
+      settings.products,
+      settings.walmartPrepCandidates,
+      { profile, msrpCatalog: settings.msrpCatalog, openAt: input?.openAt, now: Date.now() }
+    );
+    if (plan.additions.length) {
+      settings = normalizeSettings({
+        ...settings,
+        walmartPrepCandidates: [...settings.walmartPrepCandidates, ...plan.additions]
+      }, settings);
+      persistSettings();
+      for (const candidate of plan.additions) delete runtimeState.walmartPrepObservations[candidate.id];
+      persistRuntimeState();
+      configVersion += 1;
+      status = { ...status, lastMessage: `${plan.additions.length} Walmart prep candidate${plan.additions.length === 1 ? "" : "s"} authorized for lightweight monitoring.` };
+      broadcast();
+    }
+    return { snapshot: snapshot(), summary: plan.summary };
   });
 
   ipcMain.handle("cart-assist:catalog-clear", () => {
@@ -1703,10 +1743,12 @@ function registerIpc() {
       scheduledOpenEnabled: false,
       products: settings.products.map((product) => (
         product.openAt ? { ...product, openAt: "" } : product
-      ))
+      )),
+      walmartPrepCandidates: []
     };
     runtimeState.productExecutionContexts = {};
     runtimeState.queueCapture = null;
+    runtimeState.walmartPrepObservations = {};
     persistSettings();
     persistRuntimeState();
     configVersion += 1;
@@ -1859,6 +1901,8 @@ const QUIET_FETCH_TIMEOUT_MS = 8_000;
 const QUIET_FAILURE_LIMIT = 4;
 const QUIET_AUTO_OPEN_COOLDOWN_MS = 5 * 60_000;
 const QUIET_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36";
+const WALMART_PREP_MIN_SPACING_MS = 30_000;
+const walmartPrepState = { lastCheckAt: 0, rotation: 0, inFlight: false };
 const quietState = {
   lastCheckAt: new Map(),
   rotation: new Map(),
@@ -1993,6 +2037,106 @@ function quietMonitorTick() {
   }
 }
 
+function materializeWalmartPrepCandidate(candidate, transition) {
+  if (!transition?.triggered || !settings.automationEnabled || settings.monitoringPaused) return false;
+  if (settings.products.some((product) => product.id === candidate.id)) return false;
+  const current = settings.walmartPrepCandidates.find((item) => item.id === candidate.id);
+  if (!current || settings.products.length >= MAX_PRODUCTS) return false;
+  settings = normalizeSettings({
+    ...settings,
+    products: [...settings.products, current],
+    walmartPrepCandidates: settings.walmartPrepCandidates.filter((item) => item.id !== candidate.id)
+  }, settings);
+  delete runtimeState.walmartPrepObservations[candidate.id];
+  delete runtimeState.productScheduleReceipts[`${candidate.id}|${candidate.openAt}`];
+  productStatuses[candidate.id] = createProductStatus(candidate);
+  persistSettings();
+  configVersion += 1;
+  status = {
+    ...status,
+    lastMessage: `${candidate.title || candidate.sku} changed (${transition.reason}) and was added to Missions for its approved drop time.`
+  };
+  notifyOnce(
+    `walmart-prep:${candidate.id}:${transition.reason}`,
+    "Walmart prep signal detected",
+    `${candidate.title || candidate.sku} was added to Missions for ${new Date(candidate.openAt).toLocaleString()}.`,
+    true
+  );
+  persistRuntimeState();
+  broadcast();
+  return true;
+}
+
+async function walmartPrepCheck(candidate, taskEpoch) {
+  walmartPrepState.inFlight = true;
+  const controller = quietAbortRegistry.create();
+  const timer = setTimeout(() => controller.abort(), QUIET_FETCH_TIMEOUT_MS);
+  try {
+    const previous = runtimeState.walmartPrepObservations?.[candidate.id] || null;
+    const response = await fetch(candidate.productUrl, {
+      signal: controller.signal,
+      redirect: "follow",
+      headers: {
+        "User-Agent": QUIET_USER_AGENT,
+        Accept: "text/html,application/xhtml+xml",
+        ...conditionalHeaders(previous)
+      }
+    });
+    if (!monitoringOperationActive(settings, taskEpoch, stopEpoch)) return;
+    if (response.status === 304 && previous) {
+      runtimeState.walmartPrepObservations[candidate.id] = {
+        ...previous,
+        observedAt: new Date().toISOString()
+      };
+      persistRuntimeState();
+      return;
+    }
+    if ([429, 502, 504].includes(response.status)) {
+      storeOverloadUntil.set("walmart", Date.now() + settings.overloadCooldownSeconds * 1000);
+      persistRuntimeState();
+      return;
+    }
+    const html = response.status === 404 || response.status === 503 || response.ok
+      ? await response.text()
+      : "";
+    if (!monitoringOperationActive(settings, taskEpoch, stopEpoch)) return;
+    const observation = walmartPrepObservation({
+      status: response.status,
+      html,
+      url: response.url,
+      etag: response.headers.get("etag"),
+      lastModified: response.headers.get("last-modified")
+    }, candidate.sku);
+    runtimeState.walmartPrepObservations ||= {};
+    runtimeState.walmartPrepObservations[candidate.id] = observation;
+    persistRuntimeState();
+    if (previous) materializeWalmartPrepCandidate(candidate, walmartPrepTransition(previous, observation));
+  } catch {
+    // A timeout or network failure is not a Walmart response transition.
+  } finally {
+    clearTimeout(timer);
+    quietAbortRegistry.release(controller);
+    walmartPrepState.inFlight = false;
+  }
+}
+
+function walmartPrepMonitorTick() {
+  if (!settings.automationEnabled || settings.monitoringPaused || walmartPrepState.inFlight) return;
+  const now = Date.now();
+  if ((storeOverloadUntil.get("walmart") || 0) > now) return;
+  if (now - walmartPrepState.lastCheckAt < WALMART_PREP_MIN_SPACING_MS) return;
+  const candidates = (settings.walmartPrepCandidates || []).filter((candidate) => (
+    new Date(candidate.openAt).getTime() + 2 * 60_000 >= now
+  ));
+  if (!candidates.length) return;
+  const budget = reserveStoreAction("walmart", "background-prep-check");
+  walmartPrepState.lastCheckAt = now;
+  if (!budget.allowed) return;
+  const candidate = candidates[walmartPrepState.rotation % candidates.length];
+  walmartPrepState.rotation += 1;
+  void walmartPrepCheck(candidate, stopEpoch);
+}
+
 function clearProductOpenAt(productId) {
   settings = {
     ...settings,
@@ -2077,6 +2221,7 @@ function startScheduler() {
     }
 
     quietMonitorTick();
+    walmartPrepMonitorTick();
 
     if (
       settings.msrpResearchEnabled

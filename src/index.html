@@ -151,6 +151,15 @@
               </label>
               <p class="catalog-safety">The profile defaults to <strong>shipping + auto-buy</strong>. A mission turns On only when its title matches an approved retailer MSRP; otherwise it stays Off for price review.</p>
             </div>
+            <div class="catalog-import-defaults">
+              <label class="field">
+                <span>Known Walmart drop time</span>
+                <input id="catalogWalmartPrepOpenAt" type="datetime-local">
+              </label>
+              <button class="button secondary compact" id="catalogWalmartPrepButton" type="button">Monitor selected for Walmart prep</button>
+              <p class="catalog-safety">Selected exact Walmart items must have an approved MSRP/profile. Lightweight public-page changes add them to Missions, but their calendar gate prevents browser action before this time.</p>
+            </div>
+            <div class="catalog-list" id="walmartPrepList"></div>
             <div class="catalog-list" id="catalogList">
               <div class="empty-state">No catalog results yet.</div>
             </div>

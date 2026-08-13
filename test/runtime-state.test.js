@@ -38,6 +38,17 @@ test("runtime receipts and overload deadlines survive a process restart", () => 
         winnerProductId: "walmart:123456789",
         detectedAt: "2026-08-05T12:00:01.000Z"
       },
+      walmartPrepObservations: {
+        "walmart:123456789": {
+          status: 200,
+          availability: "unavailable",
+          price: 49.99,
+          queue: false,
+          etag: '"abc"',
+          observedAt: "2026-08-05T12:00:01.000Z",
+          fingerprint: '[200,"unavailable",49.99,false]'
+        }
+      },
       storeOverloadUntil: { walmart: 123456 },
       storeActionHistory: { walmart: [1000, 2000] },
       discord: {
@@ -62,6 +73,7 @@ test("runtime receipts and overload deadlines survive a process restart", () => 
     assert.equal(loaded.queueFanoutReceipts["run-1|walmart"].status, "fired");
     assert.equal(queueCaptureForRun(loaded, "run-1").winnerProductId, "walmart:123456789");
     assert.equal(queueCaptureForRun(loaded, "run-2"), null);
+    assert.equal(loaded.walmartPrepObservations["walmart:123456789"].etag, '"abc"');
     assert.equal(loaded.storeOverloadUntil.walmart, 123456);
     assert.deepEqual(loaded.storeActionHistory.walmart, [1000, 2000]);
     assert.equal(loaded.discord.channelName, "restocks");

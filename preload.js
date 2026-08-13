@@ -8,6 +8,7 @@ contextBridge.exposeInMainWorld("cartAssist", {
   bulkImportMissions: (text) => ipcRenderer.invoke("cart-assist:bulk-import", text),
   searchCatalog: (input) => ipcRenderer.invoke("cart-assist:catalog-search", input),
   addCatalogMissions: (selectedIds, profileId) => ipcRenderer.invoke("cart-assist:catalog-add-missions", { selectedIds, profileId }),
+  addWalmartPrepCandidates: (selectedIds, profileId, openAt) => ipcRenderer.invoke("cart-assist:catalog-add-walmart-prep", { selectedIds, profileId, openAt }),
   clearCatalog: () => ipcRenderer.invoke("cart-assist:catalog-clear"),
   saveMsrpResearchKey: (apiKey) => ipcRenderer.invoke("cart-assist:msrp-key-save", apiKey),
   removeMsrpResearchKey: () => ipcRenderer.invoke("cart-assist:msrp-key-remove"),
