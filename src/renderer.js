@@ -78,6 +78,9 @@ const elements = {
   bulkItemProfile: document.getElementById("bulkItemProfile"),
   applyBulkItemProfileButton: document.getElementById("applyBulkItemProfileButton"),
   copySelectedMissionListButton: document.getElementById("copySelectedMissionListButton"),
+  bulkMissionOpenAt: document.getElementById("bulkMissionOpenAt"),
+  scheduleCandidateMissionsButton: document.getElementById("scheduleCandidateMissionsButton"),
+  clearSelectedMissionSchedulesButton: document.getElementById("clearSelectedMissionSchedulesButton"),
   testButton: document.getElementById("testButton"),
   openAllButton: document.getElementById("openAllButton"),
   worstCase: document.getElementById("worstCase"),
@@ -1475,6 +1478,11 @@ function renderBulkMissionDefaults(settings) {
   }
   elements.applyBulkItemProfileButton.disabled = !bulkMissionSelectedIds.size || isArmed();
   elements.copySelectedMissionListButton.disabled = !bulkMissionSelectedIds.size;
+  elements.bulkMissionOpenAt.disabled = !bulkMissionSelectedIds.size || isArmed();
+  elements.scheduleCandidateMissionsButton.disabled = !bulkMissionSelectedIds.size || isArmed();
+  elements.clearSelectedMissionSchedulesButton.disabled = isArmed() || !settings.products.some((product) => (
+    bulkMissionSelectedIds.has(product.id) && product.openAt
+  ));
   elements.bulkMissionSelectAllButton.disabled = !settings.products.length;
   elements.bulkMissionSelectNoneButton.disabled = !bulkMissionSelectedIds.size;
 }
@@ -2451,6 +2459,45 @@ elements.applyBulkItemProfileButton.addEventListener("click", () => void runActi
   render(next);
   return { selected: bulkMissionSelectedIds.size, ready };
 }, ({ selected, ready }) => `${selected} mission${selected === 1 ? "" : "s"} updated; ${ready} now On with positive caps.`));
+
+elements.scheduleCandidateMissionsButton.addEventListener("click", () => void runAction(async () => {
+  if (isArmed()) throw new Error("Switch Autopilot off before scheduling missions.");
+  if (!bulkMissionSelectedIds.size) throw new Error("Select at least one mission first.");
+  if (!elements.bulkMissionOpenAt.checkValidity() || !elements.bulkMissionOpenAt.value) {
+    elements.bulkMissionOpenAt.reportValidity();
+    throw new Error("Choose a future candidate opening time.");
+  }
+  const openAt = new Date(elements.bulkMissionOpenAt.value);
+  if (!Number.isFinite(openAt.getTime()) || openAt.getTime() <= Date.now()) {
+    throw new Error("Choose a future candidate opening time.");
+  }
+  const profile = ConfigProfiles.BUILT_IN_PROFILES.find((candidate) => candidate.id === "built-in:candidate-drop");
+  if (!profile) throw new Error("The Midnight candidates setup is unavailable.");
+  const products = savedProducts().map((product) => (
+    bulkMissionSelectedIds.has(product.id) ? { ...product, openAt: openAt.toISOString() } : product
+  ));
+  selectedConfigurationProfileId = profile.id;
+  const next = await window.cartAssist.saveSettings({
+    ...currentSnapshot.settings,
+    ...profile.configuration,
+    products
+  });
+  render(next);
+  return { count: bulkMissionSelectedIds.size, openAt: openAt.toISOString() };
+}, ({ count, openAt }) => (
+  `${count} candidate mission${count === 1 ? "" : "s"} scheduled for ${new Date(openAt).toLocaleString()}; the bounded 15-minute candidate setup is active.`
+)));
+
+elements.clearSelectedMissionSchedulesButton.addEventListener("click", () => void runAction(async () => {
+  if (isArmed()) throw new Error("Switch Autopilot off before clearing schedules.");
+  const products = savedProducts().map((product) => (
+    bulkMissionSelectedIds.has(product.id) ? { ...product, openAt: "" } : product
+  ));
+  const cleared = savedProducts().filter((product) => bulkMissionSelectedIds.has(product.id) && product.openAt).length;
+  const next = await window.cartAssist.saveSettings({ ...currentSnapshot.settings, products });
+  render(next);
+  return cleared;
+}, (cleared) => `${cleared} selected mission schedule${cleared === 1 ? "" : "s"} cleared.`));
 
 elements.showDiscordButton.addEventListener("click", () => {
   elements.discordLauncher.hidden = true;

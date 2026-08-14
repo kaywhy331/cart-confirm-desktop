@@ -13,13 +13,25 @@ test("built-in configuration profiles are valid and contain only safe global fie
   assert.deepEqual(BUILT_IN_PROFILES.map((profile) => profile.name), [
     "Recommended",
     "Low traffic",
-    "Scheduled drop"
+    "Scheduled drop",
+    "Midnight candidates"
   ]);
   for (const profile of BUILT_IN_PROFILES) {
     assert.deepEqual(configurationFrom(profile.configuration), profile.configuration);
     assert.equal("products" in profile.configuration, false);
     assert.equal("automationEnabled" in profile.configuration, false);
   }
+});
+
+test("the candidate-drop setup spans the observed delayed Target launch without weakening hard safety boundaries", () => {
+  const profile = BUILT_IN_PROFILES.find((candidate) => candidate.id === "built-in:candidate-drop");
+  assert.ok(profile);
+  assert.equal(profile.configuration.scheduledBlitzDurationSeconds, 900);
+  assert.equal(profile.configuration.eligibilityRefreshIntervalSeconds, 10);
+  assert.equal(profile.configuration.storeNavigationIntervalSeconds, 10);
+  assert.equal(profile.configuration.blitzWindowSeconds, 60);
+  assert.equal("products" in profile.configuration, false);
+  assert.equal("automationEnabled" in profile.configuration, false);
 });
 
 test("custom profiles are bounded, deduplicated, and strip purchase data", () => {
