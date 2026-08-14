@@ -150,7 +150,17 @@ test("capture and matches bind visible checkout fields and survive only the same
   };
   const expected = await Evidence.capture(entry, observed, signer("1".repeat(64)));
   const unchanged = await Evidence.capture(entry, observed, signer("1".repeat(64)));
-  assert.equal((await Evidence.matches(expected, unchanged, entry)).ok, true);
+  const preflightMatch = await Evidence.matches(expected, unchanged, entry);
+  assert.equal(preflightMatch.ok, true);
+  assert.equal(preflightMatch.verification, "preflight");
+  const liveMatch = await Evidence.matches(null, unchanged, entry);
+  assert.equal(liveMatch.ok, true);
+  assert.equal(liveMatch.verification, "live");
+  const unsafeLive = await Evidence.capture(entry, {
+    ...observed,
+    substitutionState: "enabled"
+  }, signer("1".repeat(64)));
+  assert.equal((await Evidence.matches(null, unsafeLive, entry)).reason, "checkout-evidence-unverified");
 
   for (const change of [
     { destinationTexts: ["Deliver to 987 Other Avenue"] },
@@ -180,6 +190,7 @@ test("readable checkout labels stay inside the content-script hashing boundary",
   const content = fs.readFileSync(path.join(root, "extension", "content.js"), "utf8");
   const background = fs.readFileSync(path.join(root, "extension", "background.js"), "utf8");
   const main = fs.readFileSync(path.join(root, "main.js"), "utf8");
+  assert.match(content, /!freshReview\.evidence\.ok/);
   const renderer = fs.readFileSync(path.join(root, "src", "renderer.js"), "utf8");
   assert.match(content, /fingerprintWithSecret\(await checkoutHmacSecret\(\), normalized\)/);
   assert.doesNotMatch(content, /CART_CONFIRM_FINGERPRINT_CHECKOUT_EVIDENCE/);

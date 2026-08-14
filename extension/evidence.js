@@ -184,12 +184,14 @@
   }
 
   async function matches(expected, current, product) {
-    const expectedResult = validate(expected, product);
     const currentResult = validate(current, product);
-    if (!expectedResult.ok) return { ok: false, reason: "checkout-preflight-required" };
     if (!currentResult.ok) return currentResult;
+    const expectedResult = validate(expected, product);
+    if (!expectedResult.ok) {
+      return { ok: true, evidence: currentResult.evidence, verification: "live" };
+    }
     return canonicalString(expectedResult.evidence) === canonicalString(currentResult.evidence)
-      ? { ok: true, evidence: currentResult.evidence }
+      ? { ok: true, evidence: currentResult.evidence, verification: "preflight" }
       : { ok: false, reason: "checkout-evidence-changed" };
   }
 

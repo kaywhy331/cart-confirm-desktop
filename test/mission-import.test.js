@@ -100,7 +100,7 @@ test("default-profile imports use shipping auto-buy while unknown URL prices sta
   assert.equal(plan.additions[0].action, "checkout");
   assert.equal(plan.additions[0].fulfillmentMode, "shipping");
   assert.equal(plan.additions[0].maxPrice, 49.99);
-  assert.equal(plan.additions[0].maxOrderTotal, 64.99);
+  assert.equal(plan.additions[0].maxOrderTotal, 85.99);
   assert.equal(plan.additions[0].enabled, true);
   assert.equal(plan.additions[1].action, "checkout");
   assert.equal(plan.additions[1].fulfillmentMode, "shipping");
@@ -123,7 +123,7 @@ test("Quick add applies the default profile using a positive observed page price
   assert.equal(mission.action, "checkout");
   assert.equal(mission.fulfillmentMode, "shipping");
   assert.equal(mission.maxPrice, 34.99);
-  assert.equal(mission.maxOrderTotal, 39.99);
+  assert.equal(mission.maxOrderTotal, 44.19);
   assert.equal(mission.enabled, true);
   assert.equal(mission.priceSource, "observed-page");
 });
@@ -147,7 +147,7 @@ test("Quick add keeps the exact observed page cap when the title also matches an
     })]
   });
   assert.equal(mission.maxPrice, 39.99);
-  assert.equal(mission.maxOrderTotal, 54.99);
+  assert.equal(mission.maxOrderTotal, 74.79);
   assert.equal(mission.priceSource, "observed-page");
   assert.equal(mission.msrpRecordId, "msrp:pokemon-etb");
 });

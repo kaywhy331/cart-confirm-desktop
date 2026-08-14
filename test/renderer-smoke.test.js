@@ -58,7 +58,8 @@ function snapshotFixture() {
       msrpCatalog: [],
       itemProfiles: [],
       defaultItemProfileId: "built-in:shipping-watch",
-      storeOrderAllowances: { target: 15, walmart: 15, amazon: 15 },
+      orderTaxPercent: 12,
+      storeOrderAllowances: { target: 30, walmart: 30, amazon: 30 },
       firstPartyOnly: true
     },
     status: {
@@ -510,12 +511,14 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
 
   // Item profiles support create/update/delete and bulk application without
   // changing unselected missions or enabling an unknown zero-dollar cap.
+  doc.getElementById("orderTaxPercent").value = "10.25";
   doc.getElementById("targetOrderAllowance").value = "12";
   doc.getElementById("storeAllowanceForm").dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true }));
   await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(savedSettingsInputs.at(-1).orderTaxPercent, 10.25);
   assert.equal(savedSettingsInputs.at(-1).storeOrderAllowances.target, 12);
-  assert.equal(savedSettingsInputs.at(-1).storeOrderAllowances.walmart, 15);
-  assert.equal(savedSettingsInputs.at(-1).storeOrderAllowances.amazon, 15);
+  assert.equal(savedSettingsInputs.at(-1).storeOrderAllowances.walmart, 30);
+  assert.equal(savedSettingsInputs.at(-1).storeOrderAllowances.amazon, 30);
   assert.match(doc.getElementById("message").textContent, /final-order caps recalculated/);
   doc.getElementById("itemProfileName").value = "Two shipped";
   doc.getElementById("itemProfileQuantity").value = "2";
@@ -543,7 +546,7 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   await new Promise((resolve) => setTimeout(resolve, 10));
   assert.equal(savedSettingsInputs.at(-1).products[0].quantity, 2);
   assert.equal(savedSettingsInputs.at(-1).products[0].maxPrice, 40);
-  assert.equal(savedSettingsInputs.at(-1).products[0].maxOrderTotal, 92);
+  assert.equal(savedSettingsInputs.at(-1).products[0].maxOrderTotal, 100.2);
   assert.equal(savedSettingsInputs.at(-1).products[0].enabled, true);
 
   // A pre-known candidate set gets one shared calendar gate and a sustained,
@@ -686,10 +689,10 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   assert.equal(calculatedTotal.readOnly, true);
   actionSelect.value = "checkout";
   actionSelect.dispatchEvent(new window.Event("change", { bubbles: true }));
-  assert.equal(calculatedTotal.value, "55");
+  assert.equal(calculatedTotal.value, "74.8");
   editCard.querySelector("[data-field='quantity']").value = "2";
   editCard.querySelector("[data-field='quantity']").dispatchEvent(new window.Event("change", { bubbles: true }));
-  assert.equal(calculatedTotal.value, "95");
+  assert.equal(calculatedTotal.value, "119.6");
   assert.equal(editCard.querySelector(".advanced-fields").open, true);
   assert.match(fulfillmentSelect.validationMessage, /Choose Shipping/);
   editCard.querySelector(".mission-done").click();

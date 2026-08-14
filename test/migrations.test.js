@@ -4,7 +4,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { migrateStoredSettings } = require("../lib/migrations");
 
-test("legacy armed checkout settings receive a derived cap and remain disarmed without current evidence", () => {
+test("legacy armed checkout settings receive tax-aware defaults without requiring advance evidence", () => {
   const stored = {
     automationEnabled: true,
     retryIntervalSeconds: 30,
@@ -20,15 +20,16 @@ test("legacy armed checkout settings receive a derived cap and remain disarmed w
     }]
   };
   const migrated = migrateStoredSettings(stored);
-  assert.equal(migrated.automationEnabled, false);
+  assert.equal(migrated.automationEnabled, true);
   assert.equal(migrated.retryIntervalSeconds, 30);
   assert.equal(migrated.products[0].sku, "1011960739");
-  assert.equal(migrated.products[0].maxOrderTotal, 115);
-  assert.deepEqual(migrated.storeOrderAllowances, { target: 15, walmart: 15, amazon: 15 });
+  assert.equal(migrated.products[0].maxOrderTotal, 142);
+  assert.equal(migrated.orderTaxPercent, 12);
+  assert.deepEqual(migrated.storeOrderAllowances, { target: 30, walmart: 30, amazon: 30 });
   assert.equal(stored.automationEnabled, true);
 });
 
-test("legacy per-item checkout caps clear bound evidence and disarm", () => {
+test("legacy per-item checkout caps clear optional evidence when the derived cap changes", () => {
   const stored = {
     automationEnabled: true,
     products: [{
@@ -43,9 +44,26 @@ test("legacy per-item checkout caps clear bound evidence and disarm", () => {
     }]
   };
   const migrated = migrateStoredSettings(stored);
-  assert.equal(migrated.automationEnabled, false);
-  assert.equal(migrated.products[0].maxOrderTotal, 115);
+  assert.equal(migrated.automationEnabled, true);
+  assert.equal(migrated.products[0].maxOrderTotal, 142);
   assert.equal(migrated.products[0].checkoutEvidence, null);
+});
+
+test("tax migration raises untouched $15 defaults but preserves custom allowances", () => {
+  const migrated = migrateStoredSettings({
+    storeOrderAllowances: { target: 7.5, walmart: 15, amazon: 22 },
+    products: []
+  });
+  assert.deepEqual(migrated.storeOrderAllowances, { target: 7.5, walmart: 30, amazon: 22 });
+  assert.equal(migrated.orderTaxPercent, 12);
+
+  const alreadyConfigured = migrateStoredSettings({
+    orderTaxPercent: 8.25,
+    storeOrderAllowances: { target: 15, walmart: 15, amazon: 15 },
+    products: []
+  });
+  assert.deepEqual(alreadyConfigured.storeOrderAllowances, { target: 15, walmart: 15, amazon: 15 });
+  assert.equal(alreadyConfigured.orderTaxPercent, 8.25);
 });
 
 test("legacy single-product auto-checkout settings are also preserved and disarmed", () => {

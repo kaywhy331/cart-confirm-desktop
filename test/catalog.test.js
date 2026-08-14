@@ -212,7 +212,7 @@ test("catalog imports use an approved MSRP and item profile without trusting lis
   assert.equal(plan.summary.ready, 1);
   assert.equal(plan.summary.needsPrice, 0);
   assert.equal(plan.additions[0].maxPrice, 49.99, "listing price must not become the purchase cap");
-  assert.equal(plan.additions[0].maxOrderTotal, 57.99);
+  assert.equal(plan.additions[0].maxOrderTotal, 63.99);
   assert.equal(plan.additions[0].action, "checkout");
   assert.equal(plan.additions[0].fulfillmentMode, "shipping");
   assert.equal(plan.additions[0].enabled, true);

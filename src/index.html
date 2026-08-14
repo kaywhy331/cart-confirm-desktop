@@ -210,15 +210,16 @@
             <div class="defaults-block">
               <div class="defaults-heading">
                 <div>
-                  <strong>Store order-total allowances</strong>
-                  <p>Final-order caps are calculated automatically as unit cap × quantity + this retailer allowance. Set enough for expected tax, shipping, and retailer fees; the checkout total must still remain under the result.</p>
+                  <strong>Tax and store order-total allowances</strong>
+                  <p>Final-order caps are calculated as item subtotal + configured tax + the retailer allowance. Tax defaults to a conservative 12%; each $30 allowance is an additional shipping/fee cushion. Standard shipping is commonly free above $35 at these stores, but Cart Confirm never relies on that threshold.</p>
                 </div>
               </div>
               <form class="store-allowance-form" id="storeAllowanceForm">
+                <label class="field"><span>Tax estimate</span><span class="percent-input"><input id="orderTaxPercent" type="number" min="0" max="100" step="0.01" required><span>%</span></span></label>
                 <label class="field"><span>Target extra allowance</span><span class="money-input"><span>$</span><input id="targetOrderAllowance" type="number" min="0" max="1000000" step="0.01" required></span></label>
                 <label class="field"><span>Walmart extra allowance</span><span class="money-input"><span>$</span><input id="walmartOrderAllowance" type="number" min="0" max="1000000" step="0.01" required></span></label>
                 <label class="field"><span>Amazon extra allowance</span><span class="money-input"><span>$</span><input id="amazonOrderAllowance" type="number" min="0" max="1000000" step="0.01" required></span></label>
-                <button class="button primary compact" id="saveStoreAllowancesButton" type="submit">Save allowances</button>
+                <button class="button primary compact" id="saveStoreAllowancesButton" type="submit">Save cap settings</button>
               </form>
             </div>
 
@@ -618,7 +619,7 @@
           <label class="field">
             <span>Calculated final-order cap</span>
             <span class="money-input"><span>$</span><input data-field="maxOrderTotal" type="number" min="0" step="0.01" inputmode="decimal" readonly></span>
-            <span class="field-note">Unit cap × quantity + this retailer’s saved allowance</span>
+            <span class="field-note">Item subtotal + saved tax percentage + this retailer’s allowance</span>
           </label>
           <label class="field">
             <span>Required fulfillment</span>
