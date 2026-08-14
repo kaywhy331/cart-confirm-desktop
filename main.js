@@ -72,6 +72,11 @@ const { isAllowedExtensionOrigin, isTrustedCompanionRequest } = require("./lib/e
 const { createStoreOpenQueue } = require("./lib/store-open-queue");
 const { createOpenRequestStore } = require("./lib/open-requests");
 const { findChrome } = require("./lib/chrome-launcher");
+const {
+  companionConnectionReady,
+  selectConnectionBootstrap,
+  waitForCompanionConnection
+} = require("./lib/companion-startup");
 const { checkProductPage } = require("./lib/quiet-monitor");
 const {
   conditionalHeaders,
@@ -963,6 +968,51 @@ async function openProduct(productId, options = {}) {
   };
 }
 
+async function ensureCompanionConnection(plan, prepCandidates) {
+  if (!companionPort) throw new Error("The local companion server is not running.");
+  if (companionConnectionReady(status)) {
+    return { connected: true, opened: false, productId: "", retailer: "", via: "existing" };
+  }
+
+  const bootstrap = selectConnectionBootstrap(plan, prepCandidates);
+  if (!bootstrap) throw new Error("Enable at least one supported retailer mission before connecting Chrome.");
+  const startedAt = Date.now();
+  const opened = await openExternalRetailer(bootstrap.productUrl, {
+    productId: bootstrap.id,
+    actionKind: "companion-bootstrap"
+  });
+  if (opened.via === "default-browser") {
+    throw new Error("Google Chrome was not found. Install Chrome and load the bundled Cart Confirm companion before using Autopilot or Test.");
+  }
+  if (["cancelled", "already-queued"].includes(opened.via) && !companionConnectionReady(status)) {
+    throw new Error("The Chrome connection page could not be opened. Wait for the current store opening to finish and try again.");
+  }
+
+  await waitForCompanionConnection(() => ({ status, companionHello }), {
+    startedAt,
+    onVersionMismatch: async () => {
+      // The bundled unpacked extension reloads itself when the desktop version
+      // changes. Open the mission again after that reload so Chrome injects the
+      // new content script into a fresh tab and can send its first heartbeat.
+      await new Promise((resolve) => setTimeout(resolve, 750));
+      const retried = await openExternalRetailer(bootstrap.productUrl, {
+        productId: bootstrap.id,
+        actionKind: "companion-version-reload"
+      });
+      if (retried.via === "default-browser") {
+        throw new Error("Google Chrome was not found while reconnecting the updated companion.");
+      }
+    }
+  });
+  return {
+    connected: true,
+    opened: opened.via === "chrome",
+    productId: bootstrap.id,
+    retailer: bootstrap.retailer,
+    via: opened.via
+  };
+}
+
 async function openBuyList(retailer = "", options = {}) {
   const plan = planImmediateProductOpenings(settings, retailer);
   const prepCandidates = (settings.walmartPrepCandidates || []).filter((candidate) => (
@@ -975,7 +1025,10 @@ async function openBuyList(retailer = "", options = {}) {
   }
 
   resumeMonitoring();
-  const { backgroundFirst = false, ...openOptions } = options;
+  const { backgroundFirst = false, ensureCompanion = false, ...openOptions } = options;
+  const connection = ensureCompanion
+    ? await ensureCompanionConnection(plan, prepCandidates)
+    : { connected: companionConnectionReady(status), opened: false, productId: "", retailer: "", via: "" };
   const backgroundProducts = backgroundFirst
     ? plan.ready.filter((product) => (
         QUIET_STORES.includes(product.retailer)
@@ -984,18 +1037,29 @@ async function openBuyList(retailer = "", options = {}) {
     : [];
   const backgroundIds = new Set(backgroundProducts.map((product) => product.id));
   const browserProducts = plan.ready.filter((product) => !backgroundIds.has(product.id));
-  const results = await Promise.all(browserProducts.map((product) => (
+  const bootstrapIsBrowserProduct = connection.opened
+    && browserProducts.some((product) => product.id === connection.productId);
+  const bootstrapIsBackgroundProduct = connection.opened
+    && backgroundProducts.some((product) => product.id === connection.productId);
+  const productsToOpen = bootstrapIsBrowserProduct
+    ? browserProducts.filter((product) => product.id !== connection.productId)
+    : browserProducts;
+  const results = await Promise.all(productsToOpen.map((product) => (
     openExternalRetailer(product.productUrl, { ...openOptions, productId: product.id })
   )));
   return {
-    count: results.filter((result) => !["already-queued", "cancelled"].includes(result.via)).length,
+    count: results.filter((result) => !["already-queued", "cancelled"].includes(result.via)).length
+      + Number(bootstrapIsBrowserProduct),
     reused: results.filter((result) => result.via === "companion-tab").length,
     deduped: results.filter((result) => result.via === "already-queued").length,
     defaultBrowser: results.some((result) => result.via === "default-browser"),
-    background: backgroundProducts.length,
+    background: backgroundProducts.length - Number(bootstrapIsBackgroundProduct),
     prepMonitoring: prepCandidates.length,
     scheduled: plan.scheduled.length,
-    armed: settings.automationEnabled
+    armed: settings.automationEnabled,
+    connectionOpened: connection.opened,
+    connectionProductId: connection.productId,
+    connectionRetailer: connection.retailer
   };
 }
 
@@ -2032,7 +2096,8 @@ function registerIpc() {
 
   ipcMain.handle("cart-assist:open-product", (_event, productId) => openProduct(productId));
   ipcMain.handle("cart-assist:open-buy-list", (_event, input = {}) => openBuyList("", {
-    backgroundFirst: input?.backgroundFirst === true
+    backgroundFirst: input?.backgroundFirst === true,
+    ensureCompanion: true
   }));
   ipcMain.handle("cart-assist:open-cart", (_event, retailer) => openStorePage(retailer, "cartUrl"));
   ipcMain.handle("cart-assist:open-orders", (_event, retailer) => openStorePage(retailer, "ordersUrl"));
@@ -2154,7 +2219,7 @@ function registerIpc() {
   ipcMain.handle("cart-assist:test-event", () => {
     if (!companionPort) throw new Error("The local companion server is not running.");
     if (settings.automationEnabled) throw new Error("Switch Autopilot off before testing.");
-    return openBuyList();
+    return openBuyList("", { ensureCompanion: true });
   });
 }
 

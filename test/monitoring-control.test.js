@@ -52,8 +52,8 @@ test("the desktop Stop path aborts quiet checks and internal stock opens cannot 
 
 test("Test all opens every enabled mission while remaining disarmed", () => {
   const source = fs.readFileSync(path.join(__dirname, "..", "main.js"), "utf8");
-  assert.match(source, /cart-assist:test-event[\s\S]*?if \(settings\.automationEnabled\)[\s\S]*?return openBuyList\(\);/);
-  assert.match(source, /async function openBuyList[\s\S]*?browserProducts = plan\.ready\.filter[\s\S]*?Promise\.all\(browserProducts\.map/);
+  assert.match(source, /cart-assist:test-event[\s\S]*?if \(settings\.automationEnabled\)[\s\S]*?return openBuyList\("", \{ ensureCompanion: true \}\);/);
+  assert.match(source, /async function openBuyList[\s\S]*?browserProducts = plan\.ready\.filter[\s\S]*?Promise\.all\(productsToOpen\.map/);
 });
 
 test("arming Autopilot starts Target and Walmart background-first without changing manual opens", () => {
@@ -64,11 +64,19 @@ test("arming Autopilot starts Target and Walmart background-first without changi
     mainSource.indexOf("async function openStorePage")
   );
   assert.match(rendererSource, /autopilotToggle[\s\S]*?saveSettings\(\{ \.\.\.saved, automationEnabled: true \}\)[\s\S]*?openBuyList\(\{ backgroundFirst: true \}\)/);
+  assert.match(mainSource, /cart-assist:open-buy-list[\s\S]*?ensureCompanion: true/);
+  assert.match(openBuyList, /ensureCompanion[\s\S]*?ensureCompanionConnection\(plan, prepCandidates\)/);
   assert.match(rendererSource, /waiting for[\s\S]*?calendar time/);
   assert.match(rendererSource, /openAllButton[\s\S]*?openBuyList\(\)/);
   assert.match(openBuyList, /backgroundFirst[\s\S]*?QUIET_STORES\.includes\(product\.retailer\)[\s\S]*?productExecutionMode[\s\S]*?=== "watcher"/);
   assert.match(openBuyList, /backgroundIds[\s\S]*?browserProducts/);
   assert.match(openBuyList, /background: backgroundProducts\.length/);
+  assert.match(rendererSource, /Autopilot could not start and was switched back off/);
+});
+
+test("a newly opened retailer tab sends its first companion heartbeat immediately", () => {
+  const contentSource = fs.readFileSync(path.join(__dirname, "..", "extension", "content.js"), "utf8");
+  assert.match(contentSource, /await refreshConfig\(true\);[\s\S]*?send\("heartbeat", product[\s\S]*?heartbeat:startup/);
 });
 
 test("calendar-owned missions stay out of quiet checks and missed schedules stay locked", () => {
