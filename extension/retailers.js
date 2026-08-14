@@ -840,8 +840,7 @@
     for (const root of roots.slice(0, 50)) {
       const text = visibleTextOf(root, 5000);
       const match = text.match(/(?:limit|max(?:imum)?|up to|only)\s+(?:of\s+)?(\d{1,2})\s+(?:per (?:customer|guest|order|household)|item|unit|allowed)/i)
-        || text.match(/(?:per (?:customer|guest|order|household))\s*[:\-]?\s*(\d{1,2})/i)
-        || text.match(/\b(\d{1,2})\s+(?:[a-z0-9][a-z0-9'’&+./-]*\s+){0,4}per\s+(?:customer|guest|order|household)\b/i);
+        || text.match(/(?:per (?:customer|guest|order|household))\s*[:\-]?\s*(\d{1,2})/i);
       if (match) {
         const limit = Number(match[1]);
         if (Number.isInteger(limit) && limit > 0 && limit <= 99) limits.push(limit);

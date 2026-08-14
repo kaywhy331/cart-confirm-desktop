@@ -129,7 +129,7 @@ test("Target product-page sign-in extras do not masquerade as an authentication 
   assert.equal(target.interactivePageState(doc), "");
 });
 
-test("Target reads the most conservative visible per-order product limit", () => {
+test("Target distinguishes package wording from an explicit purchase limit", () => {
   const target = getAdapter("target");
   const doc = new JSDOM(`<body><main>
     <div role="alert">Limit 2 per order</div>
@@ -139,7 +139,8 @@ test("Target reads the most conservative visible per-order product limit", () =>
     </div>
   </main></body>`, { url: "https://www.target.com/p/restocks/A-1010892069" }).window.document;
 
-  assert.equal(target.visibleQuantityLimit(doc, { retailer: "target", sku: "1010892069" }), 1);
+  // Package-count copy without an explicit limit marker is not a quantity cap.
+  assert.equal(target.visibleQuantityLimit(doc, { retailer: "target", sku: "1010892069" }), 2);
 });
 
 for (const retailer of ["target", "walmart", "amazon"]) {
