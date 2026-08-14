@@ -25,6 +25,7 @@
         </div>
       </div>
       <div class="topbar-controls">
+        <button class="button ghost compact update-button" id="updateButton" type="button" title="Check official GitHub releases for a newer Cart Confirm version">Check for updates</button>
         <div class="connection" id="connectionPill" title="">
           <span class="connection-dot"></span>
           <span id="connectionText">Waiting for companion</span>
@@ -85,6 +86,37 @@
             </div>
           </div>
           <div class="panel-content" id="missionsPanelBody">
+            <div class="mission-toolbar" aria-label="Mission filters">
+              <label class="mission-search-field">
+                <span class="sr-only">Search missions</span>
+                <input id="missionSearch" type="search" maxlength="100" autocomplete="off" spellcheck="false" placeholder="Search name or item ID">
+              </label>
+              <label>
+                <span class="sr-only">Filter missions by group</span>
+                <select id="missionGroupFilter" aria-label="Filter missions by group">
+                  <option value="all">All groups</option>
+                </select>
+              </label>
+              <label>
+                <span class="sr-only">Filter missions by retailer</span>
+                <select id="missionRetailerFilter" aria-label="Filter missions by retailer">
+                  <option value="all">All retailers</option>
+                  <option value="target">Target</option>
+                  <option value="walmart">Walmart</option>
+                  <option value="amazon">Amazon</option>
+                </select>
+              </label>
+              <label>
+                <span class="sr-only">Filter missions by status</span>
+                <select id="missionActiveFilter" aria-label="Filter missions by status">
+                  <option value="all">Active + inactive</option>
+                  <option value="active">Active</option>
+                  <option value="inactive">Inactive</option>
+                </select>
+              </label>
+              <button class="button secondary compact" id="newMissionGroupButton" type="button">+ Group</button>
+              <span class="mission-filter-count" id="missionFilterCount" aria-live="polite"></span>
+            </div>
             <p class="step-hint worst-case" id="worstCase"></p>
             <div class="mission-list" id="missionList"></div>
           </div>
@@ -227,6 +259,7 @@
               </div>
               <div class="bulk-mission-list" id="bulkMissionList"></div>
               <div class="bulk-profile-actions"><select id="bulkItemProfile"></select><button class="button primary compact" id="applyBulkItemProfileButton" type="button">Apply profile to selected</button><button class="button secondary compact" id="copySelectedMissionListButton" type="button">Copy selected list</button></div>
+              <div class="bulk-group-actions"><select id="bulkMissionGroup" aria-label="Group for selected missions"><option value="">Ungrouped</option></select><button class="button secondary compact" id="applyBulkMissionGroupButton" type="button">Move selected to group</button></div>
               <div class="bulk-schedule-actions">
                 <label class="field compact-field">
                   <span>Shared candidate opening time</span>
@@ -471,6 +504,10 @@
 
   <template id="missionViewTemplate">
     <article class="mission-card">
+      <div class="mission-order-actions" aria-label="Reorder mission">
+        <button class="mission-icon-button mission-move-up" type="button">↑</button>
+        <button class="mission-icon-button mission-move-down" type="button">↓</button>
+      </div>
       <label class="toggle-row mission-enabled" title="Only enabled missions run">
         <input data-view="enabled" type="checkbox">
       </label>
@@ -481,14 +518,15 @@
         </div>
         <div class="mission-sub" data-view="sub"></div>
       </div>
+      <span class="mission-price-quantity" data-view="priceQuantity"></span>
       <span class="action-chip" data-view="action"></span>
       <span class="status-age" data-view="age"></span>
       <span class="state-chip" data-view="state"></span>
       <div class="row-actions">
-        <button class="button ghost compact mission-open" type="button">Open</button>
-        <button class="button secondary compact mission-copy-affiliate" type="button" hidden>Copy share link</button>
-        <button class="button ghost compact mission-edit" type="button">Edit</button>
-        <button class="button ghost compact mission-remove" type="button" aria-label="Remove mission">✕</button>
+        <button class="mission-icon-button mission-open" type="button">↗</button>
+        <button class="mission-icon-button mission-copy-affiliate" type="button" hidden>🔗</button>
+        <button class="mission-icon-button mission-edit" type="button">✎</button>
+        <button class="mission-icon-button mission-remove" type="button">✕</button>
       </div>
     </article>
   </template>
@@ -521,6 +559,10 @@
         <label class="field">
           <span>Item profile</span>
           <select data-field="itemProfileId"></select>
+        </label>
+        <label class="field">
+          <span>Mission group</span>
+          <select data-field="groupId"></select>
         </label>
         <button class="button secondary compact mission-apply-profile" type="button">Apply profile + approved MSRP</button>
         <small>Applies the reusable settings and the matching store MSRP. If no approved price matches, this mission stays Off.</small>

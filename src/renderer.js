@@ -6,6 +6,7 @@ const elements = {
   autopilotToggle: document.getElementById("autopilotToggle"),
   autopilotState: document.getElementById("autopilotState"),
   disarmButton: document.getElementById("disarmButton"),
+  updateButton: document.getElementById("updateButton"),
   connectionPill: document.getElementById("connectionPill"),
   connectionText: document.getElementById("connectionText"),
   alarmBar: document.getElementById("alarmBar"),
@@ -21,9 +22,15 @@ const elements = {
   copyExtensionButton: document.getElementById("copyExtensionButton"),
   portBadge: document.getElementById("portBadge"),
   missionList: document.getElementById("missionList"),
+  missionSearch: document.getElementById("missionSearch"),
+  missionGroupFilter: document.getElementById("missionGroupFilter"),
+  missionRetailerFilter: document.getElementById("missionRetailerFilter"),
+  missionActiveFilter: document.getElementById("missionActiveFilter"),
+  missionFilterCount: document.getElementById("missionFilterCount"),
   missionViewTemplate: document.getElementById("missionViewTemplate"),
   missionEditTemplate: document.getElementById("missionEditTemplate"),
   newMissionButton: document.getElementById("newMissionButton"),
+  newMissionGroupButton: document.getElementById("newMissionGroupButton"),
   bulkImportButton: document.getElementById("bulkImportButton"),
   bulkImportDialog: document.getElementById("bulkImportDialog"),
   bulkImportText: document.getElementById("bulkImportText"),
@@ -77,6 +84,8 @@ const elements = {
   bulkMissionList: document.getElementById("bulkMissionList"),
   bulkItemProfile: document.getElementById("bulkItemProfile"),
   applyBulkItemProfileButton: document.getElementById("applyBulkItemProfileButton"),
+  bulkMissionGroup: document.getElementById("bulkMissionGroup"),
+  applyBulkMissionGroupButton: document.getElementById("applyBulkMissionGroupButton"),
   copySelectedMissionListButton: document.getElementById("copySelectedMissionListButton"),
   bulkMissionOpenAt: document.getElementById("bulkMissionOpenAt"),
   scheduleCandidateMissionsButton: document.getElementById("scheduleCandidateMissionsButton"),
@@ -133,6 +142,15 @@ const elements = {
 const STORE_LABELS = Object.freeze({ target: "Target", walmart: "Walmart", amazon: "Amazon" });
 const SKU_LABELS = Object.freeze({ target: "TCIN", walmart: "Walmart item ID", amazon: "ASIN" });
 const ACTION_LABELS = Object.freeze({ watch: "Watch", cart: "Add only", review: "I submit", checkout: "Auto-buy" });
+const ACTION_SHORT_LABELS = Object.freeze({ watch: "Watch", cart: "ATC", review: "Review", checkout: "Auto" });
+const ACTION_DESCRIPTIONS = Object.freeze({
+  watch: "Watch and alert only",
+  cart: "Add to cart only",
+  review: "Prepare checkout for manual submission",
+  checkout: "Submit order automatically"
+});
+const UNGROUPED_FILTER_VALUE = "__ungrouped__";
+const MAX_MISSION_GROUPS = 20;
 const BLOCKING_REASONS = new Set([
   "cart-unverified",
   "manual-action-required",
@@ -170,6 +188,7 @@ for (const toggle of document.querySelectorAll(".panel-toggle")) {
 let currentSnapshot = null;
 let messageTimer = null;
 let openRunInFlight = false;
+let updateOperationInFlight = false;
 let editingId = null; // null | product id | "new"
 let editCardNode = null;
 let resumeAutopilotAfterEdit = false;
@@ -204,6 +223,56 @@ function setMessage(text, kind = "") {
     messageTimer = setTimeout(() => {
       elements.message.classList.remove("show");
     }, 8000);
+  }
+}
+
+function renderUpdaterState(state = {}) {
+  const version = state.version ? ` v${state.version}` : "";
+  if (["checking", "available", "checksum", "downloading", "verifying", "installing"].includes(state.status)) {
+    updateOperationInFlight = true;
+    elements.updateButton.disabled = true;
+  }
+  if (state.status === "checking") elements.updateButton.textContent = "Checking…";
+  else if (state.status === "available") elements.updateButton.textContent = `Update${version} found`;
+  else if (state.status === "checksum") elements.updateButton.textContent = "Checking release…";
+  else if (state.status === "downloading") elements.updateButton.textContent = `Downloading ${state.percent || 0}%`;
+  else if (state.status === "verifying") elements.updateButton.textContent = "Verifying update…";
+  else if (state.status === "installing") elements.updateButton.textContent = `Installing${version}…`;
+  else if (["current", "cancelled", "error", "idle"].includes(state.status)) {
+    updateOperationInFlight = false;
+    elements.updateButton.disabled = false;
+    elements.updateButton.textContent = "Check for updates";
+  }
+  elements.updateButton.setAttribute("aria-label", elements.updateButton.textContent);
+}
+
+async function requestAppUpdate() {
+  if (updateOperationInFlight) return;
+  renderUpdaterState({ status: "checking" });
+  try {
+    const result = await window.cartAssist.checkForUpdates();
+    if (result?.status === "current") {
+      renderUpdaterState({ status: "current" });
+      setMessage(`Cart Confirm v${result.currentVersion} is already the newest published version.`, "success");
+    } else if (result?.status === "cancelled") {
+      renderUpdaterState({ status: "cancelled" });
+      setMessage("Update postponed. Your current version was not changed.");
+    } else if (result?.status === "unavailable") {
+      renderUpdaterState({ status: "idle" });
+      setMessage(result.message || "Automatic updates are unavailable in this build.", "warn");
+    } else if (result?.status === "busy") {
+      renderUpdaterState({ status: "idle" });
+      setMessage("An update check is already running.", "warn");
+    } else if (result?.status === "installing") {
+      renderUpdaterState({ status: "installing", version: result.version });
+      setMessage(`Verified update v${result.version} is installing. Cart Confirm will relaunch automatically.`, "success");
+    } else {
+      renderUpdaterState({ status: "idle" });
+      setMessage("The update check finished without a result.", "warn");
+    }
+  } catch (error) {
+    renderUpdaterState({ status: "error" });
+    setMessage(error.message || "The update could not be installed.", "error");
   }
 }
 
@@ -320,6 +389,10 @@ function deriveTitleFromUrl(url) {
 
 function savedProducts() {
   return currentSnapshot?.settings?.products || [];
+}
+
+function savedMissionGroups() {
+  return currentSnapshot?.settings?.missionGroups || [];
 }
 
 function isArmed() {
@@ -474,9 +547,10 @@ function renderConfigurationProfiles(settings) {
   elements.deleteConfigurationProfileButton.hidden = !custom;
 }
 
-function globalSettings(products) {
+function globalSettings(products, overrides = {}) {
   return {
     products,
+    missionGroups: overrides.missionGroups ?? savedMissionGroups(),
     automationEnabled: isArmed(),
     fastMode: elements.fastMode.checked,
     watcherIntervalSeconds: Number(elements.watcherIntervalSeconds.value),
@@ -502,8 +576,8 @@ function globalSettings(products) {
   };
 }
 
-async function saveMissionList(products) {
-  const next = await window.cartAssist.saveSettings(globalSettings(products));
+async function saveMissionList(products, overrides = {}) {
+  const next = await window.cartAssist.saveSettings(globalSettings(products, overrides));
   render(next);
   return next;
 }
@@ -578,6 +652,68 @@ function stateLabel(product, status) {
   return "Waiting";
 }
 
+function stateShortLabel(product, status) {
+  if (!product.enabled) return "Off";
+  if (status.order === "confirmed") return "✓ Order";
+  if (status.checkout === "review-ready") return "Review";
+  if (status.reason === "retailer-queue") return "Queue";
+  if (BLOCKING_REASONS.has(status.reason)) return "! Blocked";
+  if (status.checkout === "reached") return "Checkout";
+  if (status.cart === "confirmed") return "Cart";
+  if (status.eligible) return "Ready";
+  return "Waiting";
+}
+
+function missionGroupOptions(select, selectedGroupId = "") {
+  const ungrouped = document.createElement("option");
+  ungrouped.value = "";
+  ungrouped.textContent = "Ungrouped";
+  const options = savedMissionGroups().map((group) => {
+    const option = document.createElement("option");
+    option.value = group.id;
+    option.textContent = group.name;
+    return option;
+  });
+  select.replaceChildren(ungrouped, ...options);
+  select.value = savedMissionGroups().some((group) => group.id === selectedGroupId)
+    ? selectedGroupId
+    : "";
+}
+
+function compactMissionPrice(price) {
+  return `$${Math.round(Number(price) || 0).toLocaleString()}`;
+}
+
+function missionCapDescription(product) {
+  const parts = [
+    `Maximum unit price $${Number(product.maxPrice).toFixed(2)}`,
+    `quantity ${product.quantity}`
+  ];
+  if (["review", "checkout"].includes(product.action)) {
+    parts.push(`maximum final order total $${Number(product.maxOrderTotal).toFixed(2)}`);
+  }
+  return parts.join("; ");
+}
+
+function setMissionButtonLabel(button, label) {
+  button.title = label;
+  button.setAttribute("aria-label", label);
+}
+
+async function moveMission(productId, direction) {
+  const products = [...savedProducts()];
+  const product = products.find((candidate) => candidate.id === productId);
+  if (!product) return;
+  const peers = products.filter((candidate) => (candidate.groupId || "") === (product.groupId || ""));
+  const peerIndex = peers.findIndex((candidate) => candidate.id === productId);
+  const other = peers[peerIndex + direction];
+  if (!other) return;
+  const from = products.findIndex((candidate) => candidate.id === productId);
+  const to = products.findIndex((candidate) => candidate.id === other.id);
+  [products[from], products[to]] = [products[to], products[from]];
+  await saveMissionList(products);
+}
+
 function defaultStatus() {
   return {
     eligible: false,
@@ -595,14 +731,17 @@ function buildViewCard(product, status) {
   const stateClass = productStateClass(product, status);
   card.classList.add(stateClass || "idle");
   card.dataset.retailer = product.retailer;
-  card.title = `${STORE_LABELS[product.retailer]} ${product.sku} — ${status.lastMessage || "Waiting."}`;
+  card.dataset.groupId = product.groupId || "";
+  const fullState = stateLabel(product, status);
+  const capDescription = missionCapDescription(product);
+  card.title = `${STORE_LABELS[product.retailer]} ${product.sku} — ${capDescription} — ${fullState}: ${status.lastMessage || "Waiting."}`;
+  card.setAttribute("aria-label", card.title);
 
   view(card, "enabled").checked = product.enabled !== false;
   view(card, "store").textContent = STORE_LABELS[product.retailer];
   view(card, "title").textContent = productLabel(product);
 
-  const subParts = [`$${Number(product.maxPrice).toFixed(2)} cap`, `×${product.quantity}`];
-  if (["review", "checkout"].includes(product.action)) subParts.push(`total cap $${Number(product.maxOrderTotal).toFixed(2)}`);
+  const subParts = [];
   if (product.openAt) {
     subParts.push(`opens ${new Date(product.openAt).toLocaleString([], { dateStyle: "medium", timeStyle: "short" })}`);
   }
@@ -620,18 +759,42 @@ function buildViewCard(product, status) {
   if (product.affiliateUrl) subParts.push("Campaign share ready");
   view(card, "sub").textContent = subParts.join(" · ");
 
-  view(card, "action").textContent = ACTION_LABELS[product.action] || product.action;
-  view(card, "action").dataset.action = product.action;
+  const priceQuantity = view(card, "priceQuantity");
+  priceQuantity.textContent = `${compactMissionPrice(product.maxPrice)} ×${product.quantity}`;
+  priceQuantity.title = capDescription;
+  priceQuantity.setAttribute("aria-label", capDescription);
+  const action = view(card, "action");
+  const actionDescription = ACTION_DESCRIPTIONS[product.action] || product.action;
+  action.textContent = ACTION_SHORT_LABELS[product.action] || product.action;
+  action.dataset.action = product.action;
+  action.title = actionDescription;
+  action.setAttribute("aria-label", `Action: ${actionDescription}`);
   const age = view(card, "age");
   age.dataset.at = status.lastEventAt || "";
   age.textContent = relativeTime(status.lastEventAt || "");
   const state = view(card, "state");
   state.className = `state-chip ${stateClass}`.trim();
-  state.textContent = stateLabel(product, status);
+  state.textContent = stateShortLabel(product, status);
+  state.title = `${fullState}. ${status.lastMessage || "Waiting."}`;
+  state.setAttribute("aria-label", `Status: ${fullState}. ${status.lastMessage || "Waiting."}`);
 
   const armedNow = isArmed();
   const editButton = card.querySelector(".mission-edit");
   const removeButton = card.querySelector(".mission-remove");
+  const openButton = card.querySelector(".mission-open");
+  const upButton = card.querySelector(".mission-move-up");
+  const downButton = card.querySelector(".mission-move-down");
+  const peers = savedProducts().filter((candidate) => (
+    (candidate.groupId || "") === (product.groupId || "")
+  ));
+  const peerIndex = peers.findIndex((candidate) => candidate.id === product.id);
+  upButton.disabled = peerIndex <= 0 || Boolean(editingId);
+  downButton.disabled = peerIndex === -1 || peerIndex >= peers.length - 1 || Boolean(editingId);
+  setMissionButtonLabel(upButton, `Move ${productLabel(product)} up within its group`);
+  setMissionButtonLabel(downButton, `Move ${productLabel(product)} down within its group`);
+  setMissionButtonLabel(openButton, `Open ${productLabel(product)} product page`);
+  setMissionButtonLabel(editButton, `Edit ${productLabel(product)}`);
+  setMissionButtonLabel(removeButton, `Remove ${productLabel(product)}`);
   if (armedNow) {
     editButton.title = "Pauses Autopilot while you edit; it resumes on Done";
     removeButton.title = "Pauses Autopilot to remove, then resumes";
@@ -651,7 +814,16 @@ function buildViewCard(product, status) {
   card.addEventListener("dragend", () => card.classList.remove("dragging"));
 
 
-  card.querySelector(".mission-open").addEventListener("click", () => {
+  upButton.addEventListener("click", () => void runAction(
+    () => moveMission(product.id, -1),
+    `${productLabel(product)} moved up within its group.`
+  ));
+  downButton.addEventListener("click", () => void runAction(
+    () => moveMission(product.id, 1),
+    `${productLabel(product)} moved down within its group.`
+  ));
+
+  openButton.addEventListener("click", () => {
     void runAction(
       () => window.cartAssist.openProduct(product.id),
       (result) => (result?.via === "companion-tab"
@@ -660,6 +832,7 @@ function buildViewCard(product, status) {
     );
   });
   const copyAffiliateButton = card.querySelector(".mission-copy-affiliate");
+  setMissionButtonLabel(copyAffiliateButton, `Copy campaign share link for ${productLabel(product)}`);
   copyAffiliateButton.hidden = !product.affiliateUrl;
   if (product.affiliateUrl) {
     copyAffiliateButton.addEventListener("click", () => void runAction(
@@ -716,6 +889,7 @@ function buildEditCard(product, options = {}) {
     field(card, "itemProfileId"),
     product?.itemProfileId || currentSnapshot?.settings?.defaultItemProfileId || ItemDefaults.DEFAULT_ITEM_PROFILE_ID
   );
+  missionGroupOptions(field(card, "groupId"), product?.groupId || "");
   field(card, "msrpRecordId").value = product?.msrpRecordId || "";
   field(card, "priceSource").value = product?.priceSource || "";
   field(card, "openAt").value = toLocalInputValue(product?.openAt);
@@ -867,6 +1041,7 @@ function collectMission(card) {
     itemProfileId: field(card, "itemProfileId").value,
     msrpRecordId: field(card, "msrpRecordId").value,
     priceSource: field(card, "priceSource").value || (Number(field(card, "maxPrice").value) > 0 ? "manual" : ""),
+    groupId: field(card, "groupId").value,
     signalAutoOpen: field(card, "signalAutoOpen").checked,
     signalEntry: field(card, "signalEntry").value,
     enabled: field(card, "enabled").checked,
@@ -1454,6 +1629,8 @@ function renderMsrpCatalog(settings) {
 function renderBulkMissionDefaults(settings) {
   const currentIds = new Set(settings.products.map((product) => product.id));
   for (const id of [...bulkMissionSelectedIds]) if (!currentIds.has(id)) bulkMissionSelectedIds.delete(id);
+  const selectedGroupId = elements.bulkMissionGroup.value;
+  missionGroupOptions(elements.bulkMissionGroup, selectedGroupId);
   elements.bulkMissionList.replaceChildren(...settings.products.map((product) => {
     const label = document.createElement("label");
     label.className = "bulk-mission-option";
@@ -1477,6 +1654,7 @@ function renderBulkMissionDefaults(settings) {
     elements.bulkMissionList.append(empty);
   }
   elements.applyBulkItemProfileButton.disabled = !bulkMissionSelectedIds.size || isArmed();
+  elements.applyBulkMissionGroupButton.disabled = !bulkMissionSelectedIds.size;
   elements.copySelectedMissionListButton.disabled = !bulkMissionSelectedIds.size;
   elements.bulkMissionOpenAt.disabled = !bulkMissionSelectedIds.size || isArmed();
   elements.scheduleCandidateMissionsButton.disabled = !bulkMissionSelectedIds.size || isArmed();
@@ -1612,6 +1790,190 @@ async function clearCatalog() {
   }
 }
 
+function renderMissionFilterOptions() {
+  const selected = elements.missionGroupFilter.value || "all";
+  const all = document.createElement("option");
+  all.value = "all";
+  all.textContent = "All groups";
+  const ungrouped = document.createElement("option");
+  ungrouped.value = UNGROUPED_FILTER_VALUE;
+  ungrouped.textContent = "Ungrouped";
+  const groups = savedMissionGroups().map((group) => {
+    const option = document.createElement("option");
+    option.value = group.id;
+    option.textContent = group.name;
+    return option;
+  });
+  elements.missionGroupFilter.replaceChildren(all, ungrouped, ...groups);
+  elements.missionGroupFilter.value = ["all", UNGROUPED_FILTER_VALUE, ...savedMissionGroups().map((group) => group.id)]
+    .includes(selected) ? selected : "all";
+  elements.newMissionGroupButton.disabled = savedMissionGroups().length >= MAX_MISSION_GROUPS;
+  elements.newMissionGroupButton.title = elements.newMissionGroupButton.disabled
+    ? `The ${MAX_MISSION_GROUPS}-group limit has been reached.`
+    : "Create a named mission group";
+}
+
+function missionFilterValues() {
+  return {
+    query: elements.missionSearch.value.trim().toLowerCase(),
+    groupId: elements.missionGroupFilter.value || "all",
+    retailer: elements.missionRetailerFilter.value || "all",
+    active: elements.missionActiveFilter.value || "all"
+  };
+}
+
+function missionMatchesFilters(product, filters) {
+  if (filters.groupId === UNGROUPED_FILTER_VALUE && product.groupId) return false;
+  if (!["all", UNGROUPED_FILTER_VALUE].includes(filters.groupId) && product.groupId !== filters.groupId) return false;
+  if (filters.retailer !== "all" && product.retailer !== filters.retailer) return false;
+  if (filters.active === "active" && product.enabled === false) return false;
+  if (filters.active === "inactive" && product.enabled !== false) return false;
+  if (filters.query) {
+    const haystack = [
+      product.title,
+      product.sku,
+      product.retailer,
+      STORE_LABELS[product.retailer],
+      product.productUrl
+    ].join(" ").toLowerCase();
+    if (!haystack.includes(filters.query)) return false;
+  }
+  return true;
+}
+
+function missionFiltersActive(filters) {
+  return Boolean(
+    filters.query
+    || filters.groupId !== "all"
+    || filters.retailer !== "all"
+    || filters.active !== "all"
+  );
+}
+
+function buildMissionGroupSection(group, members, visibleMembers, statuses) {
+  const section = document.createElement("section");
+  section.className = `mission-group${group.id ? "" : " mission-group-ungrouped"}`;
+  section.dataset.groupId = group.id || "";
+
+  const header = document.createElement("div");
+  header.className = "mission-group-header";
+  const collapse = document.createElement("button");
+  collapse.type = "button";
+  collapse.className = "mission-group-collapse";
+  collapse.textContent = group.collapsed ? "▸" : "▾";
+  collapse.title = `${group.collapsed ? "Expand" : "Collapse"} ${group.name}`;
+  collapse.setAttribute("aria-label", collapse.title);
+  collapse.setAttribute("aria-expanded", String(!group.collapsed));
+  collapse.disabled = !group.id;
+
+  const name = document.createElement("h3");
+  name.textContent = group.name;
+  const count = document.createElement("span");
+  count.className = "mission-group-count";
+  count.textContent = missionFiltersActive(missionFilterValues()) && visibleMembers.length !== members.length
+    ? `${visibleMembers.length}/${members.length}`
+    : String(members.length);
+
+  const enabledLabel = document.createElement("label");
+  enabledLabel.className = "mission-group-enabled";
+  const enabled = document.createElement("input");
+  enabled.type = "checkbox";
+  const enabledCount = members.filter((product) => product.enabled !== false).length;
+  enabled.checked = Boolean(members.length) && enabledCount === members.length;
+  enabled.indeterminate = enabledCount > 0 && enabledCount < members.length;
+  enabled.disabled = !members.length;
+  enabled.setAttribute("aria-label", `Turn every mission in ${group.name} on or off`);
+  const enabledText = document.createElement("span");
+  enabledText.textContent = enabled.indeterminate ? "Mixed" : enabled.checked ? "On" : "Off";
+  enabledLabel.title = `Activate or deactivate all ${members.length} mission${members.length === 1 ? "" : "s"} in ${group.name}`;
+  enabledLabel.append(enabled, enabledText);
+  enabled.addEventListener("change", () => void runAction(
+    () => setMissionsEnabled(new Map(members.map((product) => [product.id, enabled.checked]))),
+    `${group.name} missions turned ${enabled.checked ? "On" : "Off"}.`
+  ));
+
+  const actions = document.createElement("div");
+  actions.className = "mission-group-actions";
+  if (group.id) {
+    const rename = document.createElement("button");
+    rename.type = "button";
+    rename.className = "mission-icon-button";
+    rename.textContent = "✎";
+    setMissionButtonLabel(rename, `Rename ${group.name}`);
+    rename.addEventListener("click", () => {
+      const nextName = window.prompt("Rename mission group", group.name);
+      if (nextName === null) return;
+      void runAction(async () => {
+        const cleaned = nextName.replace(/\s+/g, " ").trim().slice(0, 40);
+        if (!cleaned) throw new Error("Enter a group name.");
+        await saveMissionList(savedProducts(), {
+          missionGroups: savedMissionGroups().map((candidate) => (
+            candidate.id === group.id ? { ...candidate, name: cleaned } : candidate
+          ))
+        });
+        return cleaned;
+      }, (cleaned) => `Mission group renamed to ${cleaned}.`);
+    });
+
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "mission-icon-button";
+    remove.textContent = "✕";
+    setMissionButtonLabel(remove, `Delete ${group.name} and move its missions to Ungrouped`);
+    remove.addEventListener("click", () => {
+      if (!window.confirm(`Delete the group "${group.name}"? Its missions will move to Ungrouped and keep all purchase settings.`)) return;
+      void runAction(async () => {
+        if (elements.missionGroupFilter.value === group.id) elements.missionGroupFilter.value = "all";
+        await saveMissionList(savedProducts().map((product) => (
+          product.groupId === group.id ? { ...product, groupId: "" } : product
+        )), {
+          missionGroups: savedMissionGroups().filter((candidate) => candidate.id !== group.id)
+        });
+      }, `${group.name} deleted; its missions are now Ungrouped.`);
+    });
+    actions.append(rename, remove);
+
+    collapse.addEventListener("click", () => void runAction(async () => {
+      const collapsed = !group.collapsed;
+      await saveMissionList(savedProducts(), {
+        missionGroups: savedMissionGroups().map((candidate) => (
+          candidate.id === group.id ? { ...candidate, collapsed } : candidate
+        ))
+      });
+      return collapsed;
+    }, (collapsed) => `${group.name} ${collapsed ? "collapsed" : "expanded"}.`));
+  }
+
+  header.append(collapse, name, count, enabledLabel, actions);
+  const body = document.createElement("div");
+  body.className = "mission-group-body";
+  body.hidden = Boolean(group.collapsed);
+  body.id = `mission-group-${String(group.id || "ungrouped").replace(/[^a-zA-Z0-9_-]/g, "-")}`;
+  collapse.setAttribute("aria-controls", body.id);
+  if (visibleMembers.length) {
+    body.append(...visibleMembers.map((product) => (
+      editingId === product.id && editCardNode
+        ? editCardNode
+        : buildViewCard(product, statuses[product.id] || defaultStatus())
+    )));
+  } else {
+    const empty = document.createElement("div");
+    empty.className = "mission-group-empty";
+    empty.textContent = members.length ? "No missions in this group match the current filters." : "No missions in this group yet.";
+    body.append(empty);
+  }
+  section.append(header, body);
+  return section;
+}
+
+function clearMissionFilters() {
+  elements.missionSearch.value = "";
+  elements.missionGroupFilter.value = "all";
+  elements.missionRetailerFilter.value = "all";
+  elements.missionActiveFilter.value = "all";
+  renderMissions();
+}
+
 function renderMissions() {
   // While a mission editor is open, leave the list DOM alone: background
   // snapshot broadcasts must not steal focus from the person typing.
@@ -1619,14 +1981,55 @@ function renderMissions() {
     updateWorstCase();
     return;
   }
+  renderMissionFilterOptions();
   const statuses = currentSnapshot?.productStatuses || {};
-  const cards = [];
-  if (editingId === "new" && editCardNode) cards.push(editCardNode);
-  for (const product of savedProducts()) {
-    if (editingId === product.id && editCardNode) cards.push(editCardNode);
-    else cards.push(buildViewCard(product, statuses[product.id] || defaultStatus()));
+  const products = savedProducts();
+  const filters = missionFilterValues();
+  const matchingProducts = products.filter((product) => missionMatchesFilters(product, filters));
+  elements.missionFilterCount.textContent = missionFiltersActive(filters)
+    ? `${matchingProducts.length} of ${products.length}`
+    : `${products.length} mission${products.length === 1 ? "" : "s"}`;
+  const nodes = [];
+  if (editingId === "new" && editCardNode) nodes.push(editCardNode);
+
+  const groups = savedMissionGroups();
+  if (groups.length) {
+    const forceProduct = editingId && editingId !== "new"
+      ? products.find((product) => product.id === editingId)
+      : null;
+    for (const group of groups) {
+      if (!["all", group.id].includes(filters.groupId) && forceProduct?.groupId !== group.id) continue;
+      const members = products.filter((product) => product.groupId === group.id);
+      const visibleMembers = members.filter((product) => matchingProducts.includes(product));
+      if (forceProduct?.groupId === group.id && !visibleMembers.includes(forceProduct)) visibleMembers.push(forceProduct);
+      if (!visibleMembers.length && (missionFiltersActive(filters) || filters.groupId !== "all") && filters.groupId !== group.id) continue;
+      if (!visibleMembers.length && missionFiltersActive(filters) && filters.groupId === "all") continue;
+      nodes.push(buildMissionGroupSection(group, members, visibleMembers, statuses));
+    }
+    const ungroupedMembers = products.filter((product) => !product.groupId);
+    const visibleUngrouped = ungroupedMembers.filter((product) => matchingProducts.includes(product));
+    if (forceProduct && !forceProduct.groupId && !visibleUngrouped.includes(forceProduct)) visibleUngrouped.push(forceProduct);
+    if (
+      ["all", UNGROUPED_FILTER_VALUE].includes(filters.groupId)
+      && (visibleUngrouped.length || (!missionFiltersActive(filters) && ungroupedMembers.length) || filters.groupId === UNGROUPED_FILTER_VALUE)
+    ) {
+      nodes.push(buildMissionGroupSection(
+        { id: "", name: "Ungrouped", collapsed: false },
+        ungroupedMembers,
+        visibleUngrouped,
+        statuses
+      ));
+    }
+  } else {
+    for (const product of products) {
+      if (!matchingProducts.includes(product) && editingId !== product.id) continue;
+      nodes.push(editingId === product.id && editCardNode
+        ? editCardNode
+        : buildViewCard(product, statuses[product.id] || defaultStatus()));
+    }
   }
-  if (!cards.length) {
+
+  if (!products.length && editingId !== "new") {
     const empty = document.createElement("div");
     empty.className = "empty-state mission-empty";
     const line = document.createElement("p");
@@ -1637,9 +2040,22 @@ function renderMissions() {
     cta.textContent = "+ Create your first mission";
     cta.addEventListener("click", () => startEdit(null));
     empty.append(line, cta);
-    cards.push(empty);
+    nodes.push(empty);
+  } else if (!matchingProducts.length && !editingId) {
+    nodes.length = 0;
+    const empty = document.createElement("div");
+    empty.className = "empty-state mission-filter-empty";
+    const line = document.createElement("p");
+    line.textContent = "No missions match the current filters.";
+    const clear = document.createElement("button");
+    clear.type = "button";
+    clear.className = "button ghost compact";
+    clear.textContent = "Clear filters";
+    clear.addEventListener("click", clearMissionFilters);
+    empty.append(line, clear);
+    nodes.push(empty);
   }
-  elements.missionList.replaceChildren(...cards);
+  elements.missionList.replaceChildren(...nodes);
   updateWorstCase();
 }
 
@@ -2273,6 +2689,24 @@ elements.disarmButton.addEventListener("click", () => {
 });
 
 elements.newMissionButton.addEventListener("click", () => void startEdit(null));
+elements.newMissionGroupButton.addEventListener("click", () => {
+  const requested = window.prompt("Name this mission group", "New group");
+  if (requested === null) return;
+  void runAction(async () => {
+    if (savedMissionGroups().length >= MAX_MISSION_GROUPS) {
+      throw new Error(`You can save up to ${MAX_MISSION_GROUPS} mission groups.`);
+    }
+    const name = requested.replace(/\s+/g, " ").trim().slice(0, 40);
+    if (!name) throw new Error("Enter a group name.");
+    const group = { id: newCustomId("group"), name, collapsed: false };
+    await saveMissionList(savedProducts(), { missionGroups: [...savedMissionGroups(), group] });
+    return group;
+  }, (group) => `${group.name} group created. Assign missions from Edit or the bulk controls.`);
+});
+elements.missionSearch.addEventListener("input", renderMissions);
+elements.missionGroupFilter.addEventListener("change", renderMissions);
+elements.missionRetailerFilter.addEventListener("change", renderMissions);
+elements.missionActiveFilter.addEventListener("change", renderMissions);
 elements.bulkImportButton.addEventListener("click", openBulkImportDialog);
 elements.bulkImportSubmitButton.addEventListener("click", () => void submitBulkImport());
 elements.bulkImportCancelButton.addEventListener("click", closeBulkImportDialog);
@@ -2460,6 +2894,23 @@ elements.applyBulkItemProfileButton.addEventListener("click", () => void runActi
   return { selected: bulkMissionSelectedIds.size, ready };
 }, ({ selected, ready }) => `${selected} mission${selected === 1 ? "" : "s"} updated; ${ready} now On with positive caps.`));
 
+elements.applyBulkMissionGroupButton.addEventListener("click", () => void runAction(async () => {
+  if (!bulkMissionSelectedIds.size) throw new Error("Select at least one mission first.");
+  const groupId = elements.bulkMissionGroup.value;
+  if (groupId && !savedMissionGroups().some((group) => group.id === groupId)) {
+    throw new Error("Choose an existing mission group.");
+  }
+  const products = savedProducts().map((product) => (
+    bulkMissionSelectedIds.has(product.id) ? { ...product, groupId } : product
+  ));
+  const next = await window.cartAssist.saveSettings({ ...currentSnapshot.settings, products });
+  render(next);
+  return { count: bulkMissionSelectedIds.size, groupId };
+}, ({ count, groupId }) => {
+  const group = savedMissionGroups().find((candidate) => candidate.id === groupId);
+  return `${count} selected mission${count === 1 ? "" : "s"} moved to ${group?.name || "Ungrouped"}.`;
+}));
+
 elements.scheduleCandidateMissionsButton.addEventListener("click", () => void runAction(async () => {
   if (isArmed()) throw new Error("Switch Autopilot off before scheduling missions.");
   if (!bulkMissionSelectedIds.size) throw new Error("Select at least one mission first.");
@@ -2571,17 +3022,30 @@ elements.missionList.addEventListener("drop", (event) => {
   const products = [...savedProducts()];
   const from = products.findIndex((candidate) => candidate.id === sourceId);
   if (from === -1) return;
-  const targetId = event.target instanceof Element
-    ? event.target.closest(".mission-card")?.dataset.productId
-    : "";
-  const [moved] = products.splice(from, 1);
+  const targetCard = event.target instanceof Element ? event.target.closest(".mission-card") : null;
+  const targetId = targetCard?.dataset.productId || "";
+  if (targetId === sourceId) return;
+  const targetSection = event.target instanceof Element ? event.target.closest(".mission-group") : null;
+  const targetProduct = products.find((candidate) => candidate.id === targetId);
+  const destinationGroupId = targetProduct?.groupId ?? targetSection?.dataset.groupId;
+  const [source] = products.splice(from, 1);
+  const moved = destinationGroupId === undefined
+    ? source
+    : { ...source, groupId: destinationGroupId };
   let to = products.length;
-  if (targetId && targetId !== sourceId) {
+  if (targetId) {
     const targetIndex = products.findIndex((candidate) => candidate.id === targetId);
     if (targetIndex !== -1) to = targetIndex;
+  } else if (destinationGroupId !== undefined) {
+    const lastGroupIndex = products.findLastIndex((candidate) => (
+      (candidate.groupId || "") === destinationGroupId
+    ));
+    if (lastGroupIndex !== -1) to = lastGroupIndex + 1;
   }
   products.splice(to, 0, moved);
-  void runAction(() => saveMissionList(products), "Missions reordered.");
+  void runAction(() => saveMissionList(products), destinationGroupId !== undefined && destinationGroupId !== source.groupId
+    ? "Mission moved to its new group."
+    : "Missions reordered.");
 });
 
 function setMissionOpenBusy(busy) {
@@ -2831,12 +3295,16 @@ window.addEventListener("focus", () => {
 });
 
 elements.silenceAlarmButton.addEventListener("click", silenceAlarm);
+elements.updateButton.addEventListener("click", () => void requestAppUpdate());
 elements.eventFilterButton.addEventListener("click", () => {
   eventFilterProductId = null;
   renderEvents(currentSnapshot?.events || []);
 });
 
 window.cartAssist.onUpdate((snapshot) => render(snapshot));
+if (typeof window.cartAssist.onUpdaterState === "function") {
+  window.cartAssist.onUpdaterState((state) => renderUpdaterState(state));
+}
 setInterval(() => {
   updateScheduleNext();
   updateStatusAges();

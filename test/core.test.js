@@ -9,7 +9,9 @@ const {
   createProductStatus,
   eventMessage,
   extractTcin,
+  MAX_MISSION_GROUPS,
   matchingProduct,
+  normalizeMissionGroups,
   normalizeProduct,
   normalizeSettings,
   normalizeTargetUrl,
@@ -165,6 +167,41 @@ test("normalizes a multi-store buy list and preserves a private token", () => {
   assert.equal(result.products[2].signalAutoOpen, true);
 });
 
+test("normalizes persisted mission groups and clears unknown product assignments", () => {
+  const missionGroups = normalizeMissionGroups([
+    { id: "group:launch", name: "  Launch   night  ", collapsed: 1 },
+    { id: "group:launch", name: "Duplicate", collapsed: false },
+    { id: "", name: "Missing id" },
+    null
+  ]);
+  assert.deepEqual(missionGroups, [{
+    id: "group:launch",
+    name: "Launch night",
+    collapsed: true
+  }]);
+
+  const settings = normalizeSettings({
+    missionGroups,
+    products: [
+      { ...PRODUCTS[0], groupId: "group:launch" },
+      { ...PRODUCTS[1], groupId: "group:missing" }
+    ]
+  });
+  assert.equal(settings.products[0].groupId, "group:launch");
+  assert.equal(settings.products[1].groupId, "");
+  assert.deepEqual(settings.missionGroups, missionGroups);
+
+  const retained = normalizeSettings({ products: settings.products }, settings);
+  assert.deepEqual(retained.missionGroups, missionGroups);
+  assert.equal(retained.products[0].groupId, "group:launch");
+
+  const bounded = normalizeMissionGroups(Array.from({ length: MAX_MISSION_GROUPS + 5 }, (_, index) => ({
+    id: `group:${index}`,
+    name: `Group ${index}`
+  })));
+  assert.equal(bounded.length, MAX_MISSION_GROUPS);
+});
+
 test("an approved future Walmart prep candidate can arm monitoring before it becomes a mission", () => {
   const candidate = {
     ...PRODUCTS[1],
@@ -195,6 +232,7 @@ test("preserves only exact-SKU affiliate links resolved from the current Howl so
   const resolvedAt = "2026-08-08T18:00:00.000Z";
   const product = normalizeProduct({
     ...PRODUCTS[0],
+    groupId: "group:launch",
     howlUrl,
     affiliateUrl,
     affiliateResolvedFrom: howlUrl,
@@ -211,11 +249,13 @@ test("preserves only exact-SKU affiliate links resolved from the current Howl so
   assert.equal("affiliateUrl" in automationProduct, false);
   assert.equal("affiliateResolvedFrom" in automationProduct, false);
   assert.equal("affiliateResolvedAt" in automationProduct, false);
+  assert.equal("groupId" in automationProduct, false);
   const rendererProduct = toRendererProduct(product);
   assert.equal(rendererProduct.affiliateUrl, affiliateUrl);
   assert.equal("howlUrl" in rendererProduct, false);
   assert.equal("affiliateResolvedFrom" in rendererProduct, false);
   assert.equal("affiliateResolvedAt" in rendererProduct, false);
+  assert.equal(rendererProduct.groupId, "group:launch");
 
   const attemptedUserChange = normalizeProduct({
     ...PRODUCTS[0],
@@ -364,6 +404,13 @@ test("review-only products are supported and armed product edits require disarmi
     automationEnabled: true
   }, armed);
   assert.throws(() => assertSafeArmedUpdate(armed, metadataChanged), /Disarm automation/);
+
+  const grouped = normalizeSettings({
+    ...armed,
+    missionGroups: [{ id: "group:launch", name: "Launch", collapsed: true }],
+    products: armed.products.map((product) => ({ ...product, groupId: "group:launch" }))
+  }, armed);
+  assert.doesNotThrow(() => assertSafeArmedUpdate(armed, grouped));
 });
 
 test("returns store-aware cart and order links", () => {

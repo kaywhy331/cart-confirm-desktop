@@ -15,6 +15,7 @@ const http = require("node:http");
 const path = require("node:path");
 const crypto = require("node:crypto");
 const { spawn } = require("node:child_process");
+const { checkForUpdate, downloadUpdate } = require("./lib/app-update");
 
 const {
   DEFAULT_SETTINGS,
@@ -172,6 +173,7 @@ let serverDiagnostics = {
 };
 let lastDiagnosticsBroadcastAt = 0;
 let stopEpoch = 0;
+let updateInFlight = false;
 const lastNotificationAt = new Map();
 const storeOverloadUntil = new Map();
 const retailerTabSeenAt = new Map();
@@ -374,6 +376,7 @@ function publicSettings() {
         executionCohortId: context?.cohortId || ""
       };
     }),
+    missionGroups: settings.missionGroups,
     automationEnabled: settings.automationEnabled,
     monitoringPaused: settings.monitoringPaused,
     automationRunId: settings.automationRunId,
@@ -463,6 +466,109 @@ function snapshot() {
 function broadcast() {
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send("cart-assist:update", snapshot());
+  }
+}
+
+function sendUpdaterState(payload) {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send("cart-assist:updater-state", payload);
+  }
+}
+
+function launchVerifiedInstaller(installerPath) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(installerPath, ["--updated", "/S", "--force-run"], {
+      detached: true,
+      stdio: "ignore",
+      windowsHide: true
+    });
+    child.once("error", reject);
+    child.once("spawn", () => {
+      child.unref();
+      resolve();
+    });
+  });
+}
+
+function pauseAutomationForUpdate() {
+  stopEpoch += 1;
+  quietAbortRegistry.abortAll();
+  storeOpenQueue.cancelPending();
+  openRequests.cancelAll();
+  settings = { ...settings, automationEnabled: false, monitoringPaused: true };
+  runtimeState.productExecutionContexts = {};
+  runtimeState.queueCaptures = {};
+  persistSettings();
+  persistRuntimeState();
+  configVersion += 1;
+  status = {
+    ...status,
+    lastMessage: "Update verified. Automation paused while Cart Confirm installs and relaunches."
+  };
+  broadcast();
+}
+
+async function checkAndInstallUpdate() {
+  if (updateInFlight) return { status: "busy" };
+  if (!app.isPackaged || process.platform !== "win32" || process.arch !== "x64") {
+    return {
+      status: "unavailable",
+      message: "Automatic updates are available in the packaged 64-bit Windows app."
+    };
+  }
+
+  updateInFlight = true;
+  let installLaunched = false;
+  try {
+    const currentVersion = app.getVersion();
+    sendUpdaterState({ status: "checking", currentVersion });
+    const plan = await checkForUpdate(currentVersion);
+    if (!plan) {
+      sendUpdaterState({ status: "current", currentVersion });
+      return { status: "current", currentVersion };
+    }
+
+    sendUpdaterState({ status: "available", version: plan.version, prerelease: plan.prerelease });
+    const unsigned = plan.prerelease || plan.tagName.startsWith("unsigned-");
+    const confirmation = await dialog.showMessageBox(mainWindow, {
+      type: unsigned ? "warning" : "info",
+      buttons: ["Download and install", "Not now"],
+      defaultId: 0,
+      cancelId: 1,
+      noLink: true,
+      title: "Cart Confirm update available",
+      message: `Cart Confirm v${plan.version} is available.`,
+      detail: unsigned
+        ? "This release is intentionally unsigned. Windows may show Unknown publisher or a Microsoft Defender SmartScreen warning. If you continue, Cart Confirm will download the official GitHub Setup asset, verify its exact SHA-256 checksum, install it, close this version, and relaunch."
+        : "Cart Confirm will download the official GitHub Setup asset, verify its exact SHA-256 checksum, install it, close this version, and relaunch."
+    });
+    if (confirmation.response !== 0) {
+      sendUpdaterState({ status: "cancelled", version: plan.version });
+      return { status: "cancelled", version: plan.version };
+    }
+
+    let lastProgress = -1;
+    const downloaded = await downloadUpdate(
+      plan,
+      path.join(app.getPath("userData"), "verified-updates"),
+      ({ phase, received, total }) => {
+        const percent = total > 0 ? Math.min(100, Math.floor((received / total) * 100)) : 0;
+        if (phase === "downloading" && percent === lastProgress) return;
+        if (phase === "downloading") lastProgress = percent;
+        sendUpdaterState({ status: phase, version: plan.version, received, total, percent });
+      }
+    );
+    sendUpdaterState({ status: "installing", version: plan.version });
+    pauseAutomationForUpdate();
+    await launchVerifiedInstaller(downloaded.installerPath);
+    installLaunched = true;
+    setTimeout(() => app.quit(), 500);
+    return { status: "installing", version: plan.version };
+  } catch (error) {
+    sendUpdaterState({ status: "error", message: error.message || "The update failed." });
+    throw error;
+  } finally {
+    if (!installLaunched) updateInFlight = false;
   }
 }
 
@@ -1660,6 +1766,7 @@ function createWindow() {
 
 function registerIpc() {
   ipcMain.handle("cart-assist:snapshot", () => snapshot());
+  ipcMain.handle("cart-assist:check-for-updates", () => checkAndInstallUpdate());
 
   ipcMain.handle("cart-assist:save-settings", (_event, nextSettings) => {
     const wasArmed = settings.automationEnabled;
@@ -1669,7 +1776,10 @@ function registerIpc() {
       ? {
           ...nextSettings,
           products: Array.isArray(nextSettings.products)
-            ? nextSettings.products.map(toAutomationProduct)
+            ? nextSettings.products.map((product) => ({
+                ...toAutomationProduct(product),
+                groupId: String(product?.groupId || "")
+              }))
             : nextSettings.products
         }
       : nextSettings;

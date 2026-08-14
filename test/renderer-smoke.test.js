@@ -28,11 +28,13 @@ function snapshotFixture() {
         action: "cart",
         alertLevel: "standard",
         fulfillmentMode: "manual",
+        groupId: "",
         signalAutoOpen: true,
         signalEntry: "product",
         executionMode: "watcher",
         enabled: true
       }],
+      missionGroups: [],
       automationEnabled: false,
       monitoringPaused: true,
       automationRunId: "",
@@ -98,6 +100,8 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   const dom = new JSDOM(html, { url: "file:///app/index.html", runScripts: "outside-only" });
   const { window } = dom;
   let pushUpdate = null;
+  let pushUpdaterState = null;
+  let checkForUpdatesCalls = 0;
   let openProductCalls = 0;
   let openBuyListCalls = 0;
   const openBuyListInputs = [];
@@ -115,6 +119,10 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   window.document.head.append(style);
   window.cartAssist = {
     getSnapshot: async () => snapshotFixture(),
+    checkForUpdates: async () => {
+      checkForUpdatesCalls += 1;
+      return { status: "current", currentVersion: "0.0.0-test" };
+    },
     saveSettings: async (input) => {
       savedSettingsInputs.push(input);
       const next = snapshotFixture();
@@ -279,6 +287,10 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
     onUpdate: (callback) => {
       pushUpdate = callback;
       return () => {};
+    },
+    onUpdaterState: (callback) => {
+      pushUpdaterState = callback;
+      return () => {};
     }
   };
 
@@ -293,8 +305,9 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   const card = doc.querySelector(".mission-card");
   assert.ok(card, "expected a mission view card");
   assert.equal(card.querySelector(".status-title").textContent, "Booster Box");
-  assert.equal(card.querySelector(".action-chip").textContent, "Add only");
-  assert.match(card.querySelector(".mission-sub").textContent, /\$40\.00 cap/);
+  assert.equal(card.querySelector(".action-chip").textContent, "ATC");
+  assert.equal(card.querySelector(".mission-price-quantity").textContent, "$40 ×1");
+  assert.match(card.querySelector(".mission-price-quantity").title, /\$40\.00/);
   assert.equal(doc.getElementById("autopilotState").textContent, "STOPPED");
   assert.match(doc.getElementById("worstCase").textContent, /\$40/);
   assert.equal(doc.getElementById("alarmBar").hidden, true);
@@ -313,10 +326,139 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
     "Test lives in the header next to Autopilot"
   );
   assert.match(doc.getElementById("testButton").textContent, /Test all/);
+  doc.getElementById("updateButton").click();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(checkForUpdatesCalls, 1);
+  assert.equal(doc.getElementById("updateButton").textContent, "Check for updates");
+  assert.match(doc.getElementById("message").textContent, /already the newest published version/);
+  pushUpdaterState({ status: "downloading", version: "3.4.0", percent: 42 });
+  assert.equal(doc.getElementById("updateButton").textContent, "Downloading 42%");
+  assert.equal(doc.getElementById("updateButton").disabled, true);
+  pushUpdaterState({ status: "cancelled", version: "3.4.0" });
+  assert.equal(doc.getElementById("updateButton").disabled, false);
   assert.equal(doc.getElementById("eligibilityRefreshIntervalSeconds").value, "2");
   assert.equal(doc.getElementById("watcherIntervalSeconds").value, "60");
   assert.equal(doc.getElementById("walmartQueueCaptureReloads").value, "0");
   assert.match(card.querySelector("[data-view='sub']").textContent, /continuous watcher/);
+
+  // Dense rows round only their display value; exact caps remain available
+  // to assistive technology/tooltips and in the saved mission contract.
+  const compactPrice = snapshotFixture();
+  compactPrice.settings.products[0].maxPrice = 12.99;
+  compactPrice.settings.products[0].quantity = 2;
+  pushUpdate(compactPrice);
+  assert.equal(doc.querySelector(".mission-price-quantity").textContent, "$13 ×2");
+  assert.match(doc.querySelector(".mission-price-quantity").getAttribute("aria-label"), /\$12\.99; quantity 2/);
+  for (const button of doc.querySelectorAll(".mission-card button")) {
+    assert.ok(button.title, "icon-only mission controls need a tooltip");
+    assert.ok(button.getAttribute("aria-label"), "icon-only mission controls need an accessible label");
+  }
+
+  // Search, group, retailer, and active/inactive filters compose without
+  // mutating the mission list or its purchase settings.
+  const grouped = snapshotFixture();
+  grouped.settings.missionGroups = [
+    { id: "group:launch", name: "Launch night", collapsed: false },
+    { id: "group:later", name: "Later", collapsed: false }
+  ];
+  grouped.settings.products = [
+    { ...grouped.settings.products[0], groupId: "group:launch" },
+    {
+      ...grouped.settings.products[0],
+      id: "walmart:123456789",
+      retailer: "walmart",
+      title: "Walmart Booster",
+      productUrl: "https://www.walmart.com/ip/123456789",
+      sku: "123456789",
+      groupId: "group:launch",
+      enabled: false
+    },
+    {
+      ...grouped.settings.products[0],
+      id: "amazon:B0ABC12345",
+      retailer: "amazon",
+      title: "Amazon Booster",
+      productUrl: "https://www.amazon.com/dp/B0ABC12345",
+      sku: "B0ABC12345",
+      groupId: "group:later"
+    },
+    {
+      ...grouped.settings.products[0],
+      id: "target:1010892069",
+      title: "Target Restock",
+      productUrl: "https://www.target.com/p/restocks/A-1010892069",
+      sku: "1010892069",
+      groupId: "",
+      enabled: false
+    }
+  ];
+  pushUpdate(grouped);
+  assert.equal(doc.querySelectorAll(".mission-card").length, 4);
+  const groupFilter = doc.getElementById("missionGroupFilter");
+  const retailerFilter = doc.getElementById("missionRetailerFilter");
+  const activeFilter = doc.getElementById("missionActiveFilter");
+  groupFilter.value = "group:launch";
+  groupFilter.dispatchEvent(new window.Event("change", { bubbles: true }));
+  assert.equal(doc.querySelectorAll(".mission-card").length, 2);
+  retailerFilter.value = "walmart";
+  retailerFilter.dispatchEvent(new window.Event("change", { bubbles: true }));
+  activeFilter.value = "inactive";
+  activeFilter.dispatchEvent(new window.Event("change", { bubbles: true }));
+  assert.equal(doc.querySelectorAll(".mission-card").length, 1);
+  assert.equal(doc.querySelector(".mission-card").dataset.productId, "walmart:123456789");
+  doc.getElementById("missionSearch").value = "not present";
+  doc.getElementById("missionSearch").dispatchEvent(new window.Event("input", { bubbles: true }));
+  assert.ok(doc.querySelector(".mission-filter-empty"));
+  doc.querySelector(".mission-filter-empty button").click();
+  assert.equal(doc.querySelectorAll(".mission-card").length, 4);
+  retailerFilter.value = "amazon";
+  retailerFilter.dispatchEvent(new window.Event("change", { bubbles: true }));
+  assert.equal(doc.querySelectorAll(".mission-card").length, 1);
+  assert.equal(doc.querySelector(".mission-card").dataset.productId, "amazon:B0ABC12345");
+  retailerFilter.value = "all";
+  retailerFilter.dispatchEvent(new window.Event("change", { bubbles: true }));
+
+  // Accessible arrows reorder inside the visible group and persist the same
+  // underlying array used by drag-and-drop.
+  const walmartCard = doc.querySelector('[data-product-id="walmart:123456789"]');
+  walmartCard.querySelector(".mission-move-up").click();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.deepEqual(Array.from(savedSettingsInputs.at(-1).products.slice(0, 2), (product) => product.id), [
+    "walmart:123456789",
+    "target:95298172"
+  ]);
+
+  // Groups can be created, assigned in bulk, collapsed, renamed, and toggled
+  // as one unit. Grouping metadata does not alter the mission cap.
+  pushUpdate(snapshotFixture());
+  window.prompt = () => "Drop night";
+  doc.getElementById("newMissionGroupButton").click();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  const createdGroup = savedSettingsInputs.at(-1).missionGroups[0];
+  assert.equal(createdGroup.name, "Drop night");
+  doc.getElementById("bulkMissionSelectAllButton").click();
+  doc.getElementById("bulkMissionGroup").value = createdGroup.id;
+  doc.getElementById("applyBulkMissionGroupButton").click();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(savedSettingsInputs.at(-1).products[0].groupId, createdGroup.id);
+  assert.equal(savedSettingsInputs.at(-1).products[0].maxPrice, 40);
+  let groupSection = doc.querySelector(`[data-group-id="${createdGroup.id}"]`);
+  assert.equal(groupSection.querySelectorAll(".mission-card").length, 1);
+  groupSection.querySelector(".mission-group-collapse").click();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(savedSettingsInputs.at(-1).missionGroups[0].collapsed, true);
+  groupSection = doc.querySelector(`[data-group-id="${createdGroup.id}"]`);
+  assert.equal(groupSection.querySelector(".mission-group-body").hidden, true);
+  window.prompt = () => "Target launch";
+  groupSection.querySelector('.mission-group-actions [aria-label^="Rename"]').click();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(savedSettingsInputs.at(-1).missionGroups[0].name, "Target launch");
+  groupSection = doc.querySelector(`[data-group-id="${createdGroup.id}"]`);
+  groupSection.querySelector(".mission-group-enabled input").click();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(savedSettingsInputs.at(-1).products[0].enabled, false);
+
+  pushUpdate(snapshotFixture());
 
   doc.getElementById("watcherIntervalSeconds").value = "90";
   doc.getElementById("watcherIntervalSeconds").dispatchEvent(new window.Event("change", { bubbles: true }));
@@ -451,7 +593,7 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   acceptMsrpButton.click();
   await new Promise((resolve) => setTimeout(resolve, 10));
   assert.deepEqual(acceptedMsrpSuggestionIds, ["suggestion-1"]);
-  assert.match(doc.querySelector(".mission-card [data-view='sub']").textContent, /\$40\.00 cap/);
+  assert.match(doc.querySelector(".mission-card [data-view='priceQuantity']").title, /\$40\.00/);
 
   // Discord stays out of the dashboard until requested, then opens as the
   // bottom card and shares the Missions/Activity minimize behavior.
@@ -690,7 +832,8 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   };
   pushUpdate(eligible);
   const liveCard = doc.querySelector(".mission-card");
-  assert.equal(liveCard.querySelector(".state-chip").textContent, "Eligible offer");
+  assert.equal(liveCard.querySelector(".state-chip").textContent, "Ready");
+  assert.match(liveCard.querySelector(".state-chip").getAttribute("aria-label"), /Eligible offer/);
   assert.match(liveCard.querySelector(".status-age").textContent, /^\d+s ago$/);
 
   // The drop calendar stays hidden until something is scheduled, then acts

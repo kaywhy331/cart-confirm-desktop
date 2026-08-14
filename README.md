@@ -34,7 +34,8 @@ Start with **Add to cart only** until you have verified the current store select
 
 ## Features
 
-- A mission-control layout: each product is a mission card showing its caps, action, live status, and last-checked age in one row, with inline editing (Done saves immediately) and a per-mission enable switch. A header **Autopilot** toggle arms and disarms everything; the Connect Chrome setup card appears only while the companion is disconnected and names the exact blocker.
+- A dense mission-control layout: each product is a mission card showing its compact price/quantity, action, live status, and last-checked age in one row, with exact caps retained in tooltips and accessibility text. Use drag-and-drop or the accessible up/down arrows to reorder missions. Search and filter by named group, retailer, or Active/Inactive state; group headers can collapse, rename, or turn every member On/Off, and group assignment is available in both the mission editor and bulk controls.
+- A top-level **Check for updates** control for packaged 64-bit Windows builds. It checks only this repository's GitHub releases, asks before downloading, requires the exact versioned Setup asset and `SHA256SUMS.txt`, verifies the download's size and SHA-256, pauses automation, installs, and relaunches. Intentionally unsigned prereleases retain their Windows Unknown publisher / SmartScreen warning.
 - Up to 50 unique products across Target, Walmart, and Amazon, each with an optional display name.
 - A centralized **Item defaults** panel with reusable item profiles, per-store MSRP by stable product type, and mission bulk update. New installs default to quantity 1, shipping, standard alert, and **Watch & alert only**. Existing saved default selections are preserved, and the legacy shipping auto-buy profile remains available only as an explicit choice. New items without a positive approved cap remain Off.
 - Starter Pokémon MSRP rows for ETB, blister pack, single booster pack, SPC, and UPC. Their store prices intentionally begin blank: Cart Confirm does not ship guessed prices. Approve each stable category once for Target, Walmart, and Amazon instead of typing a price on every mission.
@@ -101,6 +102,8 @@ npm ci --no-fund
 
 If Chrome still shows `UPD` after the app restarts, reload the unpacked extension once from `chrome://extensions`.
 
+Packaged Windows installs can instead select **Check for updates** at the top of the app. Cart Confirm never installs silently from a background check: it shows the available version and asks first. After approval, it verifies the official GitHub release checksum, pauses automation, installs, and relaunches. Source-checkout development runs continue to use the Git commands above.
+
 The extension badge reads `STOP` when monitoring is paused, `IDLE` when monitoring is active but Autopilot is disarmed, and `ARM` when Autopilot is armed. Keep the desktop app open while running the buy list.
 
 ## Configure a buy list
@@ -111,7 +114,7 @@ Click **+ New mission**, then:
 2. Cart Confirm applies the selected item profile and any matching approved store MSRP. New installs default to quantity 1, **Shipping / delivery**, and **Watch & alert only**; an existing saved default remains unchanged. If no approved MSRP matches, the mission remains Off; enter one manual cap or approve the product type in **Item defaults**.
 3. The profile calculates the maximum final order total from `unit cap × quantity + allowance`. You can still choose **Watch & alert only**, **Add to cart only**, **Prepare checkout, I submit**, or a different fulfillment mode for this mission.
 4. For auto-submit, a positive unit cap, sufficient positive final-total cap, explicit shipping/pickup requirement, and an approved checkout preflight are mandatory. With Autopilot off, open the mission's visible final-review page and approve its hashed evidence from the companion popup. Any mission, destination/store, payment-set, substitutions, cart, quantity, or total change disarms that approval.
-5. Optionally set **Open at** for a known drop time, pick an alert loudness, and choose how a matched Discord signal enters the store under **Advanced**. The product page is the recommended default. Direct Buy Now entries are available only for checkout-review or auto-submit missions; Amazon Add to Cart is available for cart or checkout missions.
+5. Optionally choose a named mission group, set **Open at** for a known drop time, pick an alert loudness, and choose how a matched Discord signal enters the store under **Advanced**. The product page is the recommended default. Direct Buy Now entries are available only for checkout-review or auto-submit missions; Amazon Add to Cart is available for cart or checkout missions.
 6. Click **Done** — the mission saves immediately. Starting an edit while Autopilot is on pauses it first and offers to resume after saving.
 
 ### Quick add from Chrome
