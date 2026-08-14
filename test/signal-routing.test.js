@@ -102,3 +102,18 @@ test("fresh Walmart matches can use the exact sanitized Buy Now entry", () => {
     now: NOW
   }).entry, "product");
 });
+
+test("fresh signals enforce quantity limits without silently lowering the mission", () => {
+  const quantityThree = { ...amazonProduct, quantity: 3 };
+  const base = settings({ products: [quantityThree] });
+  const limited = planSignalRoute({ signal: { ...signal, orderLimit: 2 }, settings: base, now: NOW });
+  assert.equal(limited.state, "disabled");
+  assert.equal(limited.reason, "order-limit");
+  assert.equal(limited.product.quantity, 3);
+  assert.equal(limited.url, "");
+
+  assert.equal(planSignalRoute({ signal: { ...signal, orderLimit: 3 }, settings: base, now: NOW }).state, "pending");
+  assert.equal(planSignalRoute({ signal: { ...signal, orderLimit: 2, observedAt: "2026-08-08T17:00:00.000Z" }, settings: base, now: NOW }).state, "stale");
+  assert.equal(planSignalRoute({ signal: { ...signal, orderLimit: 2, observedAt: "2026-08-08T17:21:01.000Z" }, settings: base, now: NOW }).state, "stale");
+  assert.equal(planSignalRoute({ signal: { ...signal, productId: "amazon:OTHER", orderLimit: 1 }, settings: base, now: NOW }).state, "new-product");
+});

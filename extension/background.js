@@ -144,19 +144,15 @@ async function applyFastMode(enabled) {
 
 function publicConfig(config) {
   if (!config) return null;
+  const products = Array.isArray(config.products) ? config.products : [];
+  const activeCohortIds = new Set(products.map((product) => String(product?.executionCohortId || "")).filter(Boolean));
+  const queueCaptures = Object.fromEntries(Object.entries(config.queueCaptures || {}).filter(([cohortId]) => activeCohortIds.has(cohortId)));
   return {
-    products: Array.isArray(config.products) ? config.products : [],
+    products,
     automationEnabled: Boolean(config.automationEnabled),
     monitoringPaused: Boolean(config.monitoringPaused),
     automationRunId: String(config.automationRunId || ""),
-    queueCapture: config.queueCapture?.retailer === "walmart"
-      ? {
-          retailer: "walmart",
-          runId: String(config.queueCapture.runId || ""),
-          winnerProductId: String(config.queueCapture.winnerProductId || ""),
-          detectedAt: String(config.queueCapture.detectedAt || "")
-        }
-      : null,
+    queueCaptures,
     fastMode: Boolean(config.fastMode),
     retryIntervalSeconds: Number(config.retryIntervalSeconds || 15),
     eligibilityRefreshIntervalSeconds: Number(config.eligibilityRefreshIntervalSeconds || 2),
@@ -165,7 +161,8 @@ function publicConfig(config) {
     watcherIntervalSeconds: Number(config.watcherIntervalSeconds || 60),
     blitzRetryDelayMs: Number(config.blitzRetryDelayMs || 750),
     blitzWindowSeconds: Number(config.blitzWindowSeconds || 20),
-    walmartQueueCaptureReloads: Number(config.walmartQueueCaptureReloads || 5),
+    scheduledBlitzDurationSeconds: Number(config.scheduledBlitzDurationSeconds || 120),
+    walmartQueueCaptureReloads: Number(config.walmartQueueCaptureReloads ?? 0),
     firstPartyOnly: true,
     catalogSearch: config.catalogSearch && typeof config.catalogSearch === "object"
       ? {
@@ -241,8 +238,13 @@ async function getTabProductContext(config, sender) {
   const contexts = await readTabContexts();
   const context = TabContext.contextForTab(config, contexts, tabId, retailer, Date.now());
   return context
-    ? { ok: true, productId: context.productId, entry: context.entry }
-    : { ok: false, reason: "context-unavailable", productId: "", entry: "product" };
+    ? {
+        ok: true,
+        productId: context.productId,
+        entry: context.entry,
+        signalOrderLimit: context.signalOrderLimit
+      }
+    : { ok: false, reason: "context-unavailable", productId: "", entry: "product", signalOrderLimit: null };
 }
 
 async function setTabProductContextFromMessage(config, message, sender) {
@@ -257,14 +259,19 @@ async function setTabProductContextFromMessage(config, message, sender) {
     retailer,
     productId,
     url: product.productUrl,
-    contextRequired: true
+    contextRequired: false,
+    signalOrderLimit: message.signalOrderLimit
   }, Date.now());
   if (!plan.ok) return { ok: false, reason: plan.reason };
   await withTabContextLock(async () => {
     const contexts = await readTabContexts();
     const current = contexts[String(tabId)];
     contexts[String(tabId)] = current?.productId === productId && current.entry !== "product"
-      ? { ...plan.context, entry: current.entry }
+      ? {
+          ...plan.context,
+          entry: current.entry,
+          signalOrderLimit: current.signalOrderLimit ?? plan.context.signalOrderLimit
+        }
       : plan.context;
     await writeTabContexts(contexts);
   });
@@ -744,6 +751,54 @@ async function postQuickAddMission(product) {
   }
 }
 
+async function postCheckoutPreflight(productId, evidence) {
+  let config = await discoverConfig(true);
+  if (!config) return { ok: false, reason: "desktop-not-found", error: "Cart Confirm desktop is not reachable." };
+  if (config.automationEnabled) {
+    return { ok: false, reason: "automation-armed", error: "Switch Autopilot off before approving checkout preflight." };
+  }
+  const product = (config.products || []).find((candidate) => (
+    candidate.id === String(productId || "")
+    && candidate.enabled
+    && candidate.action === "checkout"
+  ));
+  if (!product) {
+    return { ok: false, reason: "product-disabled", error: "This tab is not tied to an enabled auto-submit mission." };
+  }
+
+  const send = () => fetchWithTimeout(`${config.baseUrl}/missions/checkout-preflight`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Cart-Assist-Token": config.token
+    },
+    body: JSON.stringify({ productId: product.id, evidence })
+  });
+  try {
+    let response = await send();
+    if (response.status === 401) {
+      config = await discoverConfig(true);
+      if (!config) return { ok: false, reason: "desktop-not-found" };
+      response = await send();
+    }
+    const result = await response.json().catch(() => ({}));
+    if (response.ok) {
+      cached = null;
+      void discoverConfig(true);
+    }
+    return {
+      ok: response.ok,
+      ...result,
+      reason: result.reason || (response.ok ? "" : "checkout-preflight-rejected"),
+      error: result.error || (response.ok ? "" : "Checkout preflight could not be approved.")
+    };
+  } catch {
+    cached = null;
+    await setDisconnectedBadge();
+    return { ok: false, reason: "desktop-unreachable", error: "Cart Confirm desktop became unreachable." };
+  }
+}
+
 async function postCatalogResults(capture) {
   let config = await discoverConfig(true);
   if (!config) return { ok: false, reason: "desktop-not-found", error: "Cart Confirm desktop is not reachable." };
@@ -819,6 +874,35 @@ async function reserveStoreAction(productId, kind) {
   }
 }
 
+async function reserveQueueCaptureAttempt(productId, reservationId) {
+  let config = await discoverConfig(true);
+  if (!automationActive(config)) return { ok: false, reason: "disarmed" };
+  const product = configuredProduct(config, productId);
+  const capture = queueCaptureForConfiguredProduct(config, product);
+  if (!product || product.retailer !== "walmart" || !capture) {
+    return { ok: false, reason: "capture-inactive" };
+  }
+  const send = () => fetchWithTimeout(`${config.baseUrl}/queue-capture/reserve`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Cart-Assist-Token": config.token
+    },
+    body: JSON.stringify({ productId, reservationId })
+  });
+  try {
+    let response = await send();
+    if (response.status === 401) {
+      config = await discoverConfig(true);
+      if (!config) return { ok: false, reason: "desktop-not-found" };
+      response = await send();
+    }
+    return await response.json().catch(() => ({ ok: false, reason: "invalid-response" }));
+  } catch {
+    return { ok: false, reason: "desktop-unreachable" };
+  }
+}
+
 async function readAutomationState(config) {
   const stored = await chrome.storage.local.get(AUTOMATION_STATE_KEY);
   const runId = String(config.automationRunId || "");
@@ -836,11 +920,25 @@ function withAutomationStateLock(action) {
 }
 
 function configuredProduct(config, productId) {
-  return config.products.find((product) => (
-    product.id === productId
-    && product.enabled
-    && !ScheduleGate.calendarOwned(product)
+  const product = config.products.find((candidate) => (
+    candidate.id === productId
+    && candidate.enabled
+    && !ScheduleGate.calendarOwned(candidate)
   )) || null;
+  if (!product) return null;
+  if (
+    product.executionMode === "blitz"
+    && (!Number.isFinite(Number(product.executionExpiresAt)) || Date.now() >= Number(product.executionExpiresAt))
+  ) {
+    return { ...product, executionMode: "watcher", executionExpiresAt: 0, executionCohortId: "" };
+  }
+  return product;
+}
+
+function queueCaptureForConfiguredProduct(config, product) {
+  if (!product?.executionCohortId) return null;
+  const capture = config?.queueCaptures?.[product.executionCohortId];
+  return capture?.retailer === "walmart" ? capture : null;
 }
 
 async function claimProduct(productId, ownerId) {
@@ -870,6 +968,58 @@ async function getProductState(productId) {
   };
 }
 
+function popupSender(sender) {
+  return sender?.id === chrome.runtime.id
+    && sender?.url === chrome.runtime.getURL("popup.html")
+    && !sender?.tab;
+}
+
+async function operatorTabBinding(config, tabIdValue, productIdValue = "") {
+  const tabId = Number(tabIdValue);
+  if (!Number.isInteger(tabId) || tabId < 0) return { ok: false, reason: "tab-unavailable" };
+  let tab;
+  try {
+    tab = await chrome.tabs.get(tabId);
+  } catch {
+    return { ok: false, reason: "tab-unavailable" };
+  }
+  const retailer = retailerFromUrl(tab.url);
+  if (!retailer) return { ok: false, reason: "operator-tab-required" };
+  const contexts = await readTabContexts();
+  const context = TabContext.contextForTab(config, contexts, tabId, retailer, Date.now());
+  if (!context || (productIdValue && context.productId !== String(productIdValue))) {
+    return { ok: false, reason: "operator-context-mismatch" };
+  }
+  const product = config.products.find((candidate) => (
+    candidate.id === context.productId
+    && candidate.retailer === retailer
+    && candidate.sku === context.sku
+  ));
+  if (!product) return { ok: false, reason: "product-disabled" };
+  return { ok: true, tabId, product };
+}
+
+async function getActiveTabProductState(tabIdValue, sender) {
+  if (!popupSender(sender)) return { ok: false, reason: "popup-only" };
+  const config = await discoverConfig(true);
+  if (!config) return { ok: false, reason: "desktop-not-found" };
+  const binding = await operatorTabBinding(config, tabIdValue);
+  if (!binding.ok) return binding;
+  const { product, tabId } = binding;
+  const state = await readAutomationState(config);
+  const resolution = AutomationState.operatorResolution(state, product, `tab:${tabId}`, false, Date.now());
+  if (!resolution.ok) return resolution;
+  return {
+    ok: true,
+    tabId,
+    productId: product.id,
+    retailer: product.retailer,
+    sku: product.sku,
+    resolutionRequired: true,
+    phase: resolution.phase
+  };
+}
+
 async function completeProduct(productId) {
   const config = await discoverConfig(true);
   if (!config) return { ok: false, reason: "desktop-not-found" };
@@ -878,6 +1028,109 @@ async function completeProduct(productId) {
   return withAutomationStateLock(async () => {
     const state = await readAutomationState(config);
     const result = AutomationState.complete(state, product, Date.now());
+    await writeAutomationState(state);
+    return result;
+  });
+}
+
+async function resolveProductKnownNoOrder(input, sender) {
+  if (!popupSender(sender)) return { ok: false, reason: "popup-only", released: false };
+  const config = await discoverConfig(true);
+  if (!config) return { ok: false, reason: "desktop-not-found", released: false };
+  // A paused run remains armed. Releasing a held post-mutation workflow while
+  // it could resume would make duplicate-order prevention depend on timing.
+  if (config.automationEnabled) return { ok: false, reason: "automation-armed", released: false };
+  if (input?.checkedOrderHistory !== true || input?.abandonMission !== true) {
+    return { ok: false, reason: "operator-acknowledgment-required", released: false };
+  }
+  const binding = await operatorTabBinding(config, input?.tabId, input?.productId);
+  if (!binding.ok) return { ...binding, released: false };
+  const authorize = () => fetchWithTimeout(`${config.baseUrl}/missions/operator-resolution/authorize`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Cart-Assist-Token": config.token
+    },
+    body: JSON.stringify({
+      productId: binding.product.id,
+      checkedOrderHistory: true,
+      abandonMission: true
+    })
+  });
+  let authorization;
+  try {
+    authorization = await authorize();
+    if (authorization.status === 401) {
+      config = await discoverConfig(true);
+      if (!config) return { ok: false, reason: "desktop-not-found", released: false };
+      authorization = await authorize();
+    }
+  } catch {
+    return { ok: false, reason: "desktop-unreachable", released: false };
+  }
+  if (!authorization.ok) {
+    const denied = await authorization.json().catch(() => ({}));
+    return { ok: false, reason: denied.reason || "operator-resolution-rejected", released: false };
+  }
+  const result = await withAutomationStateLock(async () => {
+    const state = await readAutomationState(config);
+    const resolved = AutomationState.operatorResolution(
+      state,
+      binding.product,
+      `tab:${binding.tabId}`,
+      true,
+      Date.now()
+    );
+    if (resolved.ok) await writeAutomationState(state);
+    return resolved;
+  });
+  if (result.ok) {
+    await postEvent({
+      eventType: "automation-status",
+      productId: binding.product.id,
+      retailer: binding.product.retailer,
+      sku: binding.product.sku,
+      page: binding.product.productUrl,
+      timestamp: new Date().toISOString(),
+      message: "Operator checked retailer order history, confirmed no order exists, and deliberately abandoned the held mission."
+    });
+  }
+  return result;
+}
+
+async function beginProductManualReview(productId, ownerId, evidenceHash) {
+  const config = await discoverConfig(true);
+  if (!automationActive(config)) return { ok: false, reason: "disarmed" };
+  const product = configuredProduct(config, productId);
+  if (!product) return { ok: false, reason: "product-disabled" };
+  return withAutomationStateLock(async () => {
+    const state = await readAutomationState(config);
+    const result = AutomationState.beginManualReview(
+      state,
+      product,
+      ownerId,
+      String(evidenceHash || ""),
+      Date.now()
+    );
+    await writeAutomationState(state);
+    return result;
+  });
+}
+
+async function markProductManualSubmit(productId, ownerId, evidenceHash) {
+  const config = await discoverConfig(true);
+  if (!config) return { ok: false, reason: "desktop-not-found" };
+  const product = config.products.find((candidate) => candidate.id === productId);
+  if (!product) return { ok: false, reason: "product-disabled" };
+  return withAutomationStateLock(async () => {
+    const state = await readAutomationState(config);
+    const result = AutomationState.markManualSubmitObserved(
+      state,
+      product,
+      ownerId,
+      String(evidenceHash || ""),
+      Date.now()
+    );
     await writeAutomationState(state);
     return result;
   });
@@ -1013,6 +1266,10 @@ async function handleMessage(message, sender) {
       if (!config) return { ok: false, reason: "desktop-not-found", productId: "" };
       return getTabProductContext(config, sender);
     }
+    case "CART_CONFIRM_INSPECT_OPERATOR_RESOLUTION":
+      return getActiveTabProductState(message.tabId, sender);
+    case "CART_CONFIRM_RESOLVE_OPERATOR_UNCERTAINTY":
+      return resolveProductKnownNoOrder(message, sender);
     case "CART_CONFIRM_SET_TAB_PRODUCT_CONTEXT": {
       const config = await discoverConfig(false);
       if (!config) return { ok: false, reason: "desktop-not-found" };
@@ -1026,6 +1283,8 @@ async function handleMessage(message, sender) {
       return postEvent(message.payload);
     case "CART_CONFIRM_QUICK_ADD_MISSION":
       return postQuickAddMission(message.product);
+    case "CART_CONFIRM_APPROVE_CHECKOUT_PREFLIGHT":
+      return postCheckoutPreflight(String(message.productId || ""), message.evidence);
     case "CART_CONFIRM_CATALOG_RESULTS":
       return postCatalogResults(message.capture);
     case "CART_CONFIRM_CLAIM_PRODUCT":
@@ -1034,6 +1293,18 @@ async function handleMessage(message, sender) {
       return getProductState(String(message.productId || ""));
     case "CART_CONFIRM_COMPLETE_PRODUCT":
       return completeProduct(String(message.productId || ""));
+    case "CART_CONFIRM_BEGIN_MANUAL_REVIEW":
+      return beginProductManualReview(
+        String(message.productId || ""),
+        `tab:${sender?.tab?.id ?? "unknown"}`,
+        message.evidenceHash
+      );
+    case "CART_CONFIRM_MARK_MANUAL_SUBMIT":
+      return markProductManualSubmit(
+        String(message.productId || ""),
+        `tab:${sender?.tab?.id ?? "unknown"}`,
+        message.evidenceHash
+      );
     case "CART_CONFIRM_RELEASE_PRODUCT":
       return releaseProduct(
         String(message.productId || ""),
@@ -1043,6 +1314,11 @@ async function handleMessage(message, sender) {
       return recordProductAttempt(String(message.productId || ""));
     case "CART_CONFIRM_RESERVE_STORE_ACTION":
       return reserveStoreAction(String(message.productId || ""), message.kind);
+    case "CART_CONFIRM_RESERVE_QUEUE_CAPTURE_ATTEMPT":
+      return reserveQueueCaptureAttempt(
+        String(message.productId || ""),
+        String(message.reservationId || "")
+      );
     case "CART_CONFIRM_RESERVE_TARGET_PERSISTENCE":
       return reserveProductTargetPersistence(
         String(message.productId || ""),

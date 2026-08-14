@@ -14,12 +14,13 @@ test("one store workflow is serialized even across different products", () => {
   const state = State.createState("run", 1_000);
   assert.equal(State.claim(state, PRODUCT, "tab:1", 1_000).ok, true);
   assert.equal(State.claim(state, { ...PRODUCT, id: "walmart:987654321" }, "tab:2", 1_001).reason, "store-busy");
+  assert.equal(State.claim(state, { ...PRODUCT, id: "walmart:222222222" }, "tab:1", 1_002).reason, "store-busy");
 });
 
 test("submit intent and an explicitly armed watcher survive indefinitely", () => {
   const state = State.createState("run", 1_000);
   State.claim(state, PRODUCT, "tab:1", 1_000);
-  assert.equal(State.beginSubmission(state, PRODUCT, "tab:1", "evidence", 1_100).ok, true);
+  assert.equal(State.beginSubmission(state, PRODUCT, "tab:1", "a".repeat(64), 1_100).ok, true);
   assert.equal(State.markSubmission(state, PRODUCT, "tab:1", "clicked", 1_101).ok, true);
   const reloaded = State.normalizeState(structuredClone(state), "run", 99_000_000);
   assert.equal(State.productState(reloaded, PRODUCT, 99_000_000).submission.phase, "uncertain");
@@ -31,7 +32,7 @@ test("completion is keyed by run and product rather than mutable caps", () => {
   const state = State.createState("run", 1_000);
   assert.equal(State.complete(state, PRODUCT, 1_050).reason, "submission-intent-missing");
   State.claim(state, PRODUCT, "tab:1", 1_060);
-  State.beginSubmission(state, PRODUCT, "tab:1", "evidence", 1_070);
+  State.beginSubmission(state, PRODUCT, "tab:1", "a".repeat(64), 1_070);
   State.markSubmission(state, PRODUCT, "tab:1", "clicked", 1_080);
   assert.equal(State.complete(state, PRODUCT, 1_100).ok, true);
   assert.equal(State.complete(state, PRODUCT, 1_150).alreadyCompleted, true);
@@ -57,7 +58,7 @@ test("proof timestamps are minted in extension-owned state", () => {
   assert.equal(saved.proof.inventoryConfirmed, true);
 });
 
-test("add-only products run in parallel while checkout keeps the store lane exclusive", () => {
+test("every cart-mutating mission shares one universal retailer lane", () => {
   const state = State.createState("run", 1_000);
   const addA = { id: "walmart:1000001", retailer: "walmart", action: "cart" };
   const addB = { id: "walmart:1000002", retailer: "walmart", action: "cart" };
@@ -65,12 +66,13 @@ test("add-only products run in parallel while checkout keeps the store lane excl
   const reviewD = { id: "walmart:1000004", retailer: "walmart", action: "review" };
 
   assert.equal(State.claim(state, addA, "tab:1", 1_000).ok, true);
-  assert.equal(State.claim(state, addB, "tab:2", 1_001).ok, true, "a second add-only product must not be blocked");
+  assert.equal(State.claim(state, addB, "tab:2", 1_001).reason, "store-busy");
   assert.equal(State.claim(state, addA, "tab:9", 1_002).reason, "product-busy");
-  assert.equal(State.claim(state, checkoutC, "tab:3", 1_003).ok, true);
-  assert.equal(State.claim(state, reviewD, "tab:4", 1_004).reason, "store-busy");
-  assert.equal(State.claim(state, addB, "tab:2", 1_005).ok, true, "adds continue while a checkout holds the store lane");
-  assert.equal(State.beginSubmission(state, checkoutC, "tab:3", "evidence", 1_010).ok, true);
+  assert.equal(State.claim(state, checkoutC, "tab:3", 1_003).reason, "store-busy");
+  assert.equal(State.release(state, addA, "tab:1").released, true);
+  assert.equal(State.claim(state, checkoutC, "tab:3", 1_004).ok, true);
+  assert.equal(State.claim(state, reviewD, "tab:4", 1_005).reason, "store-busy");
+  assert.equal(State.beginSubmission(state, checkoutC, "tab:3", "a".repeat(64), 1_010).ok, true);
   assert.equal(State.markSubmission(state, checkoutC, "tab:3", "clicked", 1_020).ok, true);
   assert.equal(State.complete(state, checkoutC, 1_050).ok, true);
   assert.equal(State.claim(state, checkoutC, "tab:3", 1_060).reason, "completed");
@@ -90,7 +92,7 @@ test("a blocked pre-submit workflow releases its store lane for the next mission
 test("a possible order submission can never be released automatically", () => {
   const state = State.createState("run", 1_000);
   State.claim(state, PRODUCT, "tab:1", 1_000);
-  State.beginSubmission(state, PRODUCT, "tab:1", "evidence", 1_010);
+  State.beginSubmission(state, PRODUCT, "tab:1", "a".repeat(64), 1_010);
   const released = State.release(state, PRODUCT, "tab:1");
   assert.equal(released.ok, false);
   assert.equal(released.reason, "submission-uncertain");
@@ -120,7 +122,120 @@ test("cart verification resolves the add boundary without allowing a second add"
   assert.equal(State.markAddAction(state, PRODUCT, "tab:1", "confirmed", 1_030).ok, true);
   assert.equal(State.claim(state, PRODUCT, "tab:1", 1_040).ok, true, "the owning tab may continue from cart to checkout");
   assert.equal(State.claim(state, PRODUCT, "tab:2", 1_041).reason, "cart-confirmed");
-  assert.equal(State.release(state, PRODUCT, "tab:1").released, true);
+  assert.equal(State.release(state, PRODUCT, "tab:1").reason, "post-mutation-held");
+});
+
+test("add-only releases the retailer lane only through confirmed cart completion", () => {
+  const product = { id: "walmart:1000001", retailer: "walmart", action: "cart" };
+  const next = { id: "walmart:1000002", retailer: "walmart", action: "cart" };
+  const state = State.createState("run", 1_000);
+  State.claim(state, product, "tab:1", 1_000);
+  State.beginAddAction(state, product, "tab:1", 1_010);
+  State.markAddAction(state, product, "tab:1", "clicked", 1_020);
+  State.markAddAction(state, product, "tab:1", "confirmed", 1_030);
+  assert.equal(State.release(state, product, "tab:1").reason, "post-mutation-held");
+  assert.equal(State.claim(state, next, "tab:2", 1_040).reason, "store-busy");
+  assert.equal(State.complete(state, product, 1_050).ok, true);
+  assert.equal(State.claim(state, next, "tab:2", 1_060).ok, true);
+});
+
+test("review readiness, manual intent, confirmation, and abandonment are durable", () => {
+  const review = { id: "target:1011960739", retailer: "target", action: "review" };
+  const next = { id: "target:1011483406", retailer: "target", action: "cart" };
+  const state = State.createState("run", 1_000);
+  State.claim(state, review, "tab:1", 1_000);
+  State.beginAddAction(state, review, "tab:1", 1_010);
+  State.markAddAction(state, review, "tab:1", "clicked", 1_020);
+  State.markAddAction(state, review, "tab:1", "confirmed", 1_030);
+  assert.equal(State.beginManualReview(state, review, "tab:1", "a".repeat(64), 1_040).ok, true);
+  assert.equal(State.complete(state, review, 1_050).ok, true, "authoritative confirmation may race the async click receipt");
+  const completedRestart = State.normalizeState(structuredClone(state), "run", 99_000_000);
+  assert.equal(completedRestart.locks["store:target"], undefined, "completed workflows never reconstruct a held lane");
+
+  const pending = State.createState("run", 1_000);
+  State.claim(pending, review, "tab:1", 1_000);
+  State.beginAddAction(pending, review, "tab:1", 1_010);
+  State.markAddAction(pending, review, "tab:1", "clicked", 1_020);
+  State.markAddAction(pending, review, "tab:1", "confirmed", 1_030);
+  State.beginManualReview(pending, review, "tab:1", "a".repeat(64), 1_040);
+  assert.equal(State.beginManualReview(pending, review, "tab:1", "b".repeat(64), 1_045).reason, "review-evidence-changed");
+  assert.equal(State.release(pending, review, "tab:1").reason, "post-mutation-held");
+  assert.equal(State.claim(pending, next, "tab:2", 1_060).reason, "store-busy");
+
+  const restored = State.normalizeState(structuredClone(pending), "run", 99_000_000);
+  assert.equal(State.productState(restored, review).workflow.phase, "awaiting-manual-outcome");
+  assert.equal(State.markManualSubmitObserved(restored, review, "tab:1", "b".repeat(64), 1_070).reason, "review-evidence-changed");
+  assert.equal(State.markManualSubmitObserved(restored, review, "tab:1", "a".repeat(64), 1_080).ok, true);
+  assert.equal(State.complete(restored, review, 1_090).ok, true);
+
+  const abandoned = State.createState("run", 2_000);
+  State.claim(abandoned, review, "tab:1", 2_000);
+  State.beginAddAction(abandoned, review, "tab:1", 2_010);
+  State.markAddAction(abandoned, review, "tab:1", "clicked", 2_020);
+  State.markAddAction(abandoned, review, "tab:1", "confirmed", 2_030);
+  State.beginManualReview(abandoned, review, "tab:1", "c".repeat(64), 2_040);
+  assert.equal(State.abandon(abandoned, review, 2_050).released, true);
+  assert.equal(State.claim(abandoned, next, "tab:2", 2_060).ok, true);
+});
+
+test("same-run legacy uncertain receipts migrate additively and restore the store lane", () => {
+  const legacy = {
+    version: 2,
+    runId: "run",
+    runStartedAt: 1,
+    locks: {},
+    completed: {},
+    products: {
+      [PRODUCT.id]: {
+        attempts: 2,
+        proof: null,
+        submission: { phase: "uncertain", updatedAt: 10, evidenceHash: "receipt" },
+        addAction: { phase: "clicked", ownerId: "tab:9", updatedAt: 9 }
+      }
+    }
+  };
+  const state = State.normalizeState(legacy, "run", 10_000);
+  assert.equal(state.version, State.STATE_VERSION);
+  assert.equal(state.products[PRODUCT.id].submission.phase, "uncertain");
+  assert.equal(state.locks["store:walmart"].hold, true);
+  assert.equal(State.claim(state, { ...PRODUCT, id: "walmart:2" }, "tab:2", 10_001).reason, "store-busy");
+});
+
+test("conflicting same-store legacy uncertainty quarantines the retailer lane", () => {
+  const first = PRODUCT.id;
+  const second = "walmart:987654321";
+  const uncertain = (ownerId) => ({
+    attempts: 1,
+    proof: null,
+    submission: { phase: "uncertain", updatedAt: 10, evidenceHash: "receipt" },
+    addAction: { phase: "clicked", ownerId, updatedAt: 9 }
+  });
+  const state = State.normalizeState({
+    version: 2,
+    runId: "run",
+    runStartedAt: 1,
+    locks: {},
+    completed: {},
+    products: { [first]: uncertain("tab:1"), [second]: uncertain("tab:2") }
+  }, "run", 10_000);
+  assert.equal(state.locks["store:walmart"].productId, "conflict");
+  assert.deepEqual(state.locks["store:walmart"].conflictProductIds.sort(), [first, second].sort());
+  assert.equal(State.claim(state, { ...PRODUCT, id: "walmart:3" }, "tab:3", 10_001).reason, "store-busy");
+});
+
+test("an explicit checkout rejection rewinds only to held cart-confirmed state", () => {
+  const state = State.createState("run", 1_000);
+  State.claim(state, PRODUCT, "tab:1", 1_000);
+  State.beginAddAction(state, PRODUCT, "tab:1", 1_010);
+  State.markAddAction(state, PRODUCT, "tab:1", "clicked", 1_020);
+  State.markAddAction(state, PRODUCT, "tab:1", "confirmed", 1_030);
+  State.beginSubmission(state, PRODUCT, "tab:1", "a".repeat(64), 1_040);
+  State.markSubmission(state, PRODUCT, "tab:1", "clicked", 1_050);
+  assert.equal(State.markSubmission(state, PRODUCT, "tab:1", "failed", 1_060).ok, true);
+  assert.equal(State.productState(state, PRODUCT).workflow.phase, "cart-confirmed");
+  assert.equal(state.locks["store:walmart"].hold, true);
+  const restored = State.normalizeState(structuredClone(state), "run", 99_000_000);
+  assert.equal(restored.locks["store:walmart"].productId, PRODUCT.id);
 });
 
 test("a definitively missing cart line clears the add boundary for a bounded retry", () => {
@@ -203,4 +318,107 @@ test("purchase attempt accounting does not expire a watcher that remains armed",
   }
   assert.equal(State.productState(state, PRODUCT, 7 * 24 * 60 * 60_000).attempts, 125);
   assert.equal(State.claim(state, PRODUCT, "tab:1", 7 * 24 * 60 * 60_000).ok, true);
+});
+
+test("review and submission evidence hashes are exactly lowercase SHA-256 hex", () => {
+  const checkout = State.createState("run", 1_000);
+  State.claim(checkout, PRODUCT, "tab:1", 1_000);
+  for (const invalid of ["", "a".repeat(63), "A".repeat(64), "g".repeat(64), "a".repeat(65)]) {
+    assert.equal(State.beginSubmission(checkout, PRODUCT, "tab:1", invalid, 1_010).reason, "invalid-evidence-hash");
+  }
+  assert.equal(State.beginSubmission(checkout, PRODUCT, "tab:1", "a".repeat(64), 1_020).ok, true);
+
+  const review = { id: "target:1011960739", retailer: "target", action: "review" };
+  const state = State.createState("run", 2_000);
+  State.claim(state, review, "tab:2", 2_000);
+  State.beginAddAction(state, review, "tab:2", 2_010);
+  State.markAddAction(state, review, "tab:2", "clicked", 2_020);
+  State.markAddAction(state, review, "tab:2", "confirmed", 2_030);
+  assert.equal(State.beginManualReview(state, review, "tab:2", "B".repeat(64), 2_040).reason, "invalid-evidence-hash");
+  assert.equal(State.beginManualReview(state, review, "tab:2", "b".repeat(64), 2_050).ok, true);
+  assert.equal(State.markManualSubmitObserved(state, review, "tab:2", "b".repeat(63), 2_060).reason, "invalid-evidence-hash");
+});
+
+test("normalization removes stale locks for completed products", () => {
+  const state = State.createState("run", 1_000);
+  state.completed[PRODUCT.id] = new Date(1_100).toISOString();
+  state.products[PRODUCT.id] = {
+    attempts: 1,
+    proof: null,
+    submission: { phase: "uncertain", updatedAt: 1_050, evidenceHash: "a".repeat(64) },
+    addAction: { phase: "clicked", ownerId: "tab:1", updatedAt: 1_040 },
+    workflow: { phase: "submission-uncertain", ownerId: "tab:1", updatedAt: 1_050, evidenceHash: "a".repeat(64) }
+  };
+  state.locks[`product:${PRODUCT.id}`] = { productId: PRODUCT.id, ownerId: "tab:1", hold: true, expiresAt: Number.MAX_SAFE_INTEGER };
+  state.locks["store:walmart"] = { productId: PRODUCT.id, ownerId: "tab:1", hold: true, expiresAt: Number.MAX_SAFE_INTEGER };
+  const normalized = State.normalizeState(state, "run", 2_000);
+  assert.equal(normalized.locks[`product:${PRODUCT.id}`], undefined);
+  assert.equal(normalized.locks["store:walmart"], undefined);
+});
+
+test("known-no-order resolution is explicit and only available for held outcomes", () => {
+  const state = State.createState("run", 1_000);
+  assert.equal(State.knownNoOrderRequired(state, PRODUCT), false);
+  assert.equal(State.abandon(state, PRODUCT, 1_010).reason, "resolution-not-required");
+  State.claim(state, PRODUCT, "tab:1", 1_020);
+  State.beginSubmission(state, PRODUCT, "tab:1", "a".repeat(64), 1_030);
+  State.markSubmission(state, PRODUCT, "tab:1", "clicked", 1_040);
+  assert.equal(State.knownNoOrderRequired(state, PRODUCT), true);
+  assert.equal(State.abandon(state, PRODUCT, 1_050).released, true);
+  assert.equal(State.knownNoOrderRequired(state, PRODUCT), false);
+});
+
+test("operator resolution requires the exact owning tab and an explicit acknowledgment", () => {
+  const state = State.createState("run", 1_000);
+  State.claim(state, PRODUCT, "tab:7", 1_000);
+  State.beginSubmission(state, PRODUCT, "tab:7", "a".repeat(64), 1_010);
+  State.markSubmission(state, PRODUCT, "tab:7", "clicked", 1_020);
+
+  assert.equal(State.operatorResolution(state, PRODUCT, "tab:other", false, 1_030).reason, "operator-tab-required");
+  assert.equal(State.operatorResolution(state, PRODUCT, "tab:8", false, 1_030).reason, "operator-owner-mismatch");
+  const inspected = State.operatorResolution(state, PRODUCT, "tab:7", false, 1_030);
+  assert.equal(inspected.ok, true);
+  assert.equal(inspected.phase, "submission-uncertain");
+  assert.ok(state.locks["store:walmart"]);
+  const resolved = State.operatorResolution(state, PRODUCT, "tab:7", true, 1_040);
+  assert.equal(resolved.released, true);
+  assert.equal(state.locks["store:walmart"], undefined);
+});
+
+test("operator resolution cannot clear a conflicted legacy store lane", () => {
+  const state = State.createState("run", 1_000);
+  State.claim(state, PRODUCT, "tab:7", 1_000);
+  State.beginSubmission(state, PRODUCT, "tab:7", "a".repeat(64), 1_010);
+  State.markSubmission(state, PRODUCT, "tab:7", "clicked", 1_020);
+  state.locks["store:walmart"] = {
+    productId: "conflict",
+    ownerId: "manual-resolution-required",
+    expiresAt: Number.MAX_SAFE_INTEGER,
+    hold: true,
+    conflictProductIds: [PRODUCT.id, "walmart:987654321"]
+  };
+  assert.equal(State.operatorResolution(state, PRODUCT, "tab:7", true, 1_030).reason, "operator-resolution-conflict");
+});
+
+test("the extension exposes operator resolution only through its exact popup and owning active tab", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const root = path.join(__dirname, "..");
+  const background = fs.readFileSync(path.join(root, "extension", "background.js"), "utf8");
+  const content = fs.readFileSync(path.join(root, "extension", "content.js"), "utf8");
+  const popup = fs.readFileSync(path.join(root, "extension", "popup.js"), "utf8");
+  assert.match(background, /sender\?\.url === chrome\.runtime\.getURL\("popup\.html"\)/);
+  assert.match(background, /operatorTabBinding[\s\S]*?TabContext\.contextForTab/);
+  assert.match(background, /missions\/operator-resolution\/authorize[\s\S]*?X-Cart-Assist-Token/);
+  assert.match(background, /checkedOrderHistory !== true \|\| input\?\.abandonMission !== true/);
+  assert.doesNotMatch(content, /RESOLVE_OPERATOR_UNCERTAINTY/);
+  assert.match(popup, /CART_CONFIRM_RESOLVE_OPERATOR_UNCERTAINTY[\s\S]*?checkedOrderHistory: true[\s\S]*?abandonMission: true/);
+});
+
+test("different retailer lanes can proceed while one retailer is held", () => {
+  const state = State.createState("run", 1_000);
+  const target = { id: "target:1011960739", retailer: "target", action: "cart" };
+  const amazon = { id: "amazon:B0ABC12345", retailer: "amazon", action: "checkout" };
+  assert.equal(State.claim(state, target, "tab:1", 1_000).ok, true);
+  assert.equal(State.claim(state, amazon, "tab:2", 1_001).ok, true);
 });

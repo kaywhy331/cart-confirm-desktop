@@ -2,6 +2,7 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const { JSDOM } = require("jsdom");
 
 const {
   detectRetailer,
@@ -62,6 +63,7 @@ test("Walmart queue URLs expose only safe item and wait state metadata", () => {
   const queue = parseWalmartQueue(url);
   assert.deepEqual(queue, {
     itemId: "987654321",
+    identityVerified: true,
     queued: true,
     state: "pending",
     soldOut: false,
@@ -89,6 +91,20 @@ test("Walmart product-route holding pages require exact identity and explicit qu
   ), null);
 });
 
+test("Walmart product-route holding pages reject hidden stale queue evidence", () => {
+  const product = { sku: "987654321" };
+  const url = "https://www.walmart.com/ip/pokemon/987654321";
+  for (const hiddenMarkup of [
+    "<main style='display:none' data-testid='waiting-room'>High demand. You’re in line in our virtual queue. Please stay on this page.</main>",
+    "<main aria-hidden='true' data-testid='waiting-room'>High demand. You’re in line in our virtual queue. Please stay on this page.</main>",
+    "<section style='visibility:hidden'><main data-testid='waiting-room'>High demand. You’re in line in our virtual queue. Please stay on this page.</main></section>"
+  ]) {
+    const doc = new JSDOM(`<body>${hiddenMarkup}<main>Product details</main></body>`).window.document;
+    assert.equal(walmartHoldingQueue(doc, url, product), null);
+    assert.equal(getAdapter("walmart").pageKind(url, doc, product), "product");
+  }
+});
+
 test("Target checkout routes include co-cart while authentication stays manual", () => {
   const target = getAdapter("target");
   assert.equal(target.pageKind("https://www.target.com/co-cart"), "cart");
@@ -99,3 +115,14 @@ test("Target checkout routes include co-cart while authentication stays manual",
   assert.equal(target.pageKind("https://www.target.com/login"), "auth");
   assert.equal(target.pageKind("https://www.target.com/account"), "auth");
 });
+
+for (const retailer of ["target", "walmart", "amazon"]) {
+  test(`${retailer} classifies MFA, location, and membership interstitials for manual handling`, () => {
+    const adapter = getAdapter(retailer);
+    const page = (markup) => new JSDOM(`<body><main>${markup}</main></body>`).window.document;
+    assert.equal(adapter.interactivePageState(page(`<label>Verification code <input name="otp" autocomplete="one-time-code"></label>`)), "mfa");
+    assert.equal(adapter.interactivePageState(page(`<div role="dialog"><button>Choose your pickup store</button></div>`)), "location");
+    assert.equal(adapter.interactivePageState(page(`<div role="dialog"><button>Join ${retailer === "amazon" ? "Prime" : retailer === "walmart" ? "Walmart+" : "Target Circle 360"} free trial</button></div>`)), "membership");
+    assert.equal(adapter.interactivePageState(page(`<button>Place your order</button>`)), "");
+  });
+}

@@ -19,12 +19,14 @@ const { spawn } = require("node:child_process");
 const {
   DEFAULT_SETTINGS,
   MAX_PRODUCTS,
+  applyCheckoutPreflight,
   assertSafeArmedUpdate,
   createInitialStatus,
   createProductStatus,
   matchingProduct,
   normalizeSettings,
   preserveAdminCampaignFields,
+  preserveCheckoutEvidence,
   reduceProductStatus,
   reduceStatus,
   toAutomationProduct,
@@ -57,10 +59,12 @@ const {
 const {
   activateBlitzExecution,
   loadRuntimeState,
+  productExecutionContext,
   productExecutionMode,
-  queueCaptureForRun,
+  queueCaptureForProduct,
   reconcileProductExecutionContexts,
   registerQueueCapture,
+  reserveQueueCaptureAttempt,
   saveRuntimeState
 } = require("./lib/runtime-state");
 const { isAllowedExtensionOrigin, isTrustedCompanionRequest } = require("./lib/extension-identity");
@@ -361,10 +365,15 @@ function publicSettings() {
   return {
     // The renderer may copy a provisioned retailer link, but it never receives
     // the admin's Howl source URL or resolution metadata.
-    products: settings.products.map((product) => ({
-      ...toRendererProduct(product),
-      executionMode: productExecutionMode(runtimeState, product.id, settings.automationRunId)
-    })),
+    products: settings.products.map((product) => {
+      const context = productExecutionContext(runtimeState, product.id, settings.automationRunId);
+      return {
+        ...toRendererProduct(product),
+        executionMode: context ? "blitz" : "watcher",
+        executionExpiresAt: context?.expiresAt || 0,
+        executionCohortId: context?.cohortId || ""
+      };
+    }),
     automationEnabled: settings.automationEnabled,
     monitoringPaused: settings.monitoringPaused,
     automationRunId: settings.automationRunId,
@@ -376,6 +385,7 @@ function publicSettings() {
     watcherIntervalSeconds: settings.watcherIntervalSeconds,
     blitzRetryDelayMs: settings.blitzRetryDelayMs,
     blitzWindowSeconds: settings.blitzWindowSeconds,
+    scheduledBlitzDurationSeconds: settings.scheduledBlitzDurationSeconds,
     walmartQueueCaptureReloads: settings.walmartQueueCaptureReloads,
     walmartPrepCandidates: settings.walmartPrepCandidates,
     scheduledOpenEnabled: settings.scheduledOpenEnabled,
@@ -545,6 +555,61 @@ function quickAddMissionRequest(input) {
   };
 }
 
+function approveCheckoutPreflightRequest(input) {
+  if (settings.automationEnabled) {
+    return {
+      statusCode: 409,
+      payload: { ok: false, reason: "automation-armed", error: "Switch Autopilot off before approving checkout preflight." }
+    };
+  }
+  const productId = String(input?.productId || "").slice(0, 80);
+  try {
+    settings = {
+      ...settings,
+      products: applyCheckoutPreflight(settings.products, productId, input?.evidence)
+    };
+    persistSettings();
+    configVersion += 1;
+    status = {
+      ...status,
+      lastMessage: `${retailerLabel(productId.split(":", 1)[0])} checkout preflight approved with hashed destination and payment evidence.`
+    };
+    broadcast();
+    const product = settings.products.find((candidate) => candidate.id === productId);
+    return {
+      statusCode: 200,
+      payload: {
+        ok: true,
+        productId,
+        capturedAt: product?.checkoutEvidence?.capturedAt || ""
+      }
+    };
+  } catch (error) {
+    return {
+      statusCode: 409,
+      payload: { ok: false, reason: "checkout-preflight-rejected", error: error.message }
+    };
+  }
+}
+
+function authorizeOperatorResolutionRequest(input) {
+  if (settings.automationEnabled) {
+    return {
+      statusCode: 409,
+      payload: { ok: false, reason: "automation-armed", error: "Switch Autopilot off before resolving a held mission." }
+    };
+  }
+  const productId = String(input?.productId || "").slice(0, 80);
+  const product = settings.products.find((candidate) => candidate.id === productId);
+  if (!product || input?.checkedOrderHistory !== true || input?.abandonMission !== true) {
+    return {
+      statusCode: 409,
+      payload: { ok: false, reason: "operator-resolution-rejected", error: "The exact mission and explicit order-history acknowledgment are required." }
+    };
+  }
+  return { statusCode: 200, payload: { ok: true, productId: product.id } };
+}
+
 function catalogResultsRequest(input) {
   try {
     const accepted = acceptCatalogResults(catalogState, input, Date.now());
@@ -694,7 +759,8 @@ async function openExternalRetailer(url, options = {}) {
         const request = openRequests.add(retailer, parsed.href, {
           productId,
           contextRequired,
-          dedicatedTab: options.dedicatedTab === true
+          dedicatedTab: options.dedicatedTab === true,
+          signalOrderLimit: Number.isInteger(options.signalOrderLimit) ? options.signalOrderLimit : null
         });
         const claimTimeoutMs = options.parallel === true && options.dedicatedTab === true
           ? SIMULTANEOUS_CLAIM_TIMEOUT_MS
@@ -779,7 +845,8 @@ async function openProduct(productId, options = {}) {
     productId: product.id,
     via: opened.via,
     entry: opened.directFallback ? "product" : directEntry ? "direct" : "product",
-    directFallback: opened.directFallback === true
+    directFallback: opened.directFallback === true,
+    signalOrderLimit: Number.isInteger(options.signalOrderLimit) ? options.signalOrderLimit : null
   };
 }
 
@@ -916,9 +983,16 @@ function triggerQueueFanout(event) {
   const queuedProductIds = Object.entries(productStatuses)
     .filter(([, productStatus]) => productStatus?.reason === "retailer-queue")
     .map(([productId]) => productId);
+  const capture = queueCaptureForProduct(
+    runtimeState,
+    event.productId,
+    settings.automationRunId,
+    Date.now()
+  );
   const decision = planQueueFanout({
     settings,
     event,
+    capture,
     receipts: runtimeState.queueFanoutReceipts,
     queuedProductIds
   });
@@ -1036,7 +1110,8 @@ function handleDiscordSignal(signal, historical) {
     spacingMs: DESKTOP_DROP_SPACING_MS,
     actionKind: `discord-signal-${route.entry}`,
     resumeMonitoring: false,
-    stopEpoch: taskEpoch
+    stopEpoch: taskEpoch,
+    signalOrderLimit: route.signalOrderLimit
   }).then((result) => {
     if (result.via === "cancelled") {
       updateSignalRecord(signal.id, {
@@ -1175,7 +1250,8 @@ async function openSignal(signalId, requestedEntry = "product") {
   return openProduct(product.id, {
     urlOverride: route.url,
     spacingMs: DESKTOP_DROP_SPACING_MS,
-    actionKind: `discord-signal-manual-${requestedEntry}`
+    actionKind: `discord-signal-manual-${requestedEntry}`,
+    signalOrderLimit: route.signalOrderLimit
   });
 }
 
@@ -1319,16 +1395,21 @@ function extensionConfig() {
   return {
     // Howl source and resolved tracking URLs are sharing-only. Chrome receives
     // only the canonical purchasing fields used by the automation pipeline.
-    products: settings.products.map((product) => ({
-      ...toAutomationProduct(product),
-      calendarOwned: productCalendarOwned(settings, product),
-      calendarOpenAt: productCalendarTime(settings, product),
-      executionMode: productExecutionMode(runtimeState, product.id, settings.automationRunId)
-    })),
+    products: settings.products.map((product) => {
+      const context = productExecutionContext(runtimeState, product.id, settings.automationRunId);
+      return {
+        ...toAutomationProduct(product),
+        calendarOwned: productCalendarOwned(settings, product),
+        calendarOpenAt: productCalendarTime(settings, product),
+        executionMode: context ? "blitz" : "watcher",
+        executionExpiresAt: context?.expiresAt || 0,
+        executionCohortId: context?.cohortId || ""
+      };
+    }),
     automationEnabled: settings.automationEnabled,
     monitoringPaused: settings.monitoringPaused,
     automationRunId: settings.automationRunId,
-    queueCapture: queueCaptureForRun(runtimeState, settings.automationRunId),
+    queueCaptures: runtimeState.queueCaptures,
     fastMode: settings.fastMode,
     retryIntervalSeconds: settings.retryIntervalSeconds,
     eligibilityRefreshIntervalSeconds: settings.eligibilityRefreshIntervalSeconds,
@@ -1337,6 +1418,7 @@ function extensionConfig() {
     watcherIntervalSeconds: settings.watcherIntervalSeconds,
     blitzRetryDelayMs: settings.blitzRetryDelayMs,
     blitzWindowSeconds: settings.blitzWindowSeconds,
+    scheduledBlitzDurationSeconds: settings.scheduledBlitzDurationSeconds,
     walmartQueueCaptureReloads: settings.walmartQueueCaptureReloads,
     firstPartyOnly: true,
     catalogSearch: activeCatalogSearch,
@@ -1398,6 +1480,24 @@ function startServerOnPort(port) {
           return;
         }
         readJsonRequest(req, res, (body) => quickAddMissionRequest(body));
+        return;
+      }
+
+      if (req.method === "POST" && requestUrl.pathname === "/missions/checkout-preflight") {
+        if (req.headers["x-cart-assist-token"] !== settings.companionToken) {
+          writeJson(req, res, 401, { error: "invalid-token" });
+          return;
+        }
+        readJsonRequest(req, res, (body) => approveCheckoutPreflightRequest(body));
+        return;
+      }
+
+      if (req.method === "POST" && requestUrl.pathname === "/missions/operator-resolution/authorize") {
+        if (req.headers["x-cart-assist-token"] !== settings.companionToken) {
+          writeJson(req, res, 401, { error: "invalid-token" });
+          return;
+        }
+        readJsonRequest(req, res, (body) => authorizeOperatorResolutionRequest(body));
         return;
       }
 
@@ -1476,6 +1576,34 @@ function startServerOnPort(port) {
         return;
       }
 
+      if (req.method === "POST" && requestUrl.pathname === "/queue-capture/reserve") {
+        if (req.headers["x-cart-assist-token"] !== settings.companionToken) {
+          writeJson(req, res, 401, { error: "invalid-token" });
+          return;
+        }
+        readJsonRequest(req, res, (body) => {
+          if (!monitoringActive(settings)) {
+            return { statusCode: 409, payload: { ok: false, reason: "disarmed" } };
+          }
+          const product = settings.products.find((candidate) => (
+            candidate.enabled
+            && candidate.id === String(body?.productId || "")
+            && candidate.retailer === "walmart"
+          ));
+          if (!product) return { statusCode: 409, payload: { ok: false, reason: "product-disabled" } };
+          const result = reserveQueueCaptureAttempt(runtimeState, {
+            productId: product.id,
+            runId: settings.automationRunId,
+            reservationId: body?.reservationId,
+            limit: settings.walmartQueueCaptureReloads,
+            now: Date.now()
+          });
+          if (result.ok) persistRuntimeState();
+          return { statusCode: result.ok ? 200 : 409, payload: result };
+        });
+        return;
+      }
+
       writeJson(req, res, 404, { error: "not-found" });
     });
 
@@ -1545,11 +1673,25 @@ function registerIpc() {
             : nextSettings.products
         }
       : nextSettings;
-    let normalized = normalizeSettings(userSettings, settings);
+    const requestedAutomationEnabled = userSettings?.automationEnabled !== undefined
+      ? Boolean(userSettings.automationEnabled)
+      : settings.automationEnabled;
+    let normalized = normalizeSettings({
+      ...userSettings,
+      // Normalize and compare the renderer's untrusted mission fields before
+      // the desktop reattaches any existing approval. The armed validation is
+      // then run a second time against the resulting trusted contracts.
+      automationEnabled: false
+    }, settings);
     normalized = {
       ...normalized,
-      products: preserveAdminCampaignFields(normalized.products, settings.products)
+      products: preserveAdminCampaignFields(
+        preserveCheckoutEvidence(normalized.products, settings.products),
+        settings.products
+      ),
+      automationEnabled: requestedAutomationEnabled
     };
+    normalized = normalizeSettings(normalized, settings);
     assertSafeArmedUpdate(settings, normalized);
     if (normalized.scheduledOpenEnabled && new Date(normalized.scheduledOpenAt).getTime() <= Date.now()) {
       throw new Error("Choose a future date and time for the single store schedule.");
@@ -1557,7 +1699,7 @@ function registerIpc() {
     assertNoNewPastProductSchedules(normalized.products, settings.products, Date.now());
     if (normalized.automationEnabled && !wasArmed) {
       normalized = { ...normalized, automationRunId: crypto.randomUUID(), monitoringPaused: false };
-      runtimeState.queueCapture = null;
+      runtimeState.queueCaptures = {};
     }
     reconcileProductExecutionContexts(
       runtimeState,
@@ -1747,7 +1889,7 @@ function registerIpc() {
       walmartPrepCandidates: []
     };
     runtimeState.productExecutionContexts = {};
-    runtimeState.queueCapture = null;
+    runtimeState.queueCaptures = {};
     runtimeState.walmartPrepObservations = {};
     persistSettings();
     persistRuntimeState();
@@ -2158,7 +2300,8 @@ function handleProductSchedule(decision) {
       [product],
       settings.automationRunId,
       decision.key,
-      Date.now()
+      Date.now(),
+      settings.scheduledBlitzDurationSeconds
     );
   }
   runtimeState.productScheduleReceipts[decision.key] = {
@@ -2275,7 +2418,8 @@ function startScheduler() {
       scheduledProducts,
       settings.automationRunId,
       decision.key,
-      Date.now()
+      Date.now(),
+      settings.scheduledBlitzDurationSeconds
     );
     runtimeState.scheduleReceipt = {
       key: decision.key,

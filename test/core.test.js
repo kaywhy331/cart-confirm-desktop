@@ -113,11 +113,16 @@ test("normalizes a multi-store buy list and preserves a private token", () => {
   assert.equal(defaults.watcherIntervalSeconds, 60);
   assert.equal(defaults.blitzRetryDelayMs, 750);
   assert.equal(defaults.blitzWindowSeconds, 20);
-  assert.equal(defaults.walmartQueueCaptureReloads, 5);
+  assert.equal(defaults.walmartQueueCaptureReloads, 0);
 
-  const existing = normalizeSettings({ products: PRODUCTS, companionToken: "existing-token" });
+  const armedProducts = PRODUCTS.map((product) => ({
+    ...product,
+    action: "review",
+    maxOrderTotal: Math.max(product.maxOrderTotal, product.maxPrice * product.quantity)
+  }));
+  const existing = normalizeSettings({ products: armedProducts, companionToken: "existing-token" });
   const result = normalizeSettings({
-    products: PRODUCTS,
+    products: armedProducts,
     automationEnabled: true,
     fastMode: false,
     retryIntervalSeconds: 8,
@@ -152,7 +157,7 @@ test("normalizes a multi-store buy list and preserves a private token", () => {
   assert.equal(result.walmartQueueCaptureReloads, 7);
   assert.equal(result.configurationProfiles[0].name, "Launch night");
   assert.equal(result.configurationProfiles[0].configuration.eligibilityRefreshIntervalSeconds, 2);
-  assert.equal(normalizeSettings({ products: PRODUCTS }, result).configurationProfiles.length, 1);
+  assert.equal(normalizeSettings({ products: armedProducts }, result).configurationProfiles.length, 1);
   assert.equal(result.scheduledRetailer, "amazon");
   assert.equal(result.discordEnabled, false);
   assert.equal(result.discordAutoOpen, true);
@@ -340,9 +345,9 @@ test("review-only products are supported and armed product edits require disarmi
   const review = normalizeProduct({ ...PRODUCTS[0], action: "review" });
   assert.equal(review.action, "review");
 
-  const armed = normalizeSettings({ products: [PRODUCTS[0]], automationEnabled: true });
+  const armed = normalizeSettings({ products: [{ ...PRODUCTS[0], action: "review" }], automationEnabled: true });
   const changed = normalizeSettings({
-    products: [{ ...PRODUCTS[0], maxPrice: PRODUCTS[0].maxPrice + 1 }],
+    products: [{ ...PRODUCTS[0], action: "review", maxPrice: PRODUCTS[0].maxPrice + 1 }],
     automationEnabled: true
   }, armed);
   assert.throws(() => assertSafeArmedUpdate(armed, changed), /Disarm automation/);
@@ -351,6 +356,7 @@ test("review-only products are supported and armed product edits require disarmi
   const metadataChanged = normalizeSettings({
     products: [{
       ...PRODUCTS[0],
+      action: "review",
       itemProfileId: "built-in:shipping-auto-buy",
       msrpRecordId: "msrp:pokemon-etb",
       priceSource: "approved-msrp"

@@ -28,6 +28,10 @@ button { border: 0; border-radius: 8px; padding: 9px 12px; color: #eaf5ff; curso
 button:disabled { cursor: not-allowed; opacity: .45; }
 .mission-actions { margin: 6px 0 10px; }
 .primary { flex: 1 1 auto; background: #0369a1; }
+.danger { width: 100%; background: #991b1b; }
+.danger:hover:not(:disabled) { background: #b91c1c; }
+.danger-preview { border-color: #7f1d1d; }
+.full-button { width: 100%; margin: 6px 0 10px; }
 .primary:hover:not(:disabled) { background: #0284c7; }
 .ghost { padding: 7px 9px; background: #18273d; color: #b9c8da; font-size: 11px; }
 .close-button, .cancel-button {

@@ -13,6 +13,24 @@
     checkout: 8,
     submit: 3
   });
+  const HELD_WORKFLOW_PHASES = new Set([
+    "cart-confirmed",
+    "awaiting-manual-outcome",
+    "manual-submit-observed",
+    "submission-uncertain"
+  ]);
+  const TERMINAL_WORKFLOW_PHASES = new Set([
+    "confirmed",
+    "explicitly-failed",
+    "abandoned",
+    "legacy-outcome-unknown"
+  ]);
+  const EVIDENCE_HASH_PATTERN = /^[a-f0-9]{64}$/;
+
+  function normalizeEvidenceHash(value) {
+    const normalized = String(value || "");
+    return EVIDENCE_HASH_PATTERN.test(normalized) ? normalized : "";
+  }
 
   function emptyTargetPersistence() {
     return Object.fromEntries(
@@ -52,17 +70,143 @@
     };
   }
 
+  function normalizeSubmission(input) {
+    const phase = ["idle", "intent", "uncertain", "confirmed", "explicitly-failed", "abandoned"]
+      .includes(input?.phase)
+      ? input.phase
+      : "idle";
+    return {
+      phase,
+      updatedAt: Number.isFinite(Number(input?.updatedAt)) ? Number(input.updatedAt) : 0,
+      evidenceHash: normalizeEvidenceHash(input?.evidenceHash)
+    };
+  }
+
+  function normalizeAddAction(input) {
+    const phase = ["idle", "reserved", "clicked", "confirmed"].includes(input?.phase)
+      ? input.phase
+      : "idle";
+    return {
+      phase,
+      ownerId: String(input?.ownerId || "").slice(0, 100),
+      updatedAt: Number.isFinite(Number(input?.updatedAt)) ? Number(input.updatedAt) : 0
+    };
+  }
+
+  function inferredWorkflow(record) {
+    if (["intent", "uncertain"].includes(record.submission.phase)) {
+      return {
+        phase: "submission-uncertain",
+        ownerId: record.addAction.ownerId,
+        updatedAt: record.submission.updatedAt,
+        evidenceHash: record.submission.evidenceHash
+      };
+    }
+    if (record.submission.phase === "confirmed") {
+      return { phase: "confirmed", ownerId: record.addAction.ownerId, updatedAt: record.submission.updatedAt, evidenceHash: record.submission.evidenceHash };
+    }
+    if (record.addAction.phase === "confirmed") {
+      return { phase: "cart-confirmed", ownerId: record.addAction.ownerId, updatedAt: record.addAction.updatedAt, evidenceHash: "" };
+    }
+    return { phase: "active", ownerId: record.addAction.ownerId, updatedAt: record.addAction.updatedAt, evidenceHash: "" };
+  }
+
+  function normalizeWorkflow(input, record) {
+    const phase = [
+      "active",
+      "cart-confirmed",
+      "review-ready",
+      "awaiting-manual-outcome",
+      "manual-submit-observed",
+      "submission-uncertain",
+      "confirmed",
+      "explicitly-failed",
+      "abandoned",
+      "legacy-outcome-unknown"
+    ].includes(input?.phase)
+      ? input.phase
+      : "";
+    if (!phase) return inferredWorkflow(record);
+    return {
+      phase: phase === "review-ready" ? "awaiting-manual-outcome" : phase,
+      ownerId: String(input?.ownerId || record.addAction.ownerId || "").slice(0, 100),
+      updatedAt: Number.isFinite(Number(input?.updatedAt)) ? Number(input.updatedAt) : 0,
+      evidenceHash: normalizeEvidenceHash(input?.evidenceHash)
+    };
+  }
+
+  function ensureHeldLock(state, key, productId, ownerId) {
+    const current = state.locks[key];
+    if (current?.hold) {
+      if (current.productId !== productId) {
+        state.locks[key] = {
+          productId: "conflict",
+          ownerId: "manual-resolution-required",
+          expiresAt: Number.MAX_SAFE_INTEGER,
+          hold: true,
+          conflictProductIds: [...new Set([
+            ...(current.conflictProductIds || []),
+            current.productId,
+            productId
+          ].filter((value) => value && value !== "conflict"))].slice(0, 20)
+        };
+      }
+      return;
+    }
+    state.locks[key] = {
+      productId,
+      ownerId: String(ownerId || current?.ownerId || `recovered:${productId}`).slice(0, 100),
+      expiresAt: Number.MAX_SAFE_INTEGER,
+      hold: true
+    };
+  }
+
   function normalizeState(input, runId, now = Date.now()) {
     const expectedRunId = String(runId || "");
-    const state = input && typeof input === "object" && input.version === STATE_VERSION && input.runId === expectedRunId
+    // The storage key intentionally remains cartConfirmAutomationStateV3.
+    // Accept older same-run objects and migrate them additively so a schema
+    // update can never erase an uncertain add or submit receipt.
+    const state = input && typeof input === "object" && !Array.isArray(input) && input.runId === expectedRunId
       ? input
       : createState(expectedRunId, now);
+    state.version = STATE_VERSION;
     state.locks ||= {};
     state.completed ||= {};
     state.products ||= {};
     state.runStartedAt = Number.isFinite(Number(state.runStartedAt)) ? Number(state.runStartedAt) : now;
     for (const [key, lock] of Object.entries(state.locks)) {
       if (!lock || (!lock.hold && Number(lock.expiresAt || 0) <= now)) delete state.locks[key];
+    }
+    for (const [productId, inputRecord] of Object.entries(state.products)) {
+      if (!inputRecord || typeof inputRecord !== "object") {
+        delete state.products[productId];
+        continue;
+      }
+      const record = inputRecord;
+      record.attempts = Number.isInteger(record.attempts) && record.attempts >= 0 ? record.attempts : 0;
+      record.submission = normalizeSubmission(record.submission);
+      record.addAction = normalizeAddAction(record.addAction);
+      record.workflow = normalizeWorkflow(record.workflow, record);
+      record.targetPersistence = normalizeTargetPersistence(record.targetPersistence);
+      if (state.completed[productId]) {
+        record.workflow = { ...record.workflow, phase: "confirmed" };
+        for (const [key, lock] of Object.entries(state.locks)) {
+          if (lock?.productId === productId) delete state.locks[key];
+        }
+        continue;
+      }
+      if (
+        ["clicked", "confirmed"].includes(record.addAction.phase)
+        || ["intent", "uncertain"].includes(record.submission.phase)
+        || HELD_WORKFLOW_PHASES.has(record.workflow.phase)
+      ) {
+        const ownerId = record.workflow.ownerId || record.addAction.ownerId;
+        ensureHeldLock(state, `product:${productId}`, productId, ownerId);
+        const retailer = String(productId).split(":", 1)[0];
+        if (["target", "walmart", "amazon"].includes(retailer)) {
+          ensureHeldLock(state, `store:${retailer}`, productId, ownerId);
+        }
+      }
     }
     return state;
   }
@@ -74,21 +218,23 @@
       proof: null,
       submission: { phase: "idle", updatedAt: 0, evidenceHash: "" },
       addAction: { phase: "idle", ownerId: "", updatedAt: 0 },
+      workflow: { phase: "active", ownerId: "", updatedAt: 0, evidenceHash: "" },
       targetPersistence: emptyTargetPersistence()
     };
     const record = state.products[key];
-    record.addAction ||= { phase: "idle", ownerId: "", updatedAt: 0 };
+    record.submission = normalizeSubmission(record.submission);
+    record.addAction = normalizeAddAction(record.addAction);
+    record.workflow = normalizeWorkflow(record.workflow, record);
     record.targetPersistence = normalizeTargetPersistence(record.targetPersistence);
     return record;
   }
 
-  // Every product gets its own lock so duplicate tabs cannot double-process
-  // it, and add-only products run in parallel. Checkout and final-review
-  // products additionally take the store lane: only one purchase workflow per
-  // store at a time.
+  // Monitoring may run in parallel, but every mission that can mutate a cart
+  // owns one universal retailer lane from its first mutation through a known
+  // terminal outcome.
   function lockKeys(product) {
     const keys = [`product:${product.id}`];
-    if (product.action !== "cart") keys.push(`store:${product.retailer}`);
+    if (product.action !== "watch") keys.push(`store:${product.retailer}`);
     return keys;
   }
 
@@ -107,6 +253,12 @@
     if (["intent", "uncertain"].includes(record.submission?.phase)) {
       return { ok: false, reason: "submission-uncertain" };
     }
+    if (TERMINAL_WORKFLOW_PHASES.has(record.workflow.phase) && record.workflow.phase !== "confirmed") {
+      return { ok: false, reason: "manual-resolution-required" };
+    }
+    if (["awaiting-manual-outcome", "manual-submit-observed", "submission-uncertain"].includes(record.workflow.phase)) {
+      return { ok: false, reason: "manual-outcome-pending" };
+    }
     if (["reserved", "clicked"].includes(record.addAction?.phase)) {
       return { ok: false, reason: "add-in-flight" };
     }
@@ -116,7 +268,7 @@
     const keys = lockKeys(product);
     for (const key of keys) {
       const lock = state.locks[key];
-      if (lock && lock.ownerId !== ownerId) {
+      if (lock && (lock.ownerId !== ownerId || lock.productId !== product.id)) {
         return {
           ok: false,
           reason: key.startsWith("store:") ? "store-busy" : "product-busy",
@@ -131,6 +283,9 @@
         expiresAt: now + LOCK_MS,
         hold: false
       };
+    }
+    if (!record.workflow.ownerId) {
+      record.workflow = { ...record.workflow, phase: "active", ownerId: String(ownerId || ""), updatedAt: now };
     }
     return { ok: true };
   }
@@ -149,11 +304,14 @@
   // allowed until explicit failure or confirmation resolves it.
   function release(state, product, ownerId) {
     const record = recordFor(state, product.id);
-    if (["intent", "uncertain"].includes(record.submission?.phase)) {
+    if (["intent", "uncertain"].includes(record.submission?.phase) || record.workflow.phase === "submission-uncertain") {
       return { ok: false, reason: "submission-uncertain", released: false };
     }
     if (record.addAction?.phase === "clicked") {
       return { ok: false, reason: "add-uncertain", released: false };
+    }
+    if (record.addAction?.phase === "confirmed" || HELD_WORKFLOW_PHASES.has(record.workflow.phase)) {
+      return { ok: false, reason: "post-mutation-held", released: false };
     }
     let released = false;
     for (const [key, lock] of Object.entries(state.locks)) {
@@ -260,6 +418,7 @@
       ownerId: String(ownerId || ""),
       updatedAt: now
     };
+    record.workflow = { phase: "active", ownerId: String(ownerId || ""), updatedAt: now, evidenceHash: "" };
     return { ok: true, addAction: record.addAction };
   }
 
@@ -286,12 +445,13 @@
     if (outcome === "confirmed") {
       if (action.phase !== "clicked") return { ok: false, reason: "add-not-clicked", addAction: action };
       record.addAction = { ...action, phase: "confirmed", updatedAt: now };
+      record.workflow = { phase: "cart-confirmed", ownerId: String(ownerId || ""), updatedAt: now, evidenceHash: "" };
       for (const key of lockKeys(product)) {
         if (state.locks[key]?.productId === product.id) {
           state.locks[key] = {
             ...state.locks[key],
-            hold: false,
-            expiresAt: now + LOCK_MS
+            hold: true,
+            expiresAt: Number.MAX_SAFE_INTEGER
           };
         }
       }
@@ -302,6 +462,7 @@
         return { ok: false, reason: "add-uncertain", addAction: action };
       }
       record.addAction = { phase: "idle", ownerId: "", updatedAt: now };
+      record.workflow = { phase: "active", ownerId: "", updatedAt: now, evidenceHash: "" };
       record.proof = null;
       for (const key of lockKeys(product)) {
         if (state.locks[key]?.productId === product.id) {
@@ -322,6 +483,8 @@
     if (state.completed[product.id]) return { ok: false, reason: "completed" };
     const budget = budgetReason(state, product, now);
     if (budget) return { ok: false, reason: budget };
+    const normalizedEvidenceHash = normalizeEvidenceHash(evidenceHash);
+    if (!normalizedEvidenceHash) return { ok: false, reason: "invalid-evidence-hash" };
     const keys = lockKeys(product);
     for (const key of keys) {
       const lock = state.locks[key];
@@ -336,7 +499,7 @@
     record.submission = {
       phase: "intent",
       updatedAt: now,
-      evidenceHash: String(evidenceHash || "").slice(0, 200)
+      evidenceHash: normalizedEvidenceHash
     };
     for (const key of keys) {
       state.locks[key] = { ...state.locks[key], hold: true, expiresAt: Number.MAX_SAFE_INTEGER };
@@ -356,6 +519,12 @@
     if (outcome === "clicked") {
       if (record.submission?.phase !== "intent") return { ok: false, reason: "submission-uncertain" };
       record.submission = { ...record.submission, phase: "uncertain", updatedAt: now };
+      record.workflow = {
+        phase: "submission-uncertain",
+        ownerId: String(ownerId || ""),
+        updatedAt: now,
+        evidenceHash: record.submission.evidenceHash
+      };
       for (const key of keys) {
         if (state.locks[key]) {
           state.locks[key] = { ...state.locks[key], hold: true, expiresAt: Number.MAX_SAFE_INTEGER };
@@ -364,13 +533,164 @@
       return { ok: true, submission: record.submission };
     }
     if (["canceled", "failed"].includes(outcome)) {
-      record.submission = { phase: "idle", updatedAt: now, evidenceHash: "" };
-      for (const [key, lock] of Object.entries(state.locks)) {
-        if (lock?.productId === product.id) delete state.locks[key];
+      if (outcome === "failed" && record.addAction.phase === "confirmed") {
+        record.submission = { phase: "idle", updatedAt: now, evidenceHash: "" };
+        record.workflow = { phase: "cart-confirmed", ownerId: String(ownerId || ""), updatedAt: now, evidenceHash: "" };
+        for (const key of keys) {
+          if (state.locks[key]?.productId === product.id) {
+            state.locks[key] = { ...state.locks[key], hold: true, expiresAt: Number.MAX_SAFE_INTEGER };
+          }
+        }
+      } else {
+        record.submission = { phase: outcome === "failed" ? "explicitly-failed" : "idle", updatedAt: now, evidenceHash: "" };
+        record.workflow = {
+          phase: outcome === "failed" ? "explicitly-failed" : "active",
+          ownerId: String(ownerId || ""),
+          updatedAt: now,
+          evidenceHash: ""
+        };
+        for (const [key, lock] of Object.entries(state.locks)) {
+          if (lock?.productId === product.id) delete state.locks[key];
+        }
       }
       return { ok: true, submission: record.submission };
     }
     return { ok: false, reason: "invalid-outcome" };
+  }
+
+  function beginManualReview(state, product, ownerId, evidenceHash, now = Date.now()) {
+    if (product.action !== "review") return { ok: false, reason: "review-only" };
+    if (state.completed[product.id]) return { ok: false, reason: "completed" };
+    const normalizedEvidenceHash = normalizeEvidenceHash(evidenceHash);
+    if (!normalizedEvidenceHash) return { ok: false, reason: "invalid-evidence-hash" };
+    const record = recordFor(state, product.id);
+    if (record.workflow.phase === "awaiting-manual-outcome") {
+      if (record.workflow.evidenceHash !== normalizedEvidenceHash) {
+        return { ok: false, reason: "review-evidence-changed", workflow: record.workflow };
+      }
+      return { ok: true, alreadyReady: true, workflow: record.workflow };
+    }
+    if (record.workflow.phase !== "cart-confirmed") {
+      return { ok: false, reason: "cart-confirmation-missing", workflow: record.workflow };
+    }
+    for (const key of lockKeys(product)) {
+      const lock = state.locks[key];
+      if (!lock || lock.productId !== product.id || lock.ownerId !== ownerId) {
+        return { ok: false, reason: key.startsWith("store:") ? "store-busy" : "product-busy" };
+      }
+    }
+    record.workflow = {
+      phase: "awaiting-manual-outcome",
+      ownerId: String(ownerId || ""),
+      updatedAt: now,
+      evidenceHash: normalizedEvidenceHash
+    };
+    for (const key of lockKeys(product)) {
+      state.locks[key] = { ...state.locks[key], hold: true, expiresAt: Number.MAX_SAFE_INTEGER };
+    }
+    return { ok: true, workflow: record.workflow };
+  }
+
+  function markManualSubmitObserved(state, product, ownerId, evidenceHash, now = Date.now()) {
+    if (product.action !== "review") return { ok: false, reason: "review-only" };
+    const normalizedEvidenceHash = normalizeEvidenceHash(evidenceHash);
+    if (!normalizedEvidenceHash) return { ok: false, reason: "invalid-evidence-hash" };
+    const record = recordFor(state, product.id);
+    if (record.workflow.phase !== "awaiting-manual-outcome") {
+      return { ok: false, reason: "review-not-ready", workflow: record.workflow };
+    }
+    if (record.workflow.ownerId && record.workflow.ownerId !== ownerId) {
+      return { ok: false, reason: "product-busy", workflow: record.workflow };
+    }
+    if (record.workflow.evidenceHash && record.workflow.evidenceHash !== normalizedEvidenceHash) {
+      return { ok: false, reason: "review-evidence-changed", workflow: record.workflow };
+    }
+    record.workflow = { ...record.workflow, phase: "manual-submit-observed", updatedAt: now };
+    return { ok: true, workflow: record.workflow };
+  }
+
+  function operatorResolution(state, product, ownerId, acknowledged = false, now = Date.now()) {
+    if (state.completed[product.id]) return { ok: false, reason: "completed", released: false };
+    const record = recordFor(state, product.id);
+    const submissionUncertain = ["intent", "uncertain"].includes(record.submission?.phase)
+      || record.workflow.phase === "submission-uncertain";
+    const postMutationHeld = HELD_WORKFLOW_PHASES.has(record.workflow.phase)
+      || ["clicked", "confirmed"].includes(record.addAction?.phase);
+    if (!submissionUncertain && !postMutationHeld) {
+      return { ok: false, reason: "operator-resolution-not-required", released: false };
+    }
+
+    const expectedOwner = String(ownerId || "");
+    if (!/^tab:\d+$/.test(expectedOwner)) {
+      return { ok: false, reason: "operator-tab-required", released: false };
+    }
+    const keys = lockKeys(product);
+    for (const key of keys) {
+      const lock = state.locks[key];
+      if (!lock || lock.productId !== product.id || lock.ownerId !== expectedOwner) {
+        return {
+          ok: false,
+          reason: lock?.productId === "conflict" ? "operator-resolution-conflict" : "operator-owner-mismatch",
+          released: false
+        };
+      }
+    }
+    const recordedOwners = [record.workflow.ownerId, record.addAction.ownerId].filter(Boolean);
+    if (recordedOwners.some((recordedOwner) => recordedOwner !== expectedOwner)) {
+      return { ok: false, reason: "operator-owner-mismatch", released: false };
+    }
+
+    const phase = submissionUncertain
+      ? "submission-uncertain"
+      : record.workflow.phase === "active"
+        ? `add-${record.addAction.phase}`
+        : record.workflow.phase;
+    if (acknowledged !== true) {
+      return { ok: true, resolvable: true, phase, released: false };
+    }
+
+    record.workflow = { phase: "abandoned", ownerId: "operator", updatedAt: now, evidenceHash: "" };
+    record.submission = { phase: "abandoned", updatedAt: now, evidenceHash: "" };
+    record.addAction = { phase: "idle", ownerId: "", updatedAt: now };
+    record.proof = null;
+    let released = false;
+    for (const key of keys) {
+      const lock = state.locks[key];
+      if (lock?.productId === product.id && lock.ownerId === expectedOwner) {
+        delete state.locks[key];
+        released = true;
+      }
+    }
+    return { ok: true, resolvable: false, phase: "abandoned", released, workflow: record.workflow };
+  }
+
+  function abandon(state, product, now = Date.now()) {
+    if (state.completed[product.id]) return { ok: false, reason: "completed", released: false };
+    const record = recordFor(state, product.id);
+    const resolutionRequired = ["clicked", "confirmed"].includes(record.addAction.phase)
+      || ["intent", "uncertain"].includes(record.submission.phase)
+      || HELD_WORKFLOW_PHASES.has(record.workflow.phase);
+    if (!resolutionRequired) return { ok: false, reason: "resolution-not-required", released: false };
+    record.workflow = { phase: "abandoned", ownerId: "operator", updatedAt: now, evidenceHash: "" };
+    record.submission = { phase: "abandoned", updatedAt: now, evidenceHash: "" };
+    record.addAction = { phase: "idle", ownerId: "", updatedAt: now };
+    record.proof = null;
+    let released = false;
+    for (const [key, lock] of Object.entries(state.locks)) {
+      if (lock?.productId === product.id) {
+        delete state.locks[key];
+        released = true;
+      }
+    }
+    return { ok: true, released, workflow: record.workflow };
+  }
+
+  function knownNoOrderRequired(state, product) {
+    if (state.completed[product.id]) return false;
+    const record = recordFor(state, product.id);
+    return ["clicked", "confirmed"].includes(record.addAction.phase)
+      || ["intent", "uncertain"].includes(record.submission.phase)
+      || HELD_WORKFLOW_PHASES.has(record.workflow.phase);
   }
 
   function complete(state, product, now = Date.now()) {
@@ -379,8 +699,20 @@
     if (product.action === "checkout" && !["intent", "uncertain"].includes(record.submission?.phase)) {
       return { ok: false, reason: "submission-intent-missing" };
     }
+    // The browser click observer is useful telemetry but cannot run before a
+    // trusted user click. A retailer may navigate to confirmation before its
+    // async message persists, so durable review readiness is also compatible
+    // with an authoritative store confirmation container.
+    if (product.action === "review" && !["awaiting-manual-outcome", "manual-submit-observed", "submission-uncertain"].includes(record.workflow.phase)) {
+      return { ok: false, reason: "manual-submit-intent-missing" };
+    }
+    if (product.action === "cart" && record.addAction.phase !== "confirmed") {
+      return { ok: false, reason: "cart-confirmation-missing" };
+    }
     state.completed[product.id] = new Date(now).toISOString();
     if (product.action === "checkout") record.submission = { ...record.submission, phase: "confirmed", updatedAt: now };
+    record.workflow = { ...record.workflow, phase: "confirmed", updatedAt: now };
+    record.addAction = { phase: "idle", ownerId: "", updatedAt: now };
     for (const [key, lock] of Object.entries(state.locks)) {
       if (lock?.productId === product.id) delete state.locks[key];
     }
@@ -395,6 +727,7 @@
       proof: record.proof,
       submission: record.submission,
       addAction: record.addAction,
+      workflow: record.workflow,
       targetPersistence: record.targetPersistence,
       budgetReason: budgetReason(state, product, now),
       lock: state.locks[`product:${product.id}`] || null
@@ -402,6 +735,7 @@
   }
 
   const api = Object.freeze({
+    EVIDENCE_HASH_PATTERN,
     LOCK_MS,
     MAX_TARGET_PERSISTENCE_WINDOW_MS,
     MIN_TARGET_PERSISTENCE_WINDOW_MS,
@@ -409,13 +743,18 @@
     TARGET_PERSISTENCE_LIMITS,
     TARGET_PERSISTENCE_WINDOW_MS,
     beginAddAction,
+    beginManualReview,
     beginSubmission,
+    abandon,
     claim,
     complete,
     createState,
     markAddAction,
+    markManualSubmitObserved,
     markSubmission,
+    knownNoOrderRequired,
     normalizeState,
+    operatorResolution,
     productState,
     recordAttempt,
     release,

@@ -1,0 +1,20 @@
+<!doctype html>
+<!-- Sanitized Walmart visible final-review state; all labels are fictional. -->
+<html><body><main>
+  <section data-testid="cart-item" data-us-item-id="123456789">
+    <a href="https://www.walmart.com/ip/example/123456789">Example Walmart item</a>
+    <span data-testid="seller">Sold and shipped by Walmart.com</span>
+    <span data-automation-id="cart-item-price">$24.50</span>
+    <select aria-label="Quantity"><option value="2" selected>2</option></select>
+    <button aria-label="Remove item">Remove</button>
+    <label><input type="checkbox" name="allow-substitutions"> Allow substitutions</label>
+  </section>
+  <label id="fixture-fulfillment"><input type="radio" name="fulfillment" value="shipping" checked> Shipping delivery</label>
+  <label id="fixture-destination" data-automation-id="address-card" data-selected="true"><input type="radio" name="shipping-address" checked> Deliver to 123 Example Street, Example City CA 90000</label>
+  <fieldset data-automation-id="payment-methods">
+    <label id="fixture-payment-primary"><input type="radio" name="payment-card" checked> Visa ending in 4242</label>
+    <label data-automation-id="payment-gift-card" data-selected="true"><input type="checkbox" name="payment-gift-card" checked> Walmart gift card ending in 0099</label>
+  </fieldset>
+  <div data-automation-id="order-total">Order total $53.27</div>
+  <button data-automation-id="place-order">Place your order</button>
+</main></body></html>

@@ -25,6 +25,11 @@ function fixture(retailer) {
   return new JSDOM(html, { url: `https://www.${retailer}.com/cart` }).window.document;
 }
 
+function stateFixture(retailer, state, url = `https://www.${retailer}.com/${state}`) {
+  const html = fs.readFileSync(path.join(__dirname, "fixtures", `${retailer}-${state}.html`), "utf8");
+  return new JSDOM(html, { url }).window.document;
+}
+
 function productFor(entry) {
   return {
     id: `${entry.retailer}:${entry.sku}`,
@@ -117,6 +122,21 @@ test("an extra line outside known retailer selectors is found through an indepen
   assert.equal(verifySingleProductCart(product, inventory).reason, "manual-action-required");
 });
 
+test("an unknown extra summary line without a remove control blocks checkout", () => {
+  const doc = fixture("target");
+  const adapter = getAdapter("target");
+  const product = productFor(CASES[0]);
+  const unknown = doc.createElement("section");
+  unknown.setAttribute("data-testid", "order-item-extra");
+  unknown.innerHTML = "<span>Unknown bonus item</span><span>$4.99</span>";
+  doc.querySelector("main").append(unknown);
+
+  const inventory = adapter.cartInventory(doc);
+  assert.equal(inventory.complete, false);
+  assert.equal(inventory.independentLineCount, 2);
+  assert.equal(verifySingleProductCart(product, inventory).reason, "cart-unverified");
+});
+
 test("checkout workflow requires fresh cart proof and a readable capped total", () => {
   const entry = CASES[2];
   const product = productFor(entry);
@@ -198,6 +218,12 @@ test("submission failure requires explicit proof that the order was not placed",
   assert.equal(adapter.submissionFailure(doc(`${"Help text. ".repeat(600)} Payment declined.`)), false);
   const alert = new JSDOM(`<body>${"Help text. ".repeat(600)}<div role="alert">Payment declined.</div></body>`).window.document;
   assert.equal(adapter.submissionFailure(alert), true);
+  for (const hiddenStyle of ["display: none", "visibility: hidden", "opacity: 0"]) {
+    const stale = new JSDOM(`<body><div style="${hiddenStyle}"><div role="alert">Your order was not placed.</div></div></body>`).window.document;
+    assert.equal(adapter.submissionFailure(stale), false, `${hiddenStyle} stale failures are not authoritative`);
+  }
+  const ariaHidden = new JSDOM(`<body><div aria-hidden="true"><div role="alert">Payment declined.</div></div></body>`).window.document;
+  assert.equal(adapter.submissionFailure(ariaHidden), false);
 });
 
 test("confirmation requires a retailer-specific confirmation container", () => {
@@ -207,6 +233,8 @@ test("confirmation requires a retailer-specific confirmation container", () => {
 
   const rooted = "<body><main data-automation-id='order-confirmation'>Thank you for your order. Order number 123.</main></body>";
   assert.equal(adapter.orderConfirmed(new JSDOM(rooted).window.document), true);
+  const hidden = `<body><main style="display:none" data-automation-id="order-confirmation">Thank you for your order. Order number 123.</main></body>`;
+  assert.equal(adapter.orderConfirmed(new JSDOM(hidden).window.document), false);
 });
 
 test("selected recurring and add-on choices block automatic submission", () => {
@@ -275,3 +303,118 @@ test("automatic submission requires the configured fulfillment mode", () => {
     now: 10_000
   }).reason, "fulfillment-unverified");
 });
+
+for (const entry of CASES) {
+  test(`${entry.retailer} sanitized product fixture proves the exact visible first-party offer`, () => {
+    const adapter = getAdapter(entry.retailer);
+    const product = productFor(entry);
+    const doc = stateFixture(entry.retailer, "product", product.retailer === "target"
+      ? `https://www.target.com/p/example/-/A-${product.sku}`
+      : product.retailer === "walmart"
+        ? `https://www.walmart.com/ip/example/${product.sku}`
+        : `https://www.amazon.com/dp/${product.sku}`);
+    const offer = adapter.offer(doc, product);
+    assert.equal(offer.available, true);
+    assert.equal(offer.firstParty, true);
+    assert.equal(offer.price, entry.unit);
+    assert.ok(offer.addButton);
+  });
+
+  test(`${entry.retailer} sanitized final checkout binds destination, complete payment set, cart, and total`, () => {
+    const adapter = getAdapter(entry.retailer);
+    const product = productFor(entry);
+    const doc = stateFixture(entry.retailer, "checkout");
+    const inventory = adapter.cartInventory(doc);
+    const line = adapter.findLine(doc, product);
+    assert.equal(inventory.complete, true);
+    assert.equal(inventory.independentlyCounted, true);
+    assert.deepEqual(inventory.ids, [product.sku]);
+    assert.equal(line.quantity, product.quantity);
+    assert.equal(line.price, entry.unit);
+    assert.equal(line.firstParty, true);
+    assert.equal(adapter.fulfillmentMode(doc), "shipping");
+    assert.equal(adapter.destinationEvidence(doc, "shipping").length, 1);
+    assert.equal(adapter.paymentInstrumentEvidence(doc).length, 2);
+    assert.equal(adapter.substitutionState(doc, product), entry.retailer === "walmart" ? "disabled" : "not-applicable");
+    assert.equal(adapter.orderTotal(doc), entry.total);
+    assert.ok(adapter.submitButton(doc));
+  });
+
+  test(`${entry.retailer} substitutions fail closed without visible item-bound evidence`, () => {
+    const adapter = getAdapter(entry.retailer);
+    const product = productFor(entry);
+    const doc = stateFixture(entry.retailer, "checkout");
+    for (const control of doc.querySelectorAll("input[name*='substitut' i], [data-testid*='substitut' i], [data-automation-id*='substitut' i], [data-test*='substitut' i]")) {
+      control.remove();
+    }
+    assert.equal(adapter.substitutionState(doc, product), "unknown");
+    const line = adapter.findLine(doc, product).container;
+    const hidden = doc.createElement("span");
+    hidden.style.display = "none";
+    hidden.textContent = "Substitutions are not available for this item.";
+    line.append(hidden);
+    assert.equal(adapter.substitutionState(doc, product), "unknown");
+  });
+
+  test(`${entry.retailer} checkout evidence notices destination, pickup-store, payment-set, and substitution changes`, () => {
+    const adapter = getAdapter(entry.retailer);
+    const product = productFor(entry);
+    const doc = stateFixture(entry.retailer, "checkout");
+    const originalDestination = adapter.destinationEvidence(doc, "shipping");
+    const originalPayments = adapter.paymentInstrumentEvidence(doc);
+
+    const destination = doc.querySelector("#fixture-destination");
+    destination.lastChild.textContent = " Deliver to 987 Changed Avenue, Other City CA 90001";
+    assert.notDeepEqual(adapter.destinationEvidence(doc, "shipping"), originalDestination);
+
+    destination.dataset.selected = "false";
+    destination.querySelector("input").checked = false;
+    const pickup = doc.createElement("label");
+    pickup.dataset.testid = "pickup-option";
+    pickup.dataset.selected = "true";
+    pickup.innerHTML = "<input type='radio' name='pickup-store' checked> Pickup at Example Store 42";
+    doc.querySelector("main").append(pickup);
+    assert.equal(adapter.fulfillmentMode(doc), "");
+    doc.querySelector("#fixture-fulfillment input").checked = false;
+    assert.equal(adapter.fulfillmentMode(doc), "pickup");
+    assert.deepEqual(adapter.destinationEvidence(doc, "pickup"), ["Pickup at Example Store 42"]);
+
+    doc.querySelector("#fixture-payment-primary input").checked = false;
+    assert.notDeepEqual(adapter.paymentInstrumentEvidence(doc), originalPayments);
+
+    if (entry.retailer === "walmart") {
+      const substitution = doc.querySelector("input[name='allow-substitutions']");
+      substitution.checked = true;
+      assert.equal(adapter.substitutionState(doc, product), "enabled");
+    }
+  });
+
+  test(`${entry.retailer} sanitized confirmation is authoritative only inside its retailer container`, () => {
+    const adapter = getAdapter(entry.retailer);
+    const doc = stateFixture(entry.retailer, "confirmation");
+    assert.equal(adapter.orderConfirmed(doc), true);
+    const root = doc.querySelector("main");
+    for (const attribute of ["id", "data-test", "data-testid", "data-automation-id", "aria-label"]) root.removeAttribute(attribute);
+    assert.equal(adapter.orderConfirmed(doc), false);
+  });
+
+  test(`${entry.retailer} sanitized auth, MFA, location, membership, challenge, and demand pages freeze safely`, () => {
+    const adapter = getAdapter(entry.retailer);
+    assert.equal(adapter.interactivePageState(stateFixture(entry.retailer, "auth")), "auth");
+    assert.equal(adapter.interactivePageState(stateFixture(entry.retailer, "mfa")), "mfa");
+    assert.equal(adapter.interactivePageState(stateFixture(entry.retailer, "location")), "location");
+    assert.equal(adapter.interactivePageState(stateFixture(entry.retailer, "membership")), "membership");
+    assert.equal(adapter.interactivePageState(stateFixture(entry.retailer, "challenge")), "challenge");
+    const demand = stateFixture(entry.retailer, "queue");
+    assert.match(demand.body.textContent, /high demand/i);
+    assert.equal(require("../extension/retailers").unrecognizedHighDemand(demand), true);
+    assert.equal(adapter.securityChallenge(demand), false);
+  });
+
+  test(`${entry.retailer} sanitized quantity-limit fixture exposes the visible limit before mutation`, () => {
+    const adapter = getAdapter(entry.retailer);
+    const product = productFor(entry);
+    const doc = stateFixture(entry.retailer, "quantity-limit");
+    assert.equal(adapter.visibleQuantityLimit(doc, product), 2);
+  });
+}

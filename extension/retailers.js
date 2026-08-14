@@ -26,6 +26,51 @@
     return String(element?.textContent || element?.value || "").replace(/\s+/g, " ").trim();
   }
 
+  function computedStyleOf(element) {
+    try {
+      return element?.ownerDocument?.defaultView?.getComputedStyle?.(element)
+        || globalThis.getComputedStyle?.(element)
+        || null;
+    } catch {
+      return null;
+    }
+  }
+
+  function isVisibleEvidence(element) {
+    if (!element) return false;
+    for (let current = element; current?.nodeType === 1; current = current.parentElement) {
+      if (
+        current.hidden
+        || current.getAttribute?.("aria-hidden") === "true"
+        || current.hasAttribute?.("inert")
+      ) return false;
+      const style = computedStyleOf(current);
+      if (
+        style?.display === "none"
+        || ["hidden", "collapse"].includes(style?.visibility)
+        || (style?.opacity !== "" && Number(style?.opacity) === 0)
+      ) return false;
+    }
+    return true;
+  }
+
+  function visibleTextOf(root, maxLength = 100_000) {
+    if (!root || !isVisibleEvidence(root)) return "";
+    const doc = root.ownerDocument;
+    const showText = doc?.defaultView?.NodeFilter?.SHOW_TEXT || 4;
+    const walker = doc?.createTreeWalker?.(root, showText);
+    if (!walker) return textOf(root).slice(0, maxLength);
+    const values = [];
+    let length = 0;
+    for (let node = walker.nextNode(); node && length < maxLength; node = walker.nextNode()) {
+      if (!isVisibleEvidence(node.parentElement)) continue;
+      const value = String(node.nodeValue || "");
+      values.push(value);
+      length += value.length + 1;
+    }
+    return values.join(" ").replace(/\s+/g, " ").trim().slice(0, maxLength);
+  }
+
   function pageText(doc, maxLength = 300_000) {
     return String(doc?.body?.innerText || doc?.body?.textContent || "")
       .replace(/\s+/g, " ")
@@ -59,9 +104,7 @@
 
   function isActionable(element) {
     if (!element || element.disabled || element.getAttribute?.("aria-disabled") === "true") return false;
-    const style = globalThis.getComputedStyle ? globalThis.getComputedStyle(element) : null;
-    if (style?.display === "none" || style?.visibility === "hidden") return false;
-    return true;
+    return isVisibleEvidence(element);
   }
 
   function findAction(doc, selectors, labelPattern) {
@@ -125,10 +168,10 @@
       const metadata = parseMaybeJson(payload?.customMetadata) || {};
       const item = parseMaybeJson(metadata.item) || {};
       const itemId = normalizedEmbeddedSku("walmart", item.itemID || item.itemId);
-      if (!itemId) return null;
       const refreshSeconds = Number(metadata.nextRefreshRelativeTime);
       return {
         itemId,
+        identityVerified: Boolean(itemId),
         queued: payload?.queued === true,
         state: String(metadata.state || "pending").toLowerCase().slice(0, 40),
         soldOut: metadata.soldOut === true,
@@ -153,15 +196,15 @@
     const itemId = extractSkuFromUrl("walmart", parsed.href);
     if (!itemId || itemId !== String(product?.sku || "")) return null;
 
-    const marker = query(doc, [
+    const marker = queryAll(doc, [
       "[data-testid*='waiting-room' i]",
       "[data-automation-id*='waiting-room' i]",
       "[data-testid*='purchase-queue' i]",
       "[data-automation-id*='purchase-queue' i]",
       "[data-testid*='queue-page' i]",
       "[data-automation-id*='queue-page' i]"
-    ]);
-    const text = pageText(doc, 40_000);
+    ]).find(isVisibleEvidence) || null;
+    const text = visibleTextOf(doc?.body, 40_000);
     const explicitWaitingRoom = /\b(?:waiting room|virtual queue|purchase queue|you(?:'|’)re in line|your place in line)\b/i.test(text);
     const pairedDemandWait = /\b(?:high|heavy) demand\b/i.test(text)
       && /\b(?:please wait|wait here|stay on this page|place in line|join(?:ed)? the (?:line|queue))\b/i.test(text);
@@ -460,17 +503,50 @@
     ]).map((control) => closestLineContainer(control)).filter(Boolean));
   }
 
+  function summaryLineContainers(doc, retailer) {
+    // These selectors already identify a summary line. Do not climb toward a
+    // parent with unrelated quantity controls: an unknown extra summary line
+    // with no remove button must still make the independent count disagree.
+    return uniqueElements(queryAll(doc, [
+      "[data-testid*='order-item' i]",
+      "[data-automation-id*='order-item' i]",
+      "[data-test*='order-item' i]",
+      "[data-testid*='summary-item' i]",
+      "[data-automation-id*='summary-item' i]",
+      "[data-test*='summary-item' i]"
+    ]).map((element) => {
+      if (skuFromContainer(element, retailer) || hasLineControls(element)) return element;
+      const line = closestLineContainer(element);
+      const recognizedItemContainer = line?.matches?.([
+        "[data-tcin]",
+        "[data-us-item-id]",
+        "[data-item-id]",
+        "[data-asin]",
+        "[data-test*='cart-item' i]",
+        "[data-testid*='cart-item' i]",
+        "[data-automation-id*='cart-item' i]"
+      ].join(","));
+      return recognizedItemContainer && skuFromContainer(line, retailer) ? line : element;
+    }));
+  }
+
   function uniqueElements(values) {
     return [...new Set(values.filter(Boolean))];
   }
 
   function cartInventory(doc, retailer, selectors) {
     const removalContainers = removalLineContainers(doc);
-    const candidates = uniqueElements([...queryAll(doc, selectors), ...removalContainers]).filter((container) => (
+    const summaryContainers = summaryLineContainers(doc, retailer);
+    const retailerContainers = queryAll(doc, selectors).filter((container) => (
       hasLineControls(container)
       || Boolean(container.querySelector?.("a[href]"))
       || Boolean(skuFromContainer(container, retailer))
     ));
+    const candidates = uniqueElements([
+      ...retailerContainers,
+      ...removalContainers,
+      ...summaryContainers
+    ]);
     const containers = candidates.filter((candidate) => !candidates.some((other) => (
       other !== candidate && candidate.contains?.(other)
     )));
@@ -478,10 +554,20 @@
       sku: skuFromContainer(container, retailer),
       container
     }));
-    const removalCountMatches = removalContainers.length === 0 || removalContainers.length === items.length;
+    const independentCandidates = uniqueElements([...removalContainers, ...summaryContainers]);
+    const independentContainers = independentCandidates.filter((candidate) => !independentCandidates.some((other) => (
+      other !== candidate && candidate.contains?.(other)
+    )));
+    const independentLineCount = independentContainers.length;
+    const independentSkus = independentContainers.map((container) => skuFromContainer(container, retailer)).filter(Boolean);
+    const independentlyCounted = independentLineCount > 0
+      && independentLineCount === items.length
+      && independentSkus.length === independentLineCount
+      && independentSkus.sort().join("|") === items.map((item) => item.sku).filter(Boolean).sort().join("|");
     return {
-      complete: items.length > 0 && items.every((item) => Boolean(item.sku)) && removalCountMatches,
-      independentlyCounted: removalContainers.length > 0 && removalContainers.length === items.length,
+      complete: items.length > 0 && items.every((item) => Boolean(item.sku)) && independentlyCounted,
+      independentlyCounted,
+      independentLineCount,
       removalLineCount: removalContainers.length,
       ids: items.map((item) => item.sku).filter(Boolean),
       items
@@ -509,10 +595,38 @@
     return /captcha|robot check|verify (?:that )?you(?:'|’)re human|verify you are (?:a )?human|press and hold|unusual traffic|security challenge/i.test(text);
   }
 
+  function unrecognizedHighDemand(doc) {
+    const text = pageText(doc, 120_000);
+    const demandOrQueue = /\b(?:(?:high|heavy) demand|virtual (?:queue|line)|waiting room|you(?:'|’)re in line|your place in line|almost your turn)\b/i.test(text);
+    const instructionOrState = /\b(?:stay on this page|please wait|wait here|checking availability|virtual (?:queue|line)|waiting room|your place in line|almost your turn)\b/i.test(text);
+    return demandOrQueue && instructionOrState;
+  }
+
+  function interactivePageState(doc) {
+    if (securityChallenge(doc)) return "challenge";
+    const visibleText = pageText(doc, 120_000);
+    const visibleControls = queryAll(doc, [
+      "input:not([type='hidden'])",
+      "button",
+      "[role='dialog']",
+      "[role='alertdialog']",
+      "[aria-modal='true']"
+    ]).filter(isVisibleEvidence);
+    const controlText = visibleControls.map((element) => (
+      `${element.getAttribute?.("name") || ""} ${element.getAttribute?.("type") || ""} ${element.getAttribute?.("placeholder") || ""} ${element.getAttribute?.("aria-label") || ""} ${textOf(element)}`
+    )).join(" ").slice(0, 50_000);
+    const text = `${controlText} ${visibleText}`;
+    if (/\b(?:one[- ]time (?:passcode|password|code)|verification code|security code|enter (?:the )?(?:code|otp)|two[- ](?:step|factor)|2fa|mfa|code (?:we|was) sent)\b/i.test(text)) return "mfa";
+    if (/\b(?:select|choose|confirm|verify|set|change) (?:a |your )?(?:pickup )?(?:store|location)|enter (?:a |your )?(?:zip|zipcode|zip code|postal code)|use my location\b/i.test(text)) return "location";
+    if (/\b(?:join|start|activate|continue with|try) (?:a |your )?(?:membership|free trial|walmart\+|prime|target circle 360)|membership (?:is )?(?:required|needed)|invitation[- ]only|invite required|early access (?:for|requires)\b/i.test(text)) return "membership";
+    if (/\b(?:sign in|log in|create (?:an )?account|forgot password|enter (?:your )?(?:email|password))\b/i.test(controlText)) return "auth";
+    return "";
+  }
+
   function orderConfirmed(doc, selectors) {
-    const roots = queryAll(doc, selectors || []);
+    const roots = queryAll(doc, selectors || []).filter(isVisibleEvidence);
     if (!roots.length) return false;
-    const text = roots.map((root) => textOf(root)).join(" ").slice(0, 100_000);
+    const text = roots.map((root) => visibleTextOf(root)).join(" ").slice(0, 100_000);
     return /thanks for your order|thank you for your (?:order|purchase)|your order (?:is|has been) placed|we(?:'|’)ve received your order/i.test(text)
       && /order (?:number|#)|confirmation (?:email|number)|order details/i.test(text);
   }
@@ -544,8 +658,7 @@
       "[data-test*='error' i]",
       "[data-testid*='error' i]"
     ]).filter((root) => (
-      !root.hidden
-      && root.getAttribute?.("aria-hidden") !== "true"
+      isVisibleEvidence(root)
       && classifyStoreErrorText(textOf(root))
       && !/captcha|robot check|verify (?:that )?you(?:'|’)re human|press and hold|security challenge/i.test(textOf(root))
     ));
@@ -570,10 +683,10 @@
       "[data-automation-id*='error' i]",
       "[id*='error' i]",
       "[class*='error' i]"
-    ]).filter((root) => !root.hidden && root.getAttribute?.("aria-hidden") !== "true");
-    const page = pageText(doc, 160_000);
+    ]).filter(isVisibleEvidence);
+    const page = visibleTextOf(doc?.body, 160_000);
     const text = errorRoots.length
-      ? errorRoots.map((root) => textOf(root)).join(" ").slice(0, 40_000)
+      ? errorRoots.map((root) => visibleTextOf(root)).join(" ").slice(0, 40_000)
       : page.length <= 5_000 ? page : "";
     return /\b(?:your\s+)?order\s+(?:was\s+)?not\s+(?:placed|submitted|processed|completed)\b/i.test(text)
       || /\b(?:unable|could not|couldn(?:'|’)t|weren(?:'|’)t able)\s+to\s+(?:place|submit|process|complete)\s+(?:your\s+)?order\b/i.test(text)
@@ -613,6 +726,101 @@
     return modes.size === 1 ? [...modes][0] : "";
   }
 
+  function visibleSelectedRegions(doc, selectors) {
+    return unique(queryAll(doc, selectors).filter((element) => (
+      isVisibleEvidence(element)
+      && element.matches?.("input:checked, option:checked, [aria-checked='true'], [aria-selected='true'], [data-selected='true'], [data-selected='selected']")
+    )).map((element) => {
+      const region = element.closest?.("label, fieldset, article, [role='radio'], [role='checkbox'], [data-testid], [data-automation-id], [data-test]")
+        || element.parentElement
+        || element;
+      return textOf(region).slice(0, 500);
+    }).filter(Boolean));
+  }
+
+  function destinationEvidence(doc, mode) {
+    const selectors = mode === "pickup"
+      ? [
+          "[data-testid*='pickup' i][data-selected='true']",
+          "[data-automation-id*='pickup' i][data-selected='true']",
+          "[data-test*='pickup' i][data-selected='true']",
+          "input:checked[name*='pickup' i]",
+          "[aria-checked='true'][aria-label*='pickup' i]"
+        ]
+      : [
+          "[data-testid*='address' i][data-selected='true']",
+          "[data-automation-id*='address' i][data-selected='true']",
+          "[data-test*='address' i][data-selected='true']",
+          "input:checked[name*='address' i]",
+          "[aria-checked='true'][aria-label*='deliver' i]",
+          "[aria-selected='true'][aria-label*='ship' i]"
+        ];
+    return visibleSelectedRegions(doc, selectors);
+  }
+
+  function paymentInstrumentEvidence(doc) {
+    return visibleSelectedRegions(doc, [
+      "input:checked[name*='payment' i]",
+      "input:checked[name*='card' i]",
+      "[aria-checked='true'][data-testid*='payment' i]",
+      "[aria-checked='true'][data-automation-id*='payment' i]",
+      "[aria-selected='true'][data-testid*='payment' i]",
+      "[data-selected='true'][data-testid*='payment' i]",
+      "[data-selected='true'][data-automation-id*='payment' i]"
+    ]);
+  }
+
+  function substitutionState(doc, product) {
+    const sku = String(product?.sku || "");
+    const line = sku ? query(doc, [
+      `[data-tcin='${cssEscape(sku)}']`,
+      `[data-us-item-id='${cssEscape(sku)}']`,
+      `[data-item-id='${cssEscape(sku)}']`,
+      `[data-asin='${cssEscape(sku)}']`,
+      `a[href*='${cssEscape(sku)}']`
+    ]) : null;
+    const root = line ? closestLineContainer(line) : null;
+    if (!root) return "unknown";
+    const controls = queryAll(root, [
+      "input[name*='substitut' i]",
+      "[role='checkbox'][aria-label*='substitut' i]",
+      "[data-testid*='substitut' i] input",
+      "[data-automation-id*='substitut' i] input"
+    ]).filter(isVisibleEvidence);
+    if (!controls.length) {
+      const text = visibleTextOf(root, 8_000);
+      if (/\b(?:substitutions?|replacements?)\s+(?:are\s+)?(?:not available|not offered|not applicable|unavailable|ineligible)\b|\b(?:cannot|can(?:'|’)t)\s+be\s+substituted\b/i.test(text)) {
+        return "not-applicable";
+      }
+      if (/\b(?:no substitutions?|do not substitute|decline substitutions?)\b/i.test(text)) return "disabled";
+      return "unknown";
+    }
+    for (const control of controls) {
+      const region = control.closest?.("label, [role='checkbox'], [data-testid], [data-automation-id]") || control.parentElement || control;
+      const text = `${control.getAttribute?.("name") || ""} ${control.getAttribute?.("value") || ""} ${textOf(region)}`;
+      const selected = control.checked === true || control.getAttribute?.("aria-checked") === "true";
+      if (selected && !/no substitutions?|do not substitute|decline substitutions?/i.test(text)) return "enabled";
+      if (selected && /no substitutions?|do not substitute|decline substitutions?/i.test(text)) return "disabled";
+      if (!selected && /allow substitutions?|accept replacements?/i.test(text)) return "disabled";
+    }
+    return "unknown";
+  }
+
+  function visibleQuantityLimit(doc, product) {
+    const line = product ? adapters?.[product.retailer]?.findLine?.(doc, product) : null;
+    const roots = [line?.container, ...queryAll(doc, ["[role='alert']", "[aria-live='assertive']", "[data-testid*='limit' i]", "[data-automation-id*='limit' i]"])].filter(Boolean);
+    for (const root of roots.slice(0, 50)) {
+      const text = textOf(root).slice(0, 5000);
+      const match = text.match(/(?:limit|max(?:imum)?|up to|only)\s+(?:of\s+)?(\d{1,2})\s+(?:per (?:customer|order|household)|item|unit|allowed)/i)
+        || text.match(/(?:per (?:customer|order|household))\s*[:\-]?\s*(\d{1,2})/i);
+      if (match) {
+        const limit = Number(match[1]);
+        if (Number.isInteger(limit) && limit > 0 && limit <= 99) return limit;
+      }
+    }
+    return null;
+  }
+
   const adapters = {
     target: {
       ...STORE_CONFIG.target,
@@ -627,7 +835,7 @@
       pageKind(url) {
         const path = new URL(url).pathname.toLowerCase();
         if (/order-confirm|thank.?you|confirmation/.test(path)) return "confirmation";
-        if (/\/(?:login|signin|sign-in)(?:\/|$)|\/account(?:\/|$)|\/co-(?:login|signin)(?:\/|$)/.test(path)) return "auth";
+        if (/\/(?:login|signin|sign-in|verify|challenge|mfa|otp)(?:\/|$)|\/account(?:\/|$)|\/co-(?:login|signin)(?:\/|$)/.test(path)) return "auth";
         if (/checkout|co-(?:delivery|fulfillment|pickup|payment|review)/.test(path)) return "checkout";
         if (/\/(?:cart|co-cart)(?:\/|$)/.test(path)) return "cart";
         return extractSkuFromUrl("target", url) ? "product" : "other";
@@ -705,6 +913,7 @@
         const path = new URL(url).pathname.toLowerCase();
         if (parseWalmartQueue(url) || walmartHoldingQueue(doc, url, product)) return "queue";
         if (/thank.?you|order-confirm|confirmation/.test(path)) return "confirmation";
+        if (/\/(?:account\/)?(?:login|signin|sign-in|auth|verify|challenge|mfa|otp)(?:\/|$)|\/account\/challenge(?:\/|$)/.test(path)) return "auth";
         if (path.includes("/checkout")) return "checkout";
         if (path.includes("/cart")) return "cart";
         return extractSkuFromUrl("walmart", url) ? "product" : "other";
@@ -773,6 +982,7 @@
       pageKind(url) {
         const path = new URL(url).pathname.toLowerCase();
         if (/thank.?you|order-confirm/.test(path)) return "confirmation";
+        if (/\/(?:ap\/)?(?:signin|sign-in|login|auth|challenge|verify|otp)(?:\/|$)|\/ap\/(?:cvf|mfa|signin)/.test(path)) return "auth";
         if (/\/gp\/buy|\/checkout/.test(path)) return "checkout";
         if (/\/gp\/cart|\/cart/.test(path)) return "cart";
         return extractSkuFromUrl("amazon", url) ? "product" : "other";
@@ -828,12 +1038,17 @@
 
   for (const [retailer, adapter] of Object.entries(adapters)) {
     adapter.securityChallenge = securityChallenge;
+    adapter.interactivePageState = interactivePageState;
     adapter.orderConfirmed = (doc) => orderConfirmed(doc, adapter.confirmationSelectors);
     adapter.storeError = storeError;
     adapter.storeErrorDismissButton = storeErrorDismissButton;
     adapter.submissionFailure = submissionFailure;
     adapter.unsafeOrderChoices = unsafeOrderChoices;
     adapter.fulfillmentMode = fulfillmentMode;
+    adapter.destinationEvidence = destinationEvidence;
+    adapter.paymentInstrumentEvidence = paymentInstrumentEvidence;
+    adapter.substitutionState = substitutionState;
+    adapter.visibleQuantityLimit = visibleQuantityLimit;
     adapter.retailer = retailer;
   }
 
@@ -843,9 +1058,11 @@
     extractSkuFromUrl,
     getAdapter: (retailer) => adapters[retailer] || null,
     isActionable,
+    isVisibleEvidence,
     isFirstPartyText,
     parsePrice,
     parseWalmartQueue,
+    unrecognizedHighDemand,
     walmartHoldingQueue,
     textOf
   });

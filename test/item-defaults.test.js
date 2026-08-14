@@ -46,7 +46,7 @@ test("MSRP matching uses the most specific included term and honors exclusions",
   assert.equal(resolveMsrpRecord({ title: "Pokémon Booster Bundle", query: "pokemon etb" }, catalog), null);
 });
 
-test("the default profile applies approved store MSRP, shipping, auto-buy, and a total allowance", () => {
+test("the new-install default profile applies approved store MSRP as shipping watch-only", () => {
   const profile = BUILT_IN_ITEM_PROFILES.find((candidate) => candidate.id === DEFAULT_ITEM_PROFILE_ID);
   const product = applyItemProfile({
     retailer: "target",
@@ -55,9 +55,9 @@ test("the default profile applies approved store MSRP, shipping, auto-buy, and a
     enabled: false
   }, profile, approvedCatalog());
   assert.equal(product.maxPrice, 49.99);
-  assert.equal(product.maxOrderTotal, 64.99);
+  assert.equal(product.maxOrderTotal, 0);
   assert.equal(product.quantity, 1);
-  assert.equal(product.action, "checkout");
+  assert.equal(product.action, "watch");
   assert.equal(product.fulfillmentMode, "shipping");
   assert.equal(product.enabled, true);
   assert.equal(product.msrpRecordId, "msrp:pokemon-etb");

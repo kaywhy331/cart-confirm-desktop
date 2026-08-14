@@ -94,6 +94,7 @@ const elements = {
   eligibilityRefreshIntervalSeconds: document.getElementById("eligibilityRefreshIntervalSeconds"),
   blitzRetryDelayMs: document.getElementById("blitzRetryDelayMs"),
   blitzWindowSeconds: document.getElementById("blitzWindowSeconds"),
+  scheduledBlitzDurationSeconds: document.getElementById("scheduledBlitzDurationSeconds"),
   walmartQueueCaptureReloads: document.getElementById("walmartQueueCaptureReloads"),
   storeNavigationIntervalSeconds: document.getElementById("storeNavigationIntervalSeconds"),
   overloadCooldownSeconds: document.getElementById("overloadCooldownSeconds"),
@@ -368,6 +369,7 @@ function currentConfiguration() {
     eligibilityRefreshIntervalSeconds: elements.eligibilityRefreshIntervalSeconds.value,
     blitzRetryDelayMs: elements.blitzRetryDelayMs.value,
     blitzWindowSeconds: elements.blitzWindowSeconds.value,
+    scheduledBlitzDurationSeconds: elements.scheduledBlitzDurationSeconds.value,
     walmartQueueCaptureReloads: elements.walmartQueueCaptureReloads.value,
     storeNavigationIntervalSeconds: elements.storeNavigationIntervalSeconds.value,
     overloadCooldownSeconds: elements.overloadCooldownSeconds.value
@@ -479,6 +481,7 @@ function globalSettings(products) {
     eligibilityRefreshIntervalSeconds: Number(elements.eligibilityRefreshIntervalSeconds.value),
     blitzRetryDelayMs: Number(elements.blitzRetryDelayMs.value),
     blitzWindowSeconds: Number(elements.blitzWindowSeconds.value),
+    scheduledBlitzDurationSeconds: Number(elements.scheduledBlitzDurationSeconds.value),
     walmartQueueCaptureReloads: Number(elements.walmartQueueCaptureReloads.value),
     walmartPrepCandidates: currentSnapshot?.settings?.walmartPrepCandidates || [],
     storeNavigationIntervalSeconds: Number(elements.storeNavigationIntervalSeconds.value),
@@ -843,6 +846,9 @@ function collectMission(card) {
   const retailer = field(card, "retailer").value;
   const sku = field(card, "sku").value.trim();
   const openAtValue = field(card, "openAt").value;
+  const existing = editingId && editingId !== "new"
+    ? savedProducts().find((candidate) => candidate.id === editingId)
+    : null;
   return {
     retailer,
     title: field(card, "title").value.trim(),
@@ -860,7 +866,9 @@ function collectMission(card) {
     priceSource: field(card, "priceSource").value || (Number(field(card, "maxPrice").value) > 0 ? "manual" : ""),
     signalAutoOpen: field(card, "signalAutoOpen").checked,
     signalEntry: field(card, "signalEntry").value,
-    enabled: field(card, "enabled").checked
+    enabled: field(card, "enabled").checked,
+    checkoutPreflightApproved: existing?.checkoutPreflightApproved === true,
+    checkoutPreflightCapturedAt: existing?.checkoutPreflightCapturedAt || ""
   };
 }
 
@@ -2138,6 +2146,7 @@ function populateSettingsInputs(settings) {
     [elements.eligibilityRefreshIntervalSeconds, settings.eligibilityRefreshIntervalSeconds],
     [elements.blitzRetryDelayMs, settings.blitzRetryDelayMs],
     [elements.blitzWindowSeconds, settings.blitzWindowSeconds],
+    [elements.scheduledBlitzDurationSeconds, settings.scheduledBlitzDurationSeconds],
     [elements.walmartQueueCaptureReloads, settings.walmartQueueCaptureReloads],
     [elements.storeNavigationIntervalSeconds, settings.storeNavigationIntervalSeconds],
     [elements.overloadCooldownSeconds, settings.overloadCooldownSeconds]
@@ -2603,6 +2612,7 @@ function scheduleSettingsSave() {
       elements.eligibilityRefreshIntervalSeconds,
       elements.blitzRetryDelayMs,
       elements.blitzWindowSeconds,
+      elements.scheduledBlitzDurationSeconds,
       elements.walmartQueueCaptureReloads,
       elements.storeNavigationIntervalSeconds,
       elements.overloadCooldownSeconds
@@ -2622,6 +2632,7 @@ elements.retryIntervalSeconds.addEventListener("change", scheduleSettingsSave);
 elements.eligibilityRefreshIntervalSeconds.addEventListener("change", scheduleSettingsSave);
 elements.blitzRetryDelayMs.addEventListener("change", scheduleSettingsSave);
 elements.blitzWindowSeconds.addEventListener("change", scheduleSettingsSave);
+elements.scheduledBlitzDurationSeconds.addEventListener("change", scheduleSettingsSave);
 elements.walmartQueueCaptureReloads.addEventListener("change", scheduleSettingsSave);
 elements.storeNavigationIntervalSeconds.addEventListener("change", scheduleSettingsSave);
 elements.overloadCooldownSeconds.addEventListener("change", scheduleSettingsSave);

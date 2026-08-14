@@ -36,10 +36,13 @@ test("legacy store schedule assigns every released product to blitz before disab
 
 test("desktop and extension configs carry execution mode and timing policy", () => {
   const config = section(mainSource, "function extensionConfig", "function startServerOnPort");
-  assert.match(config, /executionMode: productExecutionMode/);
+  assert.match(config, /executionMode: context \? "blitz" : "watcher"/);
+  assert.match(config, /executionExpiresAt/);
+  assert.match(config, /executionCohortId/);
   assert.match(config, /watcherIntervalSeconds/);
   assert.match(config, /blitzRetryDelayMs/);
   assert.match(config, /blitzWindowSeconds/);
+  assert.match(config, /scheduledBlitzDurationSeconds/);
 
   const reservation = section(
     backgroundSource,

@@ -35,9 +35,16 @@ function queueEvent(overrides = {}) {
   };
 }
 
+const capture = {
+  retailer: "walmart",
+  runId: "run-1",
+  cohortId: "cohort-a",
+  participantProductIds: ["walmart:1", "walmart:2", "walmart:3"]
+};
+
 test("the first official queue signal fans out remaining enabled missions once", () => {
-  const decision = planQueueFanout({ settings: settings(), event: queueEvent(), receipts: {} });
-  assert.equal(decision.key, "run-1|walmart");
+  const decision = planQueueFanout({ settings: settings(), event: queueEvent(), capture, receipts: {} });
+  assert.equal(decision.key, "run-1|walmart|cohort-a");
   assert.deepEqual(decision.productIds, ["walmart:2", "walmart:3"]);
   assert.equal(decision.spacingMs, QUEUE_FANOUT_SPACING_MS);
   assert.equal(decision.spacingMs, 0);
@@ -50,6 +57,7 @@ test("fan-out excludes tabs already waiting in the official queue", () => {
   const decision = planQueueFanout({
     settings: settings(),
     event: queueEvent(),
+    capture,
     receipts: {},
     queuedProductIds: ["walmart:2"]
   });
@@ -57,33 +65,35 @@ test("fan-out excludes tabs already waiting in the official queue", () => {
 });
 
 test("a durable receipt blocks duplicate queue bursts until a new run", () => {
-  const key = queueFanoutKey("run-1", "walmart");
+  const key = queueFanoutKey("run-1", "walmart", "cohort-a");
   assert.equal(planQueueFanout({
     settings: settings(),
     event: queueEvent(),
+    capture,
     receipts: { [key]: { status: "firing" } }
   }), null);
 
   const next = planQueueFanout({
     settings: settings({ automationRunId: "run-2" }),
     event: queueEvent(),
+    capture: { ...capture, runId: "run-2", cohortId: "cohort-b" },
     receipts: { [key]: { status: "fired" } }
   });
-  assert.equal(next.key, "run-2|walmart");
+  assert.equal(next.key, "run-2|walmart|cohort-b");
 });
 
 test("fan-out fails closed while stopped, disarmed, or sold out", () => {
   assert.equal(planQueueFanout({
     settings: settings({ automationEnabled: false }),
-    event: queueEvent()
+    event: queueEvent(), capture
   }), null);
   assert.equal(planQueueFanout({
     settings: settings({ monitoringPaused: true }),
-    event: queueEvent()
+    event: queueEvent(), capture
   }), null);
   assert.equal(planQueueFanout({
     settings: settings(),
-    event: queueEvent({ availability: "unavailable" })
+    event: queueEvent({ availability: "unavailable" }), capture
   }), null);
   assert.equal(planQueueFanout({
     settings: settings({
@@ -91,6 +101,18 @@ test("fan-out fails closed while stopped, disarmed, or sold out", () => {
         product.id === "walmart:1" ? { ...product, openAt: "2026-08-12T00:00:00.000Z" } : product
       ))
     }),
-    event: queueEvent()
+    event: queueEvent(), capture
   }), null);
+});
+
+test("two cohorts in one run remain isolated and immutable", () => {
+  const first = planQueueFanout({ settings: settings(), event: queueEvent(), capture, receipts: {} });
+  const secondCapture = {
+    ...capture,
+    cohortId: "cohort-b",
+    participantProductIds: ["walmart:1", "walmart:3"]
+  };
+  const second = planQueueFanout({ settings: settings(), event: queueEvent(), capture: secondCapture, receipts: {} });
+  assert.notEqual(first.key, second.key);
+  assert.deepEqual(second.productIds, ["walmart:3"]);
 });

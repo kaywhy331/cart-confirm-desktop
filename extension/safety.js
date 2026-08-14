@@ -25,7 +25,13 @@
   }
 
   function verifySingleProductCart(product, inventory) {
-    if (!inventory?.complete || !Array.isArray(inventory.items) || !inventory.items.length) {
+    if (
+      !inventory?.complete
+      || inventory.independentlyCounted !== true
+      || !Array.isArray(inventory.items)
+      || !inventory.items.length
+      || Number(inventory.independentLineCount) !== inventory.items.length
+    ) {
       return { ok: false, reason: "cart-unverified" };
     }
     if (inventory.items.length !== 1 || inventory.items[0].sku !== product.sku) {
