@@ -5,15 +5,16 @@
   const QuickAdd = globalThis.CartConfirmQuickAdd;
   const CatalogSearch = globalThis.CartConfirmCatalogSearch;
   const Safety = globalThis.CartConfirmSafety;
+  const Evidence = globalThis.CartConfirmEvidence;
   const ScheduleGate = globalThis.CartConfirmScheduleGate;
   const QueueCapture = globalThis.CartConfirmQueueCapture;
-  if (!Retailers || !QuickAdd || !CatalogSearch || !Safety || !ScheduleGate || !QueueCapture) return;
+  if (!Retailers || !QuickAdd || !CatalogSearch || !Evidence || !Safety || !ScheduleGate || !QueueCapture) return;
 
   const ACTIVE_PRODUCT_KEY = "cartConfirmActiveProductId";
+  const CHECKOUT_HMAC_SECRET_KEY = "cartConfirmCheckoutHmacSecretV1";
   const CONFIG_REFRESH_MS = 5_000;
   const HEARTBEAT_MS = 10_000;
   const OBSERVATION_DEDUPE_MS = Number.MAX_SAFE_INTEGER;
-  const LOCK_RELEASING_EVENTS = new Set(["automation-blocked", "store-error", "retry-scheduled"]);
   const PROOF_MAX_AGE_MS = Safety.CART_PROOF_MAX_AGE_MS;
   const seen = new Map();
   const attemptCache = new Map();
@@ -36,7 +37,9 @@
   let scanning = false;
   let backgroundActiveProductId = "";
   let backgroundActiveEntry = "product";
+  let backgroundSignalOrderLimit = null;
   let lastContextSyncProductId = "";
+  let checkoutHmacSecretPromise = null;
 
   const retailer = Retailers.detectRetailer(location.href);
   const adapter = Retailers.getAdapter(retailer);
@@ -70,6 +73,54 @@
     });
   }
 
+  function randomSecretHex() {
+    const bytes = crypto.getRandomValues(new Uint8Array(32));
+    return [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  }
+
+  function storageGet(key) {
+    return new Promise((resolve, reject) => {
+      chrome.storage.local.get(key, (stored) => {
+        if (chrome.runtime.lastError) reject(new Error("Checkout evidence storage is unavailable."));
+        else resolve(stored || {});
+      });
+    });
+  }
+
+  function storageSet(values) {
+    return new Promise((resolve, reject) => {
+      chrome.storage.local.set(values, () => {
+        if (chrome.runtime.lastError) reject(new Error("Checkout evidence storage is unavailable."));
+        else resolve();
+      });
+    });
+  }
+
+  async function checkoutHmacSecret() {
+    if (!checkoutHmacSecretPromise) {
+      checkoutHmacSecretPromise = (async () => {
+        const stored = await storageGet(CHECKOUT_HMAC_SECRET_KEY);
+        const existing = String(stored[CHECKOUT_HMAC_SECRET_KEY] || "");
+        if (/^[a-f0-9]{64}$/.test(existing)) return existing;
+        const created = randomSecretHex();
+        await storageSet({ [CHECKOUT_HMAC_SECRET_KEY]: created });
+        const verified = String((await storageGet(CHECKOUT_HMAC_SECRET_KEY))[CHECKOUT_HMAC_SECRET_KEY] || "");
+        if (!/^[a-f0-9]{64}$/.test(verified)) throw new Error("Checkout evidence secret could not be persisted.");
+        return verified;
+      })().catch((error) => {
+        checkoutHmacSecretPromise = null;
+        throw error;
+      });
+    }
+    return checkoutHmacSecretPromise;
+  }
+
+  async function fingerprintCheckoutEvidence(values) {
+    const normalized = Evidence.normalizeFingerprintValues(values);
+    if (!normalized.length) return "";
+    return Evidence.fingerprintWithSecret(await checkoutHmacSecret(), normalized);
+  }
+
   function pruneSeen() {
     if (seen.size < 500) return;
     const cutoff = Date.now() - 30 * 60_000;
@@ -98,7 +149,10 @@
         ...details
       }
     });
-    if (product?.id && LOCK_RELEASING_EVENTS.has(eventType)) {
+    // Release requests are safe here because AutomationState.release is
+    // phase-aware: any confirmed/uncertain cart mutation keeps the retailer
+    // lane, while a purely pre-click block may give it back.
+    if (product?.id && ["automation-blocked", "store-error", "retry-scheduled"].includes(eventType)) {
       await runtimeMessage({ type: "CART_CONFIRM_RELEASE_PRODUCT", productId: product.id });
     }
     if (result.ok) {
@@ -195,6 +249,7 @@
     }
     backgroundActiveProductId = product.id;
     backgroundActiveEntry = "product";
+    backgroundSignalOrderLimit = null;
     if (lastContextSyncProductId !== product.id) {
       lastContextSyncProductId = product.id;
       void runtimeMessage({
@@ -210,6 +265,7 @@
     }
     if (backgroundActiveProductId === product.id) backgroundActiveProductId = "";
     backgroundActiveEntry = "product";
+    backgroundSignalOrderLimit = null;
     lastContextSyncProductId = "";
     void runtimeMessage({ type: "CART_CONFIRM_CLEAR_TAB_PRODUCT_CONTEXT" });
   }
@@ -254,6 +310,27 @@
       productId: product.id
     });
     if (result.ok) backgroundActiveEntry = "product";
+  }
+
+  function configuredQuantityLimit(product) {
+    const limits = [Number(product?.quantity)];
+    if (Number.isInteger(backgroundSignalOrderLimit) && backgroundSignalOrderLimit > 0) {
+      limits.push(backgroundSignalOrderLimit);
+    }
+    const visible = adapter.visibleQuantityLimit?.(document, product);
+    if (Number.isInteger(visible) && visible > 0) limits.push(visible);
+    return Math.min(...limits);
+  }
+
+  async function requireQuantityWithinLimits(product) {
+    const effectiveLimit = configuredQuantityLimit(product);
+    if (product.quantity <= effectiveLimit) return true;
+    await send("automation-blocked", product, {
+      reason: "quantity-limit",
+      quantity: product.quantity,
+      message: `${adapter.label} limits this item to ${effectiveLimit}, below configured quantity ${product.quantity}. Cart Confirm will not silently lower the mission or click Add to cart.`
+    }, `quantity-limit:${product.id}:${product.quantity}:${effectiveLimit}`, Number.MAX_SAFE_INTEGER);
+    return false;
   }
 
   async function nextAttempt(product) {
@@ -364,6 +441,22 @@
     quantityRechecks.delete(product.id);
     missingCartLineSince.delete(product.id);
     return runtimeMessage({ type: "CART_CONFIRM_COMPLETE_PRODUCT", productId: product.id });
+  }
+
+  function beginManualReview(product, evidenceHash) {
+    return runtimeMessage({
+      type: "CART_CONFIRM_BEGIN_MANUAL_REVIEW",
+      productId: product.id,
+      evidenceHash
+    });
+  }
+
+  function markManualSubmit(product, evidenceHash) {
+    return runtimeMessage({
+      type: "CART_CONFIRM_MARK_MANUAL_SUBMIT",
+      productId: product.id,
+      evidenceHash
+    });
   }
 
   function eligibility(product, offer) {
@@ -597,6 +690,9 @@
 
   async function ensureQuantity(product, line) {
     const desired = product.quantity;
+    if (desired > configuredQuantityLimit(product)) {
+      return { ok: false, blocked: true, reason: "quantity-limit" };
+    }
     if (line.quantity === desired) return { ok: true };
     const { select, input, increase, decrease } = line.controls || {};
 
@@ -649,9 +745,18 @@
 
   async function handleRetailerQueue(product) {
     const queue = adapter.queueState?.(location.href, document, product);
-    if (!queue || queue.itemId !== product.sku) return false;
+    if (!queue) return false;
     clearRetry();
     clearQueueCaptureRetry();
+    if (!queue.itemId || queue.itemId !== product.sku) {
+      await send("automation-blocked", product, {
+        reason: "manual-action-required",
+        message: !queue.itemId
+          ? `${adapter.label} displayed a recognized official queue, but its item identity could not be verified. This tab is frozen and will not refresh or authorize fan-out.`
+          : `${adapter.label} displayed an official queue for a different item. This tab is frozen and will not refresh or authorize fan-out.`
+      }, `queue-identity-unverified:${product.id}:${queue.itemId || "unknown"}`, Number.MAX_SAFE_INTEGER);
+      return true;
+    }
     await send("queue-waiting", product, {
       availability: queue.soldOut ? "unavailable" : "unknown",
       reason: "retailer-queue",
@@ -711,11 +816,20 @@
       return;
     }
     const maximum = QueueCapture.maxReloads(config);
-    if (QueueCapture.readAttempts(sessionStorage, finalWaiting.capture, finalWaiting.product) >= maximum) {
+    if (maximum === 0) {
       clearQueueCaptureRetry();
       return;
     }
-    const attempts = QueueCapture.recordReload(sessionStorage, finalWaiting.capture, finalWaiting.product, maximum);
+    const durableAttempt = await runtimeMessage({
+      type: "CART_CONFIRM_RESERVE_QUEUE_CAPTURE_ATTEMPT",
+      productId: finalWaiting.product.id,
+      reservationId
+    });
+    if (!durableAttempt.ok) {
+      clearQueueCaptureRetry();
+      return;
+    }
+    const attempts = durableAttempt.attempts;
     void send("automation-status", finalWaiting.product, {
       message: `Walmart queue capture reload ${attempts} of ${maximum} is starting after the page-settle check.`
     }, `queue-capture-reload:${finalWaiting.capture.runId}:${finalWaiting.product.id}:${attempts}`, Number.MAX_SAFE_INTEGER);
@@ -731,16 +845,15 @@
       clearQueueCaptureRetry();
       return;
     }
-    const attempts = QueueCapture.readAttempts(sessionStorage, waiting.capture, waiting.product);
     const maximum = QueueCapture.maxReloads(config);
-    if (attempts >= maximum) {
+    if (maximum === 0) {
       await send("automation-status", waiting.product, {
-        message: `Walmart queue capture stopped after ${maximum} final reloads without a queue for this tab.`
+        message: "Walmart queue-capture loser reloads are disabled (0). This tab will not refresh."
       }, `queue-capture-stopped:${waiting.capture.runId}:${waiting.product.id}`, Number.MAX_SAFE_INTEGER);
       clearQueueCaptureRetry();
       return;
     }
-    const reservationId = `${waiting.capture.runId}:${waiting.product.id}:queue-capture:${attempts + 1}:${Date.now()}`;
+    const reservationId = `${waiting.capture.cohortId}:${waiting.product.id}:queue-capture:${crypto.randomUUID()}`;
     const reservation = await runtimeMessage({
       type: "CART_CONFIRM_RESERVE_NAVIGATION",
       retailer,
@@ -956,6 +1069,8 @@
       await scheduleRetry(product, `Watching this ${adapter.label} item; alerts fire while it stays eligible.`);
       return;
     }
+
+    if (!await requireQuantityWithinLimits(product)) return;
 
     const claim = await claimProduct(product);
     if (!claim.ok) {
@@ -1224,7 +1339,19 @@
     const quantity = await ensureQuantity(product, line);
     if (quantity.ok) quantityRechecks.delete(product.id);
     if (!quantity.ok) {
-      if (quantity.blocked) return;
+      if (quantity.blocked) {
+        const effectiveLimit = configuredQuantityLimit(product);
+        await send("automation-blocked", product, {
+          price: safeLine.price,
+          seller: safeLine.seller,
+          firstParty: true,
+          eligible: false,
+          reason: "quantity-limit",
+          quantity: product.quantity,
+          message: `${adapter.label} limits this item to ${effectiveLimit}, below configured quantity ${product.quantity}. The item may already be in the cart, so the mission remains held for deliberate operator review; Cart Confirm did not silently reduce it.`
+        }, `cart-quantity-limit:${product.id}:${product.quantity}:${effectiveLimit}`, Number.MAX_SAFE_INTEGER);
+        return;
+      }
       if (quantity.pending) {
         scheduleScan(1_200);
         return;
@@ -1328,11 +1455,103 @@
       fulfillmentMode,
       now: Date.now()
     });
-    return { ...review, inventory, line, orderTotal };
+    const destinationTexts = adapter.destinationEvidence(document, fulfillmentMode);
+    const paymentInstrumentTexts = adapter.paymentInstrumentEvidence(document);
+    const substitutionState = adapter.substitutionState(document, product);
+    const checkoutEvidence = await Evidence.capture(product, {
+      fulfillmentMode,
+      destinationTexts: fulfillmentMode === "shipping" ? destinationTexts : [],
+      pickupStoreTexts: fulfillmentMode === "pickup" ? destinationTexts : [],
+      paymentInstrumentTexts,
+      substitutionState,
+      inventory,
+      line,
+      orderTotal
+    }, fingerprintCheckoutEvidence);
+    const expectedEvidence = product.checkoutEvidence;
+    const evidence = await Evidence.matches(expectedEvidence, checkoutEvidence, product);
+    return { ...review, inventory, line, orderTotal, checkoutEvidence, evidence };
   }
 
-  function reviewEvidenceHash(product, review) {
-    return JSON.stringify({
+  async function captureCheckoutPreflight() {
+    const latest = await requestConfig(true);
+    if (!latest) return { ok: false, reason: "desktop-not-found", error: "Cart Confirm desktop is not reachable." };
+    config = latest;
+    if (config.automationEnabled) {
+      return { ok: false, reason: "automation-armed", error: "Switch Autopilot off before approving checkout preflight." };
+    }
+    const product = activeProduct();
+    if (!product || !product.enabled || product.action !== "checkout") {
+      return { ok: false, reason: "product-disabled", error: "Open the checkout page for one enabled auto-submit mission." };
+    }
+    if (adapter.pageKind(location.href, document, product) !== "checkout") {
+      return { ok: false, reason: "checkout-page-required", error: "Open this mission's final checkout review page first." };
+    }
+    if (adapter.securityChallenge(document)) {
+      return { ok: false, reason: "manual-action-required", error: "Complete the store security challenge manually first." };
+    }
+
+    const inventory = adapter.cartInventory(document);
+    const line = adapter.findLine(document, product);
+    const cart = Safety.verifySingleProductCart(product, inventory);
+    if (!cart.ok || !line || line.quantity !== product.quantity) {
+      return { ok: false, reason: cart.reason || "quantity-unavailable", error: "The checkout page did not prove exactly one matching cart line at the configured quantity." };
+    }
+    const offer = Safety.effectiveLineOffer(product, line);
+    if (!offer.ok) {
+      return { ok: false, reason: offer.reason, error: "The checkout line did not prove an eligible first-party offer under the unit-price cap." };
+    }
+    const orderTotal = adapter.orderTotal(document);
+    if (!Number.isFinite(orderTotal) || orderTotal <= 0 || orderTotal > product.maxOrderTotal) {
+      return { ok: false, reason: Number.isFinite(orderTotal) ? "over-total" : "total-unavailable", error: "The final order total is missing or above this mission's cap." };
+    }
+    const unsafeChoices = adapter.unsafeOrderChoices(document);
+    if (unsafeChoices.length) {
+      return { ok: false, reason: "manual-action-required", error: "Disable recurring, add-on, warranty, tip, donation, or installment choices before approving." };
+    }
+    const fulfillmentMode = adapter.fulfillmentMode(document);
+    if (fulfillmentMode !== product.fulfillmentMode) {
+      return { ok: false, reason: "fulfillment-unverified", error: `Checkout did not prove the required ${product.fulfillmentMode} fulfillment mode.` };
+    }
+    const destinationTexts = adapter.destinationEvidence(document, fulfillmentMode);
+    const paymentInstrumentTexts = adapter.paymentInstrumentEvidence(document);
+    const substitutionState = adapter.substitutionState(document, product);
+    const evidence = await Evidence.capture(product, {
+      fulfillmentMode,
+      destinationTexts: fulfillmentMode === "shipping" ? destinationTexts : [],
+      pickupStoreTexts: fulfillmentMode === "pickup" ? destinationTexts : [],
+      paymentInstrumentTexts,
+      substitutionState,
+      inventory,
+      line,
+      orderTotal
+    }, fingerprintCheckoutEvidence);
+    const validated = Evidence.validate(evidence, product);
+    if (!validated.ok) {
+      return {
+        ok: false,
+        reason: validated.reason,
+        error: "Checkout did not prove the destination, complete payment set, disabled substitutions, exact cart, and capped total."
+      };
+    }
+    // comparable() deliberately strips capturedAt and is the only evidence
+    // payload allowed to cross the content-script boundary. Raw address and
+    // payment text remains in this function's local memory.
+    return {
+      ok: true,
+      productId: product.id,
+      retailer: product.retailer,
+      sku: product.sku,
+      evidence: {
+        ...Evidence.comparable(validated.evidence),
+        capturedAt: new Date().toISOString()
+      }
+    };
+  }
+
+  async function reviewEvidenceHash(product, review) {
+    const canonical = JSON.stringify({
+      normalizerVersion: 1,
       path: location.pathname,
       productId: product.id,
       quantity: product.quantity,
@@ -1342,10 +1561,13 @@
       inventoryIds: (review.inventory?.items || []).map((item) => item.sku),
       lineQuantity: review.line?.quantity,
       linePrice: review.price,
+      evidence: Evidence.comparable(review.checkoutEvidence),
       seller: review.seller,
       firstParty: review.firstParty,
       orderTotal: review.orderTotal
     });
+    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(canonical));
+    return [...new Uint8Array(digest)].map((value) => value.toString(16).padStart(2, "0")).join("");
   }
 
   async function handleCheckoutPage(product) {
@@ -1444,26 +1666,40 @@
     }
 
     const review = await readCheckoutReview(product);
-    if (!review.ok) {
+    if (!review.ok || (product.action === "checkout" && !review.evidence.ok)) {
+      const blockReason = !review.ok ? review.reason : review.evidence.reason;
       await send("automation-blocked", product, {
         price: review.price,
         orderTotal: review.orderTotal === null ? undefined : review.orderTotal,
         seller: review.seller,
         firstParty: review.firstParty,
         eligible: false,
-        reason: review.reason,
-        message: review.reason === "over-total"
+        reason: blockReason,
+        message: blockReason === "over-total"
           ? `Final order total is above the $${product.maxOrderTotal.toFixed(2)} cap.`
           : review.reason === "total-unavailable"
             ? "Final order review did not expose a readable order total."
-            : review.reason === "fulfillment-unverified"
+            : blockReason === "fulfillment-unverified"
               ? `Final order review did not prove the required ${product.fulfillmentMode} fulfillment mode.`
-            : "Final order review could not re-verify the complete cart, exact SKU, first-party offer, unit cap, and quantity."
-      }, `review-blocked:${product.id}:${review.reason}`, 20_000);
+            : blockReason === "checkout-preflight-required"
+              ? "Automatic submission is disarmed until you approve this mission's destination, complete payment set, substitution state, cart count, quantity, SKU, and total while Autopilot is off."
+              : blockReason === "checkout-evidence-changed"
+                ? "The destination, payment set, substitution state, cart count, quantity, SKU, or total differs from the approved preflight. Automatic submission stopped."
+                : "Final order review could not re-verify the complete cart, exact SKU, first-party offer, unit cap, quantity, and checkout evidence."
+      }, `review-blocked:${product.id}:${blockReason}`, 20_000);
       return;
     }
 
     if (product.action === "review") {
+      const evidenceHash = await reviewEvidenceHash(product, review);
+      const ready = await beginManualReview(product, evidenceHash);
+      if (!ready.ok) {
+        await send("automation-blocked", product, {
+          reason: "manual-action-required",
+          message: "The verified review page could not be saved as a durable manual-outcome workflow. The retailer lane remains held for safety."
+        }, `review-state-blocked:${product.id}:${ready.reason}`, Number.MAX_SAFE_INTEGER);
+        return;
+      }
       const reported = await send("review-ready", product, {
         quantity: product.quantity,
         price: review.price,
@@ -1474,8 +1710,6 @@
         reason: "eligible"
       }, `review-ready:${product.id}:${review.orderTotal}`, Number.MAX_SAFE_INTEGER);
       if (!reported.ok) return;
-      const completed = await completeProduct(product);
-      if (completed.ok) clearActiveProduct(product);
       return;
     }
 
@@ -1485,7 +1719,7 @@
       return;
     }
 
-    const expectedHash = reviewEvidenceHash(product, review);
+    const expectedHash = await reviewEvidenceHash(product, review);
     let intentCreated = false;
     let attempt = 0;
     const clicked = await clickAction(submitButton, product, async () => {
@@ -1499,7 +1733,7 @@
       attempt = await requireAttempt(product);
       if (attempt === null) return false;
       const freshReview = await readCheckoutReview(product);
-      if (!freshReview.ok || reviewEvidenceHash(product, freshReview) !== expectedHash) {
+      if (!freshReview.ok || await reviewEvidenceHash(product, freshReview) !== expectedHash) {
         await send("automation-blocked", product, {
           reason: "manual-action-required",
           message: "The final order evidence changed before submission. Automatic checkout stopped for a fresh manual review."
@@ -1560,22 +1794,58 @@
       }
       if (await handleChallenge(product)) return;
 
+      const interactiveState = adapter.interactivePageState?.(document) || "";
+      if (["auth", "mfa", "location", "membership"].includes(interactiveState)) {
+        clearRetry();
+        const state = await productAutomationState(product);
+        const postMutation = state.ok && (
+          ["clicked", "confirmed"].includes(state.addAction?.phase)
+          || ["awaiting-manual-outcome", "manual-submit-observed", "submission-uncertain"].includes(state.workflow?.phase)
+          || ["intent", "uncertain"].includes(state.submission?.phase)
+        );
+        const label = interactiveState === "auth"
+          ? "sign-in or account check"
+          : interactiveState === "mfa"
+            ? "verification code or MFA prompt"
+          : interactiveState === "location"
+            ? "store or location choice"
+            : "membership or invitation prompt";
+        await send("automation-blocked", product, {
+          reason: "manual-action-required",
+          message: `${adapter.label} requires a manual ${label}. Cart Confirm will not sign in, fill codes, choose a location, join a membership, or bypass eligibility. ${postMutation ? "Because the cart may already have changed, this mission keeps the store lane until you resolve it." : "No cart mutation was recorded, so the store lane may be released."}`
+        }, `interactive-page:${product.id}:${interactiveState}:${pageAddress()}`, 60_000);
+        return;
+      }
+
       void send("page-observed", product, {}, `page:${product.id}:${pageAddress()}`, OBSERVATION_DEDUPE_MS);
       const kind = adapter.pageKind(location.href, document, product);
       if (kind === "queue" && await handleRetailerQueue(product)) return;
       if (handleQueueCaptureRetry(product)) return;
       if (kind === "confirmation" && await handleConfirmation(product)) return;
-      if (kind === "product") await handleProductPage(product);
+      const highDemandUnknown = Retailers.unrecognizedHighDemand(document);
+      if (highDemandUnknown) {
+        clearRetry();
+        await send("automation-blocked", product, {
+          reason: "manual-action-required",
+          message: `${adapter.label} displayed an unrecognized high-demand or waiting-room page. It is frozen for manual review; Cart Confirm will not refresh, replay, or manipulate a queue token.`
+        }, `unknown-high-demand:${product.id}:${pageAddress()}`, Number.MAX_SAFE_INTEGER);
+      } else if (kind === "product") await handleProductPage(product);
       else if (kind === "cart") await handleCartPage(product);
       else if (kind === "checkout" || kind === "confirmation") await handleCheckoutPage(product);
       else {
         clearRetry();
         const safePath = String(location.pathname || "/").slice(0, 160);
+        const state = await productAutomationState(product);
+        const postMutation = state.ok && (
+          ["clicked", "confirmed"].includes(state.addAction?.phase)
+          || ["awaiting-manual-outcome", "manual-submit-observed", "submission-uncertain"].includes(state.workflow?.phase)
+          || ["intent", "uncertain"].includes(state.submission?.phase)
+        );
         await send("automation-blocked", product, {
           reason: "manual-action-required",
           message: kind === "auth"
-            ? `${adapter.label} requires a manual sign-in or account check at ${safePath}. This mission's store lane was released so the remaining missions can continue.`
-            : `${adapter.label} redirected this workflow to the unrecognized path ${safePath}. This mission's store lane was released so the remaining missions can continue; review this tab manually.`
+            ? `${adapter.label} requires a manual sign-in or account check at ${safePath}. ${postMutation ? "Because the cart may already have changed, this mission keeps the store lane until you resolve it." : "No cart mutation was recorded, so the store lane may be released."}`
+            : `${adapter.label} redirected this workflow to the unrecognized path ${safePath}. ${postMutation ? "Because the cart may already have changed, this mission keeps the store lane until you resolve it." : "No cart mutation was recorded, so the store lane may be released."}`
         }, `unexpected-page:${product.id}:${pageAddress()}`, 60_000);
       }
     } finally {
@@ -1601,7 +1871,7 @@
       paused: next.monitoringPaused,
       version: next.configVersion,
       products: next.products,
-      queueCapture: next.queueCapture,
+      queueCaptures: next.queueCaptures,
       catalogSearch: next.catalogSearch
     });
     const changed = fingerprint !== configFingerprint;
@@ -1619,6 +1889,9 @@
     const context = await runtimeMessage({ type: "CART_CONFIRM_GET_TAB_PRODUCT_CONTEXT" });
     backgroundActiveProductId = context.ok ? String(context.productId || "") : "";
     backgroundActiveEntry = context.ok ? String(context.entry || "product") : "product";
+    backgroundSignalOrderLimit = context.ok && Number.isInteger(context.signalOrderLimit)
+      ? context.signalOrderLimit
+      : null;
     if (backgroundActiveProductId) sessionStorage.setItem(ACTIVE_PRODUCT_KEY, backgroundActiveProductId);
     const contextChanged = previousContextProductId !== backgroundActiveProductId
       || previousContextEntry !== backgroundActiveEntry;
@@ -1634,7 +1907,22 @@
     const product = activeProduct();
     if (!target || !product) return;
     const label = `${target.getAttribute("aria-label") || ""} ${target.getAttribute("value") || ""} ${Retailers.textOf(target)}`;
-    if (/add to cart/i.test(label)) {
+    if (product.action === "review" && /place (?:my |your )?order/i.test(label)) {
+      void (async () => {
+        const state = await productAutomationState(product);
+        if (!state.ok || state.workflow?.phase !== "awaiting-manual-outcome") return;
+        const freshReview = await readCheckoutReview(product);
+        const evidenceHash = freshReview.ok ? await reviewEvidenceHash(product, freshReview) : "";
+        if (!freshReview.ok || evidenceHash !== state.workflow.evidenceHash) {
+          await send("automation-blocked", product, {
+            reason: "manual-action-required",
+            message: "The final review evidence changed before your manual Place Order click. The click was not matched to the approved review; verify the outcome manually."
+          }, `manual-review-changed:${product.id}:${Date.now()}`, 0);
+          return;
+        }
+        await markManualSubmit(product, evidenceHash);
+      })();
+    } else if (/add to cart/i.test(label)) {
       const manualKey = `cartConfirmManualAddAt:${product.id}`;
       const now = Date.now();
       const lastManualAddAt = Number(sessionStorage.getItem(manualKey) || 0);
@@ -1652,6 +1940,12 @@
       void refreshConfig(true);
       sendResponse({ ok: true });
       return false;
+    }
+    if (message?.type === "CART_CONFIRM_CHECKOUT_PREFLIGHT_INSPECT") {
+      void captureCheckoutPreflight()
+        .then(sendResponse)
+        .catch((error) => sendResponse({ ok: false, reason: "checkout-preflight-error", error: error.message }));
+      return true;
     }
     if (message?.type !== "CART_CONFIRM_QUICK_ADD_INSPECT") return undefined;
     try {

@@ -1,0 +1,20 @@
+<!doctype html>
+<!-- Sanitized Amazon visible final-review state; all labels are fictional. -->
+<html><body><main id="checkout-page-container">
+  <section data-testid="order-item" data-asin="B0ABC12345">
+    <a href="https://www.amazon.com/dp/B0ABC12345">Example Amazon item</a>
+    <span class="sc-product-seller">Ships from Amazon.com Sold by Amazon.com</span>
+    <span class="sc-product-price">$12.50</span>
+    <span data-testid="substitution-status">Substitutions are not available for this item.</span>
+    <select aria-label="Quantity"><option value="2" selected>2</option></select>
+    <button aria-label="Remove item">Remove</button>
+  </section>
+  <label id="fixture-fulfillment"><input type="radio" name="fulfillment" value="shipping" checked> Shipping delivery</label>
+  <label id="fixture-destination" data-testid="address-card" data-selected="true"><input type="radio" name="shipping-address" checked> Deliver to 123 Example Street, Example City CA 90000</label>
+  <fieldset data-testid="payment-methods">
+    <label id="fixture-payment-primary"><input type="radio" name="payment-card" checked> Visa ending in 4242</label>
+    <label data-testid="payment-gift-card" data-selected="true"><input type="checkbox" name="payment-gift-card" checked> Gift card ending in 0099</label>
+  </fieldset>
+  <div id="order-summary"><span class="grand-total-price">Order total $27.44</span></div>
+  <div id="submitOrderButtonId"><input name="placeYourOrder1" type="submit" value="Place your order"></div>
+</main></body></html>

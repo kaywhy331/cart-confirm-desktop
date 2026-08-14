@@ -34,7 +34,23 @@
         <button id="addButton" class="primary" type="button">Add with default profile</button>
         <button id="cancelButton" class="cancel-button" type="button" aria-label="Close without adding" title="Close without adding">×</button>
       </div>
-      <small>The current retailer price becomes the mission’s maximum unit price and your desktop item profile supplies the remaining fields. The built-in default is shipping + auto-buy. Autopilot must still be armed separately, and seller, stock, price, cart, fulfillment, and final total are re-verified.</small>
+      <small>The current retailer price becomes the mission’s maximum unit price and your desktop item profile supplies the remaining fields. New installs default to shipping watch-only; existing default selections are preserved. Seller, stock, price, cart, fulfillment, and final total are re-verified for any purchase action you deliberately configure.</small>
+    </section>
+
+    <section id="preflight" class="preview" hidden>
+      <span id="preflightStore" class="store"></span>
+      <strong id="preflightTitle">Approve checkout preflight</strong>
+      <p id="preflightDetail" class="detail"></p>
+      <button id="preflightButton" class="primary full-button" type="button">Approve hashed checkout evidence</button>
+      <small>Cart Confirm checks the exact mission, single cart line, quantity, first-party price, fulfillment, destination, complete selected payment set, substitutions, and final total. Address and payment labels are keyed-hashed inside the extension and are never persisted as readable text.</small>
+    </section>
+
+    <section id="resolution" class="preview danger-preview" hidden>
+      <span id="resolutionStore" class="store"></span>
+      <strong>Resolve held mission</strong>
+      <p id="resolutionDetail" class="detail"></p>
+      <button id="resolutionButton" class="danger full-button" type="button">I checked: no order exists</button>
+      <small>This is an operator-only release. First inspect the retailer cart and order history. Cart Confirm never assumes or records this outcome automatically.</small>
     </section>
   </main>
   <script src="quick-add.js"></script>

@@ -8,6 +8,14 @@ const elements = {
   cancelButton: document.getElementById("cancelButton"),
   closeButton: document.getElementById("closeButton"),
   preview: document.getElementById("preview"),
+  preflight: document.getElementById("preflight"),
+  preflightButton: document.getElementById("preflightButton"),
+  preflightDetail: document.getElementById("preflightDetail"),
+  preflightStore: document.getElementById("preflightStore"),
+  resolution: document.getElementById("resolution"),
+  resolutionButton: document.getElementById("resolutionButton"),
+  resolutionDetail: document.getElementById("resolutionDetail"),
+  resolutionStore: document.getElementById("resolutionStore"),
   price: document.getElementById("price"),
   refreshButton: document.getElementById("refreshButton"),
   seller: document.getElementById("seller"),
@@ -19,6 +27,8 @@ const elements = {
 
 let currentProduct = null;
 let desktopConfig = null;
+let currentPreflight = null;
+let currentResolution = null;
 
 function runtimeMessage(message) {
   return new Promise((resolve) => {
@@ -67,7 +77,12 @@ async function loadPreview() {
   elements.refreshButton.disabled = true;
   elements.addButton.disabled = true;
   elements.preview.hidden = true;
+  elements.preflight.hidden = true;
+  elements.resolution.hidden = true;
+  elements.preflightButton.disabled = true;
   currentProduct = null;
+  currentPreflight = null;
+  currentResolution = null;
   setStatus("Reading this product page…");
 
   const [connection, tab] = await Promise.all([
@@ -80,9 +95,43 @@ async function loadPreview() {
     elements.refreshButton.disabled = false;
     return;
   }
-  const inspected = await tabMessage(tab.id, { type: "CART_CONFIRM_QUICK_ADD_INSPECT" });
+  const [inspected, preflight] = await Promise.all([
+    tabMessage(tab.id, { type: "CART_CONFIRM_QUICK_ADD_INSPECT" }),
+    tabMessage(tab.id, { type: "CART_CONFIRM_CHECKOUT_PREFLIGHT_INSPECT" })
+  ]);
+  const tabContext = await runtimeMessage({
+    type: "CART_CONFIRM_INSPECT_OPERATOR_RESOLUTION",
+    tabId: tab.id
+  });
+  if (
+    tabContext.ok
+    && tabContext.productId
+    && tabContext.resolutionRequired
+    && desktopConfig
+    && !desktopConfig.automationEnabled
+  ) {
+    currentResolution = tabContext;
+    elements.resolution.hidden = false;
+    elements.resolutionStore.textContent = STORE_LABELS[tabContext.retailer] || tabContext.retailer;
+    elements.resolutionDetail.textContent = `Mission ${tabContext.sku} is holding this store lane after a possible cart or order action.`;
+    elements.resolutionButton.disabled = false;
+  }
+  if (preflight.ok && preflight.productId) {
+    currentPreflight = preflight;
+    elements.preflight.hidden = false;
+    elements.preflightStore.textContent = STORE_LABELS[preflight.retailer] || preflight.retailer;
+    elements.preflightDetail.textContent = `Mission ${preflight.sku} is on a fully verified final review page.`;
+    elements.preflightButton.disabled = !desktopConfig || desktopConfig.automationEnabled;
+    setStatus(
+      desktopConfig?.automationEnabled
+        ? "Checkout found. Switch Autopilot off before approving its preflight."
+        : "Checkout found. Review the page, then approve its hashed evidence."
+    );
+    elements.refreshButton.disabled = false;
+    return;
+  }
   if (!inspected.ok || !inspected.product) {
-    setStatus("Open a Target, Walmart, or Amazon product page, then click Refresh.", "error");
+    setStatus(preflight.error || "Open a supported product page or an enabled auto-submit mission's final checkout review, then click Refresh.", "error");
     elements.refreshButton.disabled = false;
     return;
   }
@@ -112,8 +161,8 @@ elements.addButton.addEventListener("click", async () => {
       result.duplicate
         ? "This item is already in Missions; its existing settings were left unchanged."
         : result.product?.action === "checkout"
-          ? "Shipping auto-buy mission added. Review it in Cart Confirm before arming Autopilot."
-          : "Mission added with the desktop default profile.",
+          ? "Auto-submit mission added from your selected default. Approve checkout preflight before arming Autopilot."
+          : `Mission added with the desktop default profile (${result.product?.action || "configured"}).`,
       "success"
     );
     elements.addButton.textContent = result.duplicate ? "Already in Missions" : "Added";
@@ -121,6 +170,48 @@ elements.addButton.addEventListener("click", async () => {
   }
   setStatus(result.error || "Quick add could not create the mission.", "error");
   elements.addButton.disabled = false;
+});
+
+elements.preflightButton.addEventListener("click", async () => {
+  if (!currentPreflight) return;
+  elements.preflightButton.disabled = true;
+  setStatus("Approving the hashed checkout evidence…");
+  const result = await runtimeMessage({
+    type: "CART_CONFIRM_APPROVE_CHECKOUT_PREFLIGHT",
+    productId: currentPreflight.productId,
+    evidence: currentPreflight.evidence
+  });
+  if (result.ok) {
+    setStatus("Checkout preflight approved. You can now arm this unchanged auto-submit mission.", "success");
+    elements.preflightButton.textContent = "Approved";
+    return;
+  }
+  setStatus(result.error || "Checkout preflight could not be approved.", "error");
+  elements.preflightButton.disabled = false;
+});
+
+elements.resolutionButton.addEventListener("click", async () => {
+  if (!currentResolution) return;
+  const confirmed = window.confirm(
+    "Release this store lane only if you checked the retailer cart and order history and know no order was placed. This cannot undo a real order. Continue?"
+  );
+  if (!confirmed) return;
+  elements.resolutionButton.disabled = true;
+  setStatus("Recording the operator-confirmed no-order outcome…");
+  const result = await runtimeMessage({
+    type: "CART_CONFIRM_RESOLVE_OPERATOR_UNCERTAINTY",
+    tabId: currentResolution.tabId,
+    productId: currentResolution.productId,
+    checkedOrderHistory: true,
+    abandonMission: true
+  });
+  if (result.ok) {
+    setStatus("Known no order recorded. The held store lane is released.", "success");
+    elements.resolutionButton.textContent = "Released";
+    return;
+  }
+  setStatus(result.error || `The held mission could not be released (${result.reason || "unknown error"}).`, "error");
+  elements.resolutionButton.disabled = false;
 });
 
 elements.refreshButton.addEventListener("click", () => void loadPreview());

@@ -2,12 +2,11 @@
 
 This checklist is the manual half of Cart Confirm's safety model. It exists because
 the automated safety checks in `extension/retailers.js` and `extension/content.js`
-deliberately do **not** attempt to read or choose your payment method, delivery
-address, or pickup store — those are highest-risk to get wrong from scraped markup,
-so the app requires them to already be correct in your store account and never
-touches them. Nothing here is enforced in code; it is what a human has to confirm
-before any product is switched from **Stop at final review** to **Submit order
-automatically**.
+never choose your payment method, delivery address, or pickup store. For auto-submit,
+the operator approves the visible final-review state while Autopilot is off; the
+extension converts the selected destination/store and complete payment set to keyed
+HMAC fingerprints, persists no readable labels, and requires the same state before
+submission. The human must still verify that the visible labels are intended.
 
 Run through this once per retailer before the first auto-submit run, and again
 after any noticeable change to a store's checkout pages (new checkout redesign,
@@ -28,9 +27,8 @@ blocks bad states rather than only ever testing the happy path.
    you which adapter broke it instead of leaving you guessing.
 2. **Optional but recommended:** temporarily set that store account's default
    payment to a gift card balance or a low-limit card for the duration of
-   testing. Section 1 below is explicit that Cart Confirm cannot verify which
-   payment method is selected — this hedges that exact blind spot so a worst
-   case is cheap instead of a real problem.
+   testing. Cart Confirm binds the visible selected payment set but cannot
+   independently validate account ownership, funding, or a store-side fallback.
 3. Run **section 2** (account-level checks) for that one store.
 4. Run **section 3** (Add-to-cart-only dry run) for that one product.
 5. Run **section 4** (final-review dry run) for that one product, including
@@ -82,10 +80,10 @@ So you know exactly where the automated coverage ends:
   subscription, protection plan, warranty, insurance, monthly payments,
   installments, tip, donation, or gift-wrap patterns (`unsafeOrderChoices`).
 
-**What it never reads or selects:** which payment card/method is chosen, the
-delivery address on the order, or which specific store/locker a pickup order
-will use. It only confirms "pickup" or "shipping" was picked as a *category* —
-never that it's the right address or the right pickup location.
+**What it reads but never selects:** for auto-submit preflight, the visible selected
+payment labels and delivery-address or pickup-store label. Those labels stay
+transient; only keyed fingerprints and the instrument count are retained. The app
+cannot decide whether those real-world choices are right for you.
 
 ## 2. Account-level checks (do this first, per store)
 
@@ -107,7 +105,7 @@ For each of Target, Walmart, and Amazon you plan to automate:
 
 - [ ] With Autopilot off, run a **Catalog Inbox** keyword search against one retailer. Confirm exactly one official search page opens and the inbox lists only visible result cards with the correct retailer, item ID, title, canonical URL, displayed price (or **Not shown**), and observation time.
 - [ ] Repeat with include words, exclude words, and a maximum displayed price. Confirm nonmatching titles, missing prices under a maximum-price filter, and prices above the maximum stay out of the inbox. Confirm no pagination, scrolling, repeated retailer requests, or private API calls are initiated by Cart Confirm.
-- [ ] In **Item defaults**, leave one product type without prices and approve a different type for Target, Walmart, and Amazon. Import matching and nonmatching catalog results with **Shipping auto-buy** selected. Confirm matching rows receive only their retailer's approved MSRP, shipping, auto-buy, and a sufficient final-total cap; unknown rows retain the profile fields but stay Off at $0. Confirm displayed listing prices never become caps.
+- [ ] In **Item defaults**, leave one product type without prices and approve a different type for Target, Walmart, and Amazon. Import matching and nonmatching catalog results with an explicitly selected profile. Confirm matching rows receive only their retailer's approved MSRP and selected profile; unknown rows retain the profile fields but stay Off at $0. Confirm displayed listing prices never become caps.
 - [ ] Use Catalog Inbox **Select all** and **Select none**, import one result only once, and confirm existing missions are skipped and the 50-mission limit is never exceeded.
 - [ ] Select one harmless exact Walmart result with an approved Walmart MSRP and item profile, choose a future **Known Walmart drop time**, and select **Monitor selected for Walmart prep**. Confirm the candidate appears separately from Missions and Autopilot can arm with only that candidate. Observe that the first public-page response establishes a baseline and does not add a Mission; an unchanged or `304` response, timeout, and network failure also do not. In a controlled local/mock test, confirm a `200` to `404`/`503` transition, recovery to `200`, embedded availability/price change, or `/qp` redirect moves only that exact item into Missions while preserving its profile, approved caps, and drop time. Confirm no browser page opens before that time.
 - [ ] While a harmless Walmart prep check is in flight, press **Stop everything**. Confirm the request is aborted, the candidate and cached observation are cleared, and a late response cannot create a Mission. Confirm prep checks rotate one at a time no faster than every 30 seconds, consume the shared 120-action/hour Walmart budget, respect overload cooldowns, and never request a private inventory, checkout, ticket, or signature endpoint.
@@ -117,8 +115,8 @@ For each of Target, Walmart, and Amazon you plan to automate:
       Confirm the preview shows the exact TCIN / Walmart item ID / ASIN, title,
       and current retailer-page price. Add it and confirm Missions receives an
       row whose maximum unit price exactly matches the preview and whose other
-      fields match the selected default item profile. With the built-in default,
-      confirm shipping + auto-buy and a sufficient final-total cap. Confirm
+      fields match the selected default item profile. On a new install, confirm
+      shipping + watch-only. Confirm
       Autopilot remains Off and no cart or checkout action occurs during import.
 - [ ] Change an existing Quick-added mission's cap, then Quick-add the same
       product again. Confirm the popup reports a duplicate and the existing
@@ -188,12 +186,15 @@ With automation disarmed, for every row you intend to eventually auto-submit:
 Switch the row to **Stop at final review** (still disarmed for setup, then arm
 for one supervised run) and manually walk the checkout to the final review page:
 
-- [ ] On the real final review/order page, confirm the **payment method shown
-      is the one you intend to use.** Cart Confirm cannot see or check this.
+- [ ] On the real final review/order page, confirm every **selected payment
+      instrument shown is intended**, then approve checkout preflight from the
+      companion popup while Autopilot is off.
 - [ ] Confirm the **delivery address shown is correct**, or for pickup orders,
-      confirm the **exact pickup store location shown is correct.** Cart
-      Confirm only checks that a "pickup" or "shipping" option is selected —
-      never which one.
+      confirm the **exact pickup store location shown is correct.** Preflight
+      binds the visible label but cannot decide whether it is right for you.
+- [ ] After approval, change the destination/pickup store, payment set,
+      substitutions, quantity, SKU, fulfillment, mission cap, action, or total.
+      Confirm auto-submit blocks until a fresh preflight is approved.
 - [ ] Confirm no subscription, protection plan, warranty, tip, donation, or
       gift-wrap option is pre-checked. Cross-check against the event log:
       if one was checked, `automation-blocked` with reason matching the
@@ -256,7 +257,7 @@ for one supervised run) and manually walk the checkout to the final review page:
       spacing wait and confirm the wait ends immediately and the remaining
       pages do not open. Do not try to manufacture or repeatedly refresh a
       retailer queue.
-- [ ] In a controlled/mock Walmart queue test, confirm scheduled pages launch together and each nonqueued tab uses only the configured rapid lane before the first queue signal. After one exact-item queue is recognized, confirm that queued tab freezes immediately and every other participating tab performs no more than **Final queue-capture reloads** (five by default, configurable from 1–20), freezing early if it reaches a queue. Confirm Stop, overload handling, the blitz window, and the shared 120-action/hour budget terminate or delay the flow as documented.
+- [ ] In a controlled/mock Walmart queue test, confirm scheduled pages launch together and each nonqueued tab uses only the configured rapid lane before the first queue signal. After one exact-item queue is recognized, confirm that queued tab freezes immediately and every other participating tab performs no more than **Final queue-capture reloads** (zero by default, configurable from 0–20), freezing early if it reaches a queue. Confirm Stop, overload handling, the blitz window, and the shared 120-action/hour budget terminate or delay the flow as documented.
 - [ ] With Autopilot on and a tab-less Target or Walmart mission checking in the
       background, press **Stop everything** while a check is in flight. Confirm
       it cannot add a feed event, reopen Chrome, or lift the `STOPPED` state
@@ -266,7 +267,7 @@ for one supervised run) and manually walk the checkout to the final review page:
       fan-out for that Autopilot run. The winning tab and every tab that later
       reaches the queue must stay still until Walmart admits it. Each remaining
       scheduled Walmart blitz tab must wait for the page-settle check, reload no
-      more than **Walmart queue-capture reloads** (five by default), and remain
+      more than **Walmart queue-capture reloads** (zero by default), and remain
       idle after the cap. Press **Stop everything** during the supervised test
       and confirm any pending final reload is cancelled. Do not manufacture a
       retailer queue for this test.

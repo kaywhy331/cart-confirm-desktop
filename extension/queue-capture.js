@@ -1,54 +1,39 @@
 "use strict";
 
 (() => {
-  const DEFAULT_MAX_RELOADS = 5;
+  const DEFAULT_MAX_RELOADS = 0;
   const PAGE_SETTLE_MS = 2_000;
 
   function maxReloads(config = {}) {
     const value = Number(config.walmartQueueCaptureReloads);
-    return Number.isInteger(value) && value >= 1 && value <= 20 ? value : DEFAULT_MAX_RELOADS;
+    return Number.isInteger(value) && value >= 0 && value <= 20 ? value : DEFAULT_MAX_RELOADS;
   }
 
-  function captureForProduct(config = {}, product = {}) {
-    const capture = config.queueCapture;
+  function captureForProduct(config = {}, product = {}, now = Date.now()) {
+    const capture = config.queueCaptures?.[String(product?.executionCohortId || "")];
     if (
       !config.automationEnabled
       || config.monitoringPaused
       || capture?.retailer !== "walmart"
       || capture.runId !== String(config.automationRunId || "")
+      || !capture.cohortId
+      || !Array.isArray(capture.participantProductIds)
+      || !capture.participantProductIds.includes(String(product?.id || ""))
+      || !Number.isFinite(Number(capture.expiresAt))
+      || now >= Number(capture.expiresAt)
       || product?.retailer !== "walmart"
       || product.executionMode !== "blitz"
+      || product.executionCohortId !== capture.cohortId
+      || now >= Number(product.executionExpiresAt || 0)
     ) return null;
     return capture;
-  }
-
-  function storageKey(capture, product) {
-    if (!capture?.runId || !product?.id) return "";
-    return `cartConfirmQueueCapture:${capture.runId}:${product.id}`;
-  }
-
-  function readAttempts(storage, capture, product) {
-    const key = storageKey(capture, product);
-    const value = key ? Number(storage?.getItem?.(key)) : 0;
-    return Number.isInteger(value) && value >= 0 ? value : 0;
-  }
-
-  function recordReload(storage, capture, product, limit = DEFAULT_MAX_RELOADS) {
-    const key = storageKey(capture, product);
-    const maximum = Number.isInteger(limit) && limit >= 1 ? limit : DEFAULT_MAX_RELOADS;
-    const attempts = Math.min(maximum, readAttempts(storage, capture, product) + 1);
-    if (key) storage?.setItem?.(key, String(attempts));
-    return attempts;
   }
 
   const api = Object.freeze({
     DEFAULT_MAX_RELOADS,
     PAGE_SETTLE_MS,
     captureForProduct,
-    maxReloads,
-    readAttempts,
-    recordReload,
-    storageKey
+    maxReloads
   });
   globalThis.CartConfirmQueueCapture = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;

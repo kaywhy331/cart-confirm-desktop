@@ -26,7 +26,7 @@ test("legacy armed checkout settings are preserved but disarmed when the final-t
   assert.equal(stored.automationEnabled, true);
 });
 
-test("valid capped checkout settings remain armed during migration", () => {
+test("legacy capped checkout without current evidence is preserved but disarmed", () => {
   const stored = {
     automationEnabled: true,
     products: [{
@@ -38,7 +38,9 @@ test("valid capped checkout settings remain armed during migration", () => {
       enabled: true
     }]
   };
-  assert.equal(migrateStoredSettings(stored), stored);
+  const migrated = migrateStoredSettings(stored);
+  assert.equal(migrated.automationEnabled, false);
+  assert.equal(migrated.products[0].maxOrderTotal, 110);
 });
 
 test("legacy single-product auto-checkout settings are also preserved and disarmed", () => {

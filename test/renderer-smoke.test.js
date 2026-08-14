@@ -44,7 +44,8 @@ function snapshotFixture() {
       watcherIntervalSeconds: 60,
       blitzRetryDelayMs: 750,
       blitzWindowSeconds: 20,
-      walmartQueueCaptureReloads: 5,
+      scheduledBlitzDurationSeconds: 120,
+      walmartQueueCaptureReloads: 0,
       scheduledOpenEnabled: false,
       scheduledOpenAt: "",
       scheduledRetailer: "target",
@@ -54,7 +55,7 @@ function snapshotFixture() {
       configurationProfiles: [],
       msrpCatalog: [],
       itemProfiles: [],
-      defaultItemProfileId: "built-in:shipping-auto-buy",
+      defaultItemProfileId: "built-in:shipping-watch",
       firstPartyOnly: true
     },
     status: {
@@ -314,7 +315,7 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   assert.match(doc.getElementById("testButton").textContent, /Test all/);
   assert.equal(doc.getElementById("eligibilityRefreshIntervalSeconds").value, "2");
   assert.equal(doc.getElementById("watcherIntervalSeconds").value, "60");
-  assert.equal(doc.getElementById("walmartQueueCaptureReloads").value, "5");
+  assert.equal(doc.getElementById("walmartQueueCaptureReloads").value, "0");
   assert.match(card.querySelector("[data-view='sub']").textContent, /continuous watcher/);
 
   doc.getElementById("watcherIntervalSeconds").value = "90";
@@ -557,8 +558,8 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   await new Promise((resolve) => setTimeout(resolve, 10));
   assert.equal(copiedAffiliateUrls.length, 2);
 
-  // A Discord inbox signal is identified as new and prefills the default
-  // shipping auto-buy profile while remaining Off for deliberate review.
+  // A Discord inbox signal is identified as new and prefills the new-install
+  // shipping watch-only profile while remaining Off for deliberate review.
   const signaled = snapshotFixture();
   signaled.signals = [{
     id: "discord:123",
@@ -581,18 +582,18 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   editCard = doc.querySelector(".mission-edit-card");
   assert.equal(editCard.querySelector("[data-field='retailer']").value, "walmart");
   assert.equal(editCard.querySelector("[data-field='maxPrice']").value, "31.97");
-  assert.equal(editCard.querySelector("[data-field='action']").value, "checkout");
+  assert.equal(editCard.querySelector("[data-field='action']").value, "watch");
   assert.equal(editCard.querySelector("[data-field='fulfillmentMode']").value, "shipping");
   assert.equal(editCard.querySelector("[data-field='enabled']").checked, false);
   editCard.querySelector(".mission-cancel").click();
   assert.equal(doc.querySelector(".mission-edit-card"), null);
   assert.ok(doc.querySelector(".mission-card"));
 
-  // New mission defaults to the requested shipping auto-buy profile and stays
+  // New mission defaults to the shipping watch-only profile and stays
   // Off until an approved MSRP or manual cap is applied.
   doc.getElementById("newMissionButton").click();
   editCard = doc.querySelector(".mission-edit-card");
-  assert.equal(editCard.querySelector("[data-field='action']").value, "checkout");
+  assert.equal(editCard.querySelector("[data-field='action']").value, "watch");
   assert.equal(editCard.querySelector("[data-field='fulfillmentMode']").value, "shipping");
   assert.equal(editCard.querySelector("[data-field='enabled']").checked, false);
   const urlInput = editCard.querySelector("[data-field='productUrl']");

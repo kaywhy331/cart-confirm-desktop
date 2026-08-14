@@ -54,9 +54,10 @@ test("unchanged config polling does not rescan and duplicate the same observatio
 
 test("blocked and retrying workflows release only their pre-submit mission locks", () => {
   const sendEvent = section("async function send", "async function requestConfig");
-  assert.match(sendEvent, /LOCK_RELEASING_EVENTS\.has\(eventType\)/);
+  assert.match(sendEvent, /\["automation-blocked", "store-error", "retry-scheduled"\]\.includes\(eventType\)/);
   assert.match(sendEvent, /CART_CONFIRM_RELEASE_PRODUCT/);
-  assert.match(source, /kind === "auth"[\s\S]*?store lane was released/);
+  assert.match(source, /kind === "auth"[\s\S]*?postMutation[\s\S]*?keeps the store lane/);
+  assert.match(source, /\["auth", "mfa", "location", "membership"\]\.includes\(interactiveState\)/);
 });
 
 test("calendar ownership blocks scans, retry scheduling, and final retry navigation", () => {
@@ -90,7 +91,7 @@ test("Target retries final submission only after explicit not-placed proof", () 
   assert.match(checkoutPage, /explicitly proved that the order was not placed/);
 });
 
-test("review and successful checkout missions remain on their authoritative Target result pages", () => {
+test("review waits durably for trusted manual intent and checkout remains on confirmation", () => {
   const confirmation = section("async function handleConfirmation", "async function handleProductPage");
   const checkoutPage = section("async function handleCheckoutPage", "async function scan");
   const reviewBranch = checkoutPage.slice(
@@ -98,8 +99,11 @@ test("review and successful checkout missions remain on their authoritative Targ
     checkoutPage.indexOf("const submitButton")
   );
   assert.match(reviewBranch, /send\("review-ready"/);
-  assert.match(reviewBranch, /completeProduct\(product\)/);
+  assert.match(reviewBranch, /beginManualReview\(product, evidenceHash\)/);
+  assert.doesNotMatch(reviewBranch, /completeProduct\(product\)/);
   assert.doesNotMatch(reviewBranch, /location\.(?:assign|replace|reload)/);
+  assert.match(source, /event\.isTrusted/);
+  assert.match(source, /markManualSubmit\(product, evidenceHash\)/);
   assert.match(confirmation, /adapter\.orderConfirmed\(document\)/);
   assert.match(confirmation, /send\("order-confirmed"/);
   assert.doesNotMatch(confirmation, /location\.(?:assign|replace|reload)/);
@@ -113,6 +117,16 @@ test("Walmart queue recognition precedes bounded loser retries through the traff
   assert.match(retry, /QueueCapture\.maxReloads\(config\)/);
   assert.match(retry, /CART_CONFIRM_RESERVE_NAVIGATION/);
   assert.match(retry, /CART_CONFIRM_REVALIDATE_NAVIGATION/);
-  assert.match(retry, /QueueCapture\.recordReload[\s\S]*?location\.reload\(\)/);
+  assert.match(retry, /CART_CONFIRM_RESERVE_QUEUE_CAPTURE_ATTEMPT[\s\S]*?location\.reload\(\)/);
+  assert.doesNotMatch(retry, /sessionStorage/);
   assert.match(retry, /QueueCapture\.PAGE_SETTLE_MS/);
+});
+
+test("unknown high-demand pages freeze without refresh or queue-token handling", () => {
+  const scan = section("async function scan", "function scheduleScan");
+  assert.match(scan, /const highDemandUnknown = Retailers\.unrecognizedHighDemand\(document\)/);
+  assert.doesNotMatch(scan, /highDemandUnknown = kind === "other"/);
+  assert.match(scan, /unrecognized high-demand or waiting-room page/);
+  assert.match(scan, /will not refresh, replay, or manipulate a queue token/);
+  assert.doesNotMatch(scan.match(/if \(highDemandUnknown\)[\s\S]*?\} else if \(kind === "product"\)/)?.[0] || "", /location\.(?:assign|replace|reload)/);
 });

@@ -1,0 +1,20 @@
+<!doctype html>
+<!-- Sanitized Target visible final-review state; all labels are fictional. -->
+<html><body><main>
+  <section data-test="cart-item" data-tcin="1011960739">
+    <a href="https://www.target.com/p/example/-/A-1011960739">Example Target item</a>
+    <span data-test="cart-item-seller">Sold &amp; shipped by Target</span>
+    <span data-test="cart-item-price">$39.99</span>
+    <span data-test="substitution-status">Substitutions are not available for this item.</span>
+    <select aria-label="Quantity"><option value="2" selected>2</option></select>
+    <button aria-label="Remove item">Remove</button>
+  </section>
+  <label id="fixture-fulfillment"><input type="radio" name="fulfillment" value="shipping" checked> Shipping delivery</label>
+  <label id="fixture-destination" data-test="address-option" data-selected="true"><input type="radio" name="shipping-address" checked> Deliver to 123 Example Street, Example City CA 90000</label>
+  <fieldset data-test="payment-methods">
+    <label id="fixture-payment-primary"><input type="radio" name="payment-card" checked> Visa ending in 4242</label>
+    <label data-test="payment-gift-card" data-selected="true"><input type="checkbox" name="payment-gift-card" checked> Target GiftCard ending in 0099</label>
+  </fieldset>
+  <div data-test="order-summary-total">Order total $86.38</div>
+  <button data-test="placeOrderButton">Place your order</button>
+</main></body></html>

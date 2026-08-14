@@ -47,6 +47,7 @@ test("the desktop Stop path aborts quiet checks and internal stock opens cannot 
   assert.match(source, /quietMonitorTick\(\);[\s\S]*?if \(settings\.monitoringPaused\) return;[\s\S]*?evaluateProductSchedules/);
   assert.match(contentSource, /if \(!await automationStillActive\(product\)\) return false;[\s\S]*?element\.click\(\)/);
   assert.match(backgroundSource, /function automationActive\(config\)[\s\S]*?config\.monitoringPaused !== true/);
+  assert.match(backgroundSource, /resolveProductKnownNoOrder[\s\S]*?if \(config\.automationEnabled\) return \{ ok: false, reason: "automation-armed"/);
 });
 
 test("Test all opens every enabled mission while remaining disarmed", () => {
@@ -80,5 +81,5 @@ test("calendar-owned missions stay out of quiet checks and missed schedules stay
   assert.match(source, /function extensionConfig[\s\S]*?calendarOwned: productCalendarOwned\(settings, product\)/);
   assert.match(source, /function quietMonitorTick[\s\S]*?!productCalendarOwned\(settings, product\)/);
   assert.match(scheduleHandler, /if \(decision\.action === "missed"\)[\s\S]*?return;[\s\S]*?clearProductOpenAt\(decision\.productId\)/);
-  assert.match(backgroundSource, /function configuredProduct[\s\S]*?!ScheduleGate\.calendarOwned\(product\)/);
+  assert.match(backgroundSource, /function configuredProduct[\s\S]*?!ScheduleGate\.calendarOwned\(candidate\)/);
 });

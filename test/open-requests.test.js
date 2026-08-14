@@ -32,6 +32,7 @@ test("a pending request carries only its bounded product context", () => {
     productId: "amazon:B0GG16Q4X1",
     contextRequired: true,
     dedicatedTab: true,
+    signalOrderLimit: null,
     createdAt: 1_000
   });
   assert.equal(store.claim(request.id).productId, "amazon:B0GG16Q4X1");

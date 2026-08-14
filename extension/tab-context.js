@@ -43,6 +43,11 @@
     return "product";
   }
 
+  function signalOrderLimit(value) {
+    const limit = Number(value);
+    return Number.isInteger(limit) && limit > 0 && limit <= 99 ? limit : null;
+  }
+
   function validateOpenRequest(config = {}, request = {}, now = Date.now()) {
     const productId = String(request.productId || "");
     if (!productId) {
@@ -73,6 +78,7 @@
         retailer: product.retailer,
         sku: product.sku,
         entry,
+        signalOrderLimit: signalOrderLimit(request.signalOrderLimit),
         createdAt: now,
         expiresAt: now + CONTEXT_TTL_MS
       })
@@ -104,6 +110,7 @@
         retailer,
         sku,
         entry,
+        signalOrderLimit: signalOrderLimit(context?.signalOrderLimit),
         createdAt: Math.max(0, Number(context.createdAt || 0)),
         expiresAt
       };
@@ -136,6 +143,7 @@
     contextForTab,
     normalizeContextMap,
     productIdForTab,
+    signalOrderLimit,
     validateOpenRequest
   });
   globalThis.CartConfirmTabContext = api;

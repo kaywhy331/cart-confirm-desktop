@@ -71,7 +71,7 @@
             <span class="port-badge" id="portBadge">Port —</span>
           </div>
           <p class="step-hint attention-hint" id="connectHint" hidden></p>
-          <p class="privacy-note">The companion sends only milestone names, store/SKU, seller label, observed prices, a query-free page address, and timestamps to this computer. It never sends cookies, passwords, addresses, payment details, or order numbers, and it does not solve CAPTCHAs, bypass queues, or defeat store controls.</p>
+          <p class="privacy-note">The companion sends only milestone names, store/SKU, seller label, observed prices, a query-free page address, keyed checkout fingerprints, and timestamps to this computer. It never sends cookies, passwords, readable addresses, readable payment labels, or order numbers, and it does not solve CAPTCHAs, bypass queues, or defeat store controls.</p>
         </section>
 
         <section class="panel missions-panel collapsible-panel" id="missionsPanel">
@@ -149,7 +149,7 @@
                 <span>Apply item profile</span>
                 <select id="catalogItemProfile"></select>
               </label>
-              <p class="catalog-safety">The profile defaults to <strong>shipping + auto-buy</strong>. A mission turns On only when its title matches an approved retailer MSRP; otherwise it stays Off for price review.</p>
+              <p class="catalog-safety">The profile defaults to <strong>shipping + final review</strong>. A mission turns On only when its title matches an approved retailer MSRP; otherwise it stays Off for price review.</p>
             </div>
             <div class="catalog-import-defaults">
               <label class="field">
@@ -268,10 +268,10 @@
             <label class="control-card field compact-field">
               <span class="control-title">Walmart queue-capture reloads</span>
               <span class="number-suffix">
-                <input id="walmartQueueCaptureReloads" type="number" min="1" max="20" step="1" inputmode="numeric" required>
+                <input id="walmartQueueCaptureReloads" type="number" min="0" max="20" step="1" inputmode="numeric" required>
                 <span>reloads</span>
               </span>
-              <small>After the first scheduled Walmart tab enters the official queue, each remaining tab may reload this many final times. Recommended: 5.</small>
+              <small>After one scheduled Walmart cohort tab enters the official queue, each nonqueued cohort tab may use this many durable final reloads. Recommended: 0 (never reload).</small>
             </label>
             <label class="control-card field compact-field">
               <span class="control-title">Regular watch check</span>
@@ -312,6 +312,14 @@
                 <span>seconds</span>
               </span>
               <small>Maximum time Target may keep retrying one step after a scheduled release. Fixed click limits still stop it sooner.</small>
+            </label>
+            <label class="control-card field compact-field">
+              <span class="control-title">Scheduled blitz duration</span>
+              <span class="number-suffix">
+                <input id="scheduledBlitzDurationSeconds" type="number" min="15" max="900" step="1" inputmode="numeric" required>
+                <span>seconds</span>
+              </span>
+              <small>Maximum time any scheduled mission uses faster release cadence. At expiry it returns to regular watcher cadence without disabling the mission.</small>
             </label>
             <label class="control-card field compact-field">
               <span class="control-title">Gap between store page moves</span>
