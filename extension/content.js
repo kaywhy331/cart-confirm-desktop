@@ -1681,11 +1681,9 @@
             ? "Final order review did not expose a readable order total."
             : blockReason === "fulfillment-unverified"
               ? `Final order review did not prove the required ${product.fulfillmentMode} fulfillment mode.`
-            : blockReason === "checkout-preflight-required"
-              ? "Automatic submission is disarmed until you approve this mission's destination, complete payment set, substitution state, cart count, quantity, SKU, and total while Autopilot is off."
-              : blockReason === "checkout-evidence-changed"
+            : blockReason === "checkout-evidence-changed"
                 ? "The destination, payment set, substitution state, cart count, quantity, SKU, or total differs from the approved preflight. Automatic submission stopped."
-                : "Final order review could not re-verify the complete cart, exact SKU, first-party offer, unit cap, quantity, and checkout evidence."
+                : "Final order review could not verify the live destination or pickup store, complete payment set, disabled substitutions, exact cart, SKU, first-party offer, unit cap, quantity, fulfillment, and capped total."
       }, `review-blocked:${product.id}:${blockReason}`, 20_000);
       return;
     }
@@ -1733,7 +1731,11 @@
       attempt = await requireAttempt(product);
       if (attempt === null) return false;
       const freshReview = await readCheckoutReview(product);
-      if (!freshReview.ok || await reviewEvidenceHash(product, freshReview) !== expectedHash) {
+      if (
+        !freshReview.ok
+        || !freshReview.evidence.ok
+        || await reviewEvidenceHash(product, freshReview) !== expectedHash
+      ) {
         await send("automation-blocked", product, {
           reason: "manual-action-required",
           message: "The final order evidence changed before submission. Automatic checkout stopped for a fresh manual review."

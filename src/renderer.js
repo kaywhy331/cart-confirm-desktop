@@ -58,6 +58,7 @@ const elements = {
   catalogCount: document.getElementById("catalogCount"),
   catalogList: document.getElementById("catalogList"),
   storeAllowanceForm: document.getElementById("storeAllowanceForm"),
+  orderTaxPercent: document.getElementById("orderTaxPercent"),
   targetOrderAllowance: document.getElementById("targetOrderAllowance"),
   walmartOrderAllowance: document.getElementById("walmartOrderAllowance"),
   amazonOrderAllowance: document.getElementById("amazonOrderAllowance"),
@@ -513,7 +514,10 @@ function applyProfileToEditor(card) {
     profileSeedFromFields(card),
     profile,
     currentSnapshot?.settings?.msrpCatalog || [],
-    { storeOrderAllowances: currentSnapshot?.settings?.storeOrderAllowances }
+    {
+      storeOrderAllowances: currentSnapshot?.settings?.storeOrderAllowances,
+      orderTaxPercent: currentSnapshot?.settings?.orderTaxPercent
+    }
   );
   field(card, "maxPrice").value = String(applied.maxPrice || 0);
   field(card, "maxOrderTotal").value = String(applied.maxOrderTotal || 0);
@@ -572,6 +576,7 @@ function globalSettings(products, overrides = {}) {
     msrpCatalog: currentSnapshot?.settings?.msrpCatalog || [],
     itemProfiles: currentSnapshot?.settings?.itemProfiles || [],
     defaultItemProfileId: currentSnapshot?.settings?.defaultItemProfileId || ItemDefaults.DEFAULT_ITEM_PROFILE_ID,
+    orderTaxPercent: currentSnapshot?.settings?.orderTaxPercent ?? ItemDefaults.DEFAULT_ORDER_TAX_PERCENT,
     storeOrderAllowances: currentSnapshot?.settings?.storeOrderAllowances || ItemDefaults.DEFAULT_STORE_ORDER_ALLOWANCES,
     scheduledOpenEnabled: false,
     scheduledRetailer: currentSnapshot?.settings?.scheduledRetailer || "target",
@@ -598,13 +603,27 @@ async function pauseAutopilot() {
   render(next);
 }
 
+function autoSubmitArmingSummary(saved) {
+  const products = [...(saved.products || []), ...(saved.walmartPrepCandidates || [])]
+    .filter((product) => product.enabled && product.action === "checkout");
+  return {
+    count: products.length,
+    liveVerificationCount: products.filter((product) => product.checkoutPreflightApproved !== true).length
+  };
+}
+
+function liveVerificationWarning(count) {
+  return count > 0
+    ? ` ${count} mission${count === 1 ? " has" : "s have"} no optional preflight and will use the freshly verified destination or pickup store and payment set visible when checkout opens.`
+    : "";
+}
+
 async function resumeAutopilot() {
   const saved = currentSnapshot.settings;
-  const autoSubmitCount = [...saved.products, ...(saved.walmartPrepCandidates || [])]
-    .filter((product) => product.enabled && product.action === "checkout").length;
+  const autoSubmit = autoSubmitArmingSummary(saved);
   if (
-    autoSubmitCount > 0
-    && !window.confirm(`${autoSubmitCount} enabled mission${autoSubmitCount === 1 ? "" : "s"} may submit a real order. Resuming starts a new run. Switch Autopilot back on?`)
+    autoSubmit.count > 0
+    && !window.confirm(`${autoSubmit.count} enabled mission${autoSubmit.count === 1 ? "" : "s"} may submit a real order.${liveVerificationWarning(autoSubmit.liveVerificationCount)} Resuming starts a new run. Switch Autopilot back on?`)
   ) {
     setMessage("Autopilot stayed off. Switch it on from the header when ready.", "warn");
     return;
@@ -696,6 +715,10 @@ function missionCapDescription(product) {
     `quantity ${product.quantity}`
   ];
   if (["review", "checkout"].includes(product.action)) {
+    const taxPercent = ItemDefaults.normalizeOrderTaxPercent(currentSnapshot?.settings?.orderTaxPercent);
+    const allowances = ItemDefaults.normalizeStoreOrderAllowances(currentSnapshot?.settings?.storeOrderAllowances);
+    parts.push(`${taxPercent}% tax estimate`);
+    parts.push(`$${allowances[product.retailer].toFixed(2)} ${STORE_LABELS[product.retailer]} allowance`);
     parts.push(`maximum final order total $${Number(product.maxOrderTotal).toFixed(2)}`);
   }
   return parts.join("; ");
@@ -763,6 +786,11 @@ function buildViewCard(product, status) {
       ? product.signalEntry.replaceAll("-", " ")
       : "signals open product");
   if (product.affiliateUrl) subParts.push("Campaign share ready");
+  if (product.action === "checkout") {
+    subParts.push(product.checkoutPreflightApproved
+      ? "saved checkout preflight"
+      : "live checkout verification");
+  }
   view(card, "sub").textContent = subParts.join(" · ");
 
   const priceQuantity = view(card, "priceQuantity");
@@ -1037,7 +1065,7 @@ function missionOrderTotalFromCard(card) {
     maxPrice: Number(field(card, "maxPrice").value),
     quantity: Number(field(card, "quantity").value),
     action: field(card, "action").value
-  }, currentSnapshot?.settings?.storeOrderAllowances);
+  }, currentSnapshot?.settings?.storeOrderAllowances, currentSnapshot?.settings?.orderTaxPercent);
 }
 
 function updateMissionOrderTotal(card, options = {}) {
@@ -1439,7 +1467,7 @@ function renderItemProfilePickers(settings) {
     button.type = "button";
     button.className = `profile-chip${profile.id === editingItemProfileId ? " selected" : ""}`;
     button.textContent = `${profile.name} · ×${profile.settings.quantity} · ${ACTION_LABELS[profile.settings.action]}`;
-    button.title = profile.description || `${profile.settings.fulfillmentMode}; retailer allowance is applied automatically`;
+    button.title = profile.description || `${profile.settings.fulfillmentMode}; saved tax and retailer allowance are applied automatically`;
     button.addEventListener("click", () => {
       if (profile.id.startsWith("custom:")) fillItemProfileForm(profile);
       else resetItemProfileForm();
@@ -1685,6 +1713,11 @@ function renderBulkMissionDefaults(settings) {
 
 function renderItemDefaults(settings) {
   const allowances = ItemDefaults.normalizeStoreOrderAllowances(settings.storeOrderAllowances);
+  const taxPercent = ItemDefaults.normalizeOrderTaxPercent(settings.orderTaxPercent);
+  if (document.activeElement !== elements.orderTaxPercent) {
+    elements.orderTaxPercent.value = String(taxPercent);
+  }
+  elements.orderTaxPercent.disabled = isArmed();
   const allowanceInputs = {
     target: elements.targetOrderAllowance,
     walmart: elements.walmartOrderAllowance,
@@ -2425,7 +2458,10 @@ function signalMissionSeed(signal) {
       seed,
       profile,
       currentSnapshot?.settings?.msrpCatalog || [],
-      { storeOrderAllowances: currentSnapshot?.settings?.storeOrderAllowances }
+      {
+        storeOrderAllowances: currentSnapshot?.settings?.storeOrderAllowances,
+        orderTaxPercent: currentSnapshot?.settings?.orderTaxPercent
+      }
     ),
     // Discord data prefills the workflow but still requires the operator to
     // review the editor and deliberately choose On before saving.
@@ -2667,11 +2703,10 @@ elements.autopilotToggle.addEventListener("click", async () => {
         render(next);
         return { armed: false };
       }
-      const autoSubmitCount = [...saved.products, ...(saved.walmartPrepCandidates || [])]
-        .filter((product) => product.enabled && product.action === "checkout").length;
+      const autoSubmit = autoSubmitArmingSummary(saved);
       if (
-        autoSubmitCount > 0
-        && !window.confirm(`${autoSubmitCount} enabled mission${autoSubmitCount === 1 ? "" : "s"} may submit a real order. Re-arming starts a new run. Unscheduled Target and Walmart missions start as quiet background watchers and open Chrome only after a likely stock signal; Amazon must open now. Scheduled missions wait for their exact time. Verify retailer order history first. "Prepare checkout, I submit" is safer. Switch Autopilot on anyway?`)
+        autoSubmit.count > 0
+        && !window.confirm(`${autoSubmit.count} enabled mission${autoSubmit.count === 1 ? "" : "s"} may submit a real order.${liveVerificationWarning(autoSubmit.liveVerificationCount)} Re-arming starts a new run. Unscheduled Target and Walmart missions start as quiet background watchers and open Chrome only after a likely stock signal; Amazon must open now. Scheduled missions wait for their exact time. Verify retailer order history first. "Prepare checkout, I submit" is safer. Switch Autopilot on anyway?`)
       ) {
         throw new Error("Autopilot was not switched on.");
       }
@@ -2777,8 +2812,9 @@ elements.catalogWalmartPrepButton.addEventListener("click", () => void addSelect
 elements.storeAllowanceForm.addEventListener("submit", (event) => {
   event.preventDefault();
   void runAction(async () => {
-    if (isArmed()) throw new Error("Switch Autopilot off before changing store order-total allowances.");
+    if (isArmed()) throw new Error("Switch Autopilot off before changing tax or store order-total allowances.");
     const inputs = [
+      elements.orderTaxPercent,
       elements.targetOrderAllowance,
       elements.walmartOrderAllowance,
       elements.amazonOrderAllowance
@@ -2786,35 +2822,39 @@ elements.storeAllowanceForm.addEventListener("submit", (event) => {
     for (const input of inputs) {
       if (!input.checkValidity()) {
         input.reportValidity();
-        throw new Error("Enter a valid non-negative allowance for every retailer.");
+        throw new Error("Enter a tax percentage from 0% to 100% and a valid non-negative allowance for every retailer.");
       }
     }
+    const orderTaxPercent = ItemDefaults.normalizeOrderTaxPercent(elements.orderTaxPercent.value);
     const storeOrderAllowances = ItemDefaults.normalizeStoreOrderAllowances({
       target: elements.targetOrderAllowance.value,
       walmart: elements.walmartOrderAllowance.value,
       amazon: elements.amazonOrderAllowance.value
     });
+    const previousTaxPercent = ItemDefaults.normalizeOrderTaxPercent(currentSnapshot.settings.orderTaxPercent);
+    const taxChanged = orderTaxPercent !== previousTaxPercent;
     const previous = ItemDefaults.normalizeStoreOrderAllowances(currentSnapshot.settings.storeOrderAllowances);
     const changedRetailers = ItemDefaults.RETAILERS.filter((retailer) => (
       storeOrderAllowances[retailer] !== previous[retailer]
     ));
     const affectedPreflights = currentSnapshot.settings.products.filter((product) => (
-      changedRetailers.includes(product.retailer)
+      (taxChanged || changedRetailers.includes(product.retailer))
       && product.action === "checkout"
       && product.checkoutPreflightApproved
     )).length;
     const next = await window.cartAssist.saveSettings({
       ...currentSnapshot.settings,
+      orderTaxPercent,
       storeOrderAllowances
     });
     render(next);
-    return { changed: changedRetailers.length, affectedPreflights };
+    return { changed: changedRetailers.length + Number(taxChanged), affectedPreflights };
   }, ({ changed, affectedPreflights }) => {
-    if (!changed) return "Store allowances were already up to date.";
+    if (!changed) return "Tax and store allowances were already up to date.";
     const preflightNote = affectedPreflights
-      ? ` Re-run checkout preflight for ${affectedPreflights} affected auto-submit mission${affectedPreflights === 1 ? "" : "s"}.`
+      ? ` ${affectedPreflights} optional saved preflight${affectedPreflights === 1 ? " was" : "s were"} cleared; live checkout verification remains available.`
       : "";
-    return `Store allowances saved; final-order caps recalculated.${preflightNote}`;
+    return `Tax and store allowances saved; final-order caps recalculated.${preflightNote}`;
   });
 });
 
@@ -2968,7 +3008,10 @@ elements.applyBulkItemProfileButton.addEventListener("click", () => void runActi
           product,
           profile,
           currentSnapshot.settings.msrpCatalog,
-          { storeOrderAllowances: currentSnapshot.settings.storeOrderAllowances }
+          {
+            storeOrderAllowances: currentSnapshot.settings.storeOrderAllowances,
+            orderTaxPercent: currentSnapshot.settings.orderTaxPercent
+          }
         )
       : product
   ));

@@ -585,11 +585,13 @@ button:disabled:hover { transform: none; }
 
 .toggle-row { display: flex; align-items: center; gap: 9px; color: var(--muted); font-size: 12px; }
 .toggle-row input[type="checkbox"] { width: 17px; height: 17px; accent-color: var(--accent-strong); }
-.number-suffix, .money-input { position: relative; display: flex; align-items: center; }
+.number-suffix, .money-input, .percent-input { position: relative; display: flex; align-items: center; }
 .number-suffix input { padding-right: 68px; }
 .number-suffix > span { position: absolute; right: 11px; color: var(--subtle); font-size: 10px; pointer-events: none; }
 .money-input > span { position: absolute; left: 11px; z-index: 1; color: var(--subtle); }
 .money-input input { padding-left: 25px; }
+.percent-input > span { position: absolute; right: 11px; color: var(--subtle); pointer-events: none; }
+.percent-input input { padding-right: 27px; }
 .inline-toggle {
   min-height: 38px;
   padding: 0 10px;
@@ -743,7 +745,7 @@ button:disabled:hover { transform: none; }
 }
 .store-allowance-form {
   display: grid;
-  grid-template-columns: repeat(3, minmax(130px, 1fr)) auto;
+  grid-template-columns: repeat(4, minmax(120px, 1fr)) auto;
   align-items: end;
   gap: 8px;
 }

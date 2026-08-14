@@ -401,6 +401,7 @@ function publicSettings() {
     msrpCatalog: settings.msrpCatalog,
     itemProfiles: settings.itemProfiles,
     defaultItemProfileId: settings.defaultItemProfileId,
+    orderTaxPercent: settings.orderTaxPercent,
     storeOrderAllowances: settings.storeOrderAllowances,
     msrpResearchEnabled: settings.msrpResearchEnabled,
     firstPartyOnly: true
@@ -618,6 +619,7 @@ function quickAddMissionRequest(input) {
     product = quickAddMission(input, {
       profile,
       msrpCatalog: settings.msrpCatalog,
+      orderTaxPercent: settings.orderTaxPercent,
       storeOrderAllowances: settings.storeOrderAllowances
     });
   } catch (error) {
@@ -1852,6 +1854,7 @@ function registerIpc() {
     const plan = planBulkImport(input, settings.products, MAX_PRODUCTS, {
       profile,
       msrpCatalog: settings.msrpCatalog,
+      orderTaxPercent: settings.orderTaxPercent,
       storeOrderAllowances: settings.storeOrderAllowances
     });
     const nextSnapshot = plan.additions.length
@@ -1882,6 +1885,7 @@ function registerIpc() {
     const plan = planCatalogMissionImport(catalogState, selectedIds, settings.products, MAX_PRODUCTS, {
       profile,
       msrpCatalog: settings.msrpCatalog,
+      orderTaxPercent: settings.orderTaxPercent,
       storeOrderAllowances: settings.storeOrderAllowances
     });
     const nextSnapshot = plan.additions.length
@@ -1904,6 +1908,7 @@ function registerIpc() {
       {
         profile,
         msrpCatalog: settings.msrpCatalog,
+        orderTaxPercent: settings.orderTaxPercent,
         storeOrderAllowances: settings.storeOrderAllowances,
         openAt: input?.openAt,
         now: Date.now()

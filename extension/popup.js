@@ -124,8 +124,8 @@ async function loadPreview() {
     elements.preflightButton.disabled = !desktopConfig || desktopConfig.automationEnabled;
     setStatus(
       desktopConfig?.automationEnabled
-        ? "Checkout found. Switch Autopilot off before approving its preflight."
-        : "Checkout found. Review the page, then approve its hashed evidence."
+        ? "Checkout found. Switch Autopilot off before locking its optional preflight."
+        : "Checkout found. You may optionally lock its destination and payment evidence."
     );
     elements.refreshButton.disabled = false;
     return;
@@ -161,7 +161,7 @@ elements.addButton.addEventListener("click", async () => {
       result.duplicate
         ? "This item is already in Missions; its existing settings were left unchanged."
         : result.product?.action === "checkout"
-          ? "Auto-submit mission added from your selected default. Approve checkout preflight before arming Autopilot."
+          ? "Auto-submit mission added. Live final-review verification is required; an advance preflight is optional."
           : `Mission added with the desktop default profile (${result.product?.action || "configured"}).`,
       "success"
     );
@@ -175,15 +175,15 @@ elements.addButton.addEventListener("click", async () => {
 elements.preflightButton.addEventListener("click", async () => {
   if (!currentPreflight) return;
   elements.preflightButton.disabled = true;
-  setStatus("Approving the hashed checkout evidence…");
+  setStatus("Locking the hashed checkout evidence…");
   const result = await runtimeMessage({
     type: "CART_CONFIRM_APPROVE_CHECKOUT_PREFLIGHT",
     productId: currentPreflight.productId,
     evidence: currentPreflight.evidence
   });
   if (result.ok) {
-    setStatus("Checkout preflight approved. You can now arm this unchanged auto-submit mission.", "success");
-    elements.preflightButton.textContent = "Approved";
+    setStatus("Optional checkout preflight locked. Auto-submit will require an exact match.", "success");
+    elements.preflightButton.textContent = "Locked";
     return;
   }
   setStatus(result.error || "Checkout preflight could not be approved.", "error");

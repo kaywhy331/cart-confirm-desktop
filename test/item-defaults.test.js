@@ -6,10 +6,13 @@ const {
   BUILT_IN_ITEM_PROFILES,
   calculateOrderTotalCap,
   DEFAULT_ITEM_PROFILE_ID,
+  DEFAULT_ORDER_TAX_PERCENT,
+  DEFAULT_STORE_ORDER_ALLOWANCES,
   applyItemProfile,
   cloneStarterCatalog,
   normalizeCustomItemProfile,
   normalizeMsrpRecord,
+  normalizeOrderTaxPercent,
   normalizeStoreOrderAllowances,
   resolveMsrpRecord
 } = require("../lib/item-defaults");
@@ -77,7 +80,7 @@ test("unknown prices stay disabled while an existing manual cap can be profiled"
 
   const manual = applyItemProfile({ retailer: "target", title: "Unknown item", maxPrice: 20 }, profile, approvedCatalog());
   assert.equal(manual.enabled, true);
-  assert.equal(manual.maxOrderTotal, 35);
+  assert.equal(manual.maxOrderTotal, 52.4);
   assert.equal(manual.priceSource, "manual");
 
   const customAllowance = applyItemProfile(
@@ -86,27 +89,38 @@ test("unknown prices stay disabled while an existing manual cap can be profiled"
     approvedCatalog(),
     { storeOrderAllowances: { target: 7.25 } }
   );
-  assert.equal(customAllowance.maxOrderTotal, 27.25);
+  assert.equal(customAllowance.maxOrderTotal, 29.65);
 });
 
-test("store allowances calculate final caps independently from item profiles", () => {
+test("tax and store allowances calculate final caps independently from item profiles", () => {
+  assert.equal(DEFAULT_ORDER_TAX_PERCENT, 12);
+  assert.deepEqual(DEFAULT_STORE_ORDER_ALLOWANCES, { target: 30, walmart: 30, amazon: 30 });
   assert.deepEqual(normalizeStoreOrderAllowances({ target: 8.5 }), {
     target: 8.5,
-    walmart: 15,
-    amazon: 15
+    walmart: 30,
+    amazon: 30
   });
   assert.equal(calculateOrderTotalCap({
     retailer: "walmart",
     maxPrice: 12.99,
     quantity: 2,
     action: "review"
-  }, { walmart: 4.02 }), 30);
+  }, { walmart: 4.02 }), 33.12);
+  assert.equal(calculateOrderTotalCap({
+    retailer: "walmart",
+    maxPrice: 12.99,
+    quantity: 2,
+    action: "review"
+  }, { walmart: 4.02 }, 8.25), 32.14);
   assert.equal(calculateOrderTotalCap({
     retailer: "walmart",
     maxPrice: 12.99,
     quantity: 2,
     action: "cart"
   }, { walmart: 4.02 }), 0);
+  assert.equal(normalizeOrderTaxPercent(undefined), 12);
+  assert.equal(normalizeOrderTaxPercent(8.25), 8.25);
+  assert.throws(() => normalizeOrderTaxPercent(100.01), /tax percentage/);
   assert.throws(() => normalizeStoreOrderAllowances({ amazon: -1 }), /Amazon order-total allowance/);
 });
 

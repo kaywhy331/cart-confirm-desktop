@@ -39,10 +39,10 @@
 
     <section id="preflight" class="preview" hidden>
       <span id="preflightStore" class="store"></span>
-      <strong id="preflightTitle">Approve checkout preflight</strong>
+      <strong id="preflightTitle">Lock optional checkout preflight</strong>
       <p id="preflightDetail" class="detail"></p>
-      <button id="preflightButton" class="primary full-button" type="button">Approve hashed checkout evidence</button>
-      <small>Cart Confirm checks the exact mission, single cart line, quantity, first-party price, fulfillment, destination, complete selected payment set, substitutions, and final total. Address and payment labels are keyed-hashed inside the extension and are never persisted as readable text.</small>
+      <button id="preflightButton" class="primary full-button" type="button">Lock hashed checkout evidence</button>
+      <small>This optional lock pins the current destination or pickup store and payment set. Without it, auto-submit still requires a fresh live final-review verification of the exact mission, single cart line, quantity, first-party price, fulfillment, destination, complete selected payment set, disabled substitutions, and capped total. Address and payment labels are keyed-hashed inside the extension and are never persisted as readable text.</small>
     </section>
 
     <section id="resolution" class="preview danger-preview" hidden>

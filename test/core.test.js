@@ -116,10 +116,11 @@ test("normalizes a multi-store buy list and preserves a private token", () => {
   assert.equal(defaults.blitzRetryDelayMs, 750);
   assert.equal(defaults.blitzWindowSeconds, 20);
   assert.equal(defaults.walmartQueueCaptureReloads, 0);
-  assert.deepEqual(defaults.storeOrderAllowances, { target: 15, walmart: 15, amazon: 15 });
-  assert.equal(defaults.products[0].maxOrderTotal, 114.98);
+  assert.equal(defaults.orderTaxPercent, 12);
+  assert.deepEqual(defaults.storeOrderAllowances, { target: 30, walmart: 30, amazon: 30 });
+  assert.equal(defaults.products[0].maxOrderTotal, 141.98);
   assert.equal(defaults.products[1].maxOrderTotal, 0);
-  assert.equal(defaults.products[2].maxOrderTotal, 27.5);
+  assert.equal(defaults.products[2].maxOrderTotal, 44);
 
   const armedProducts = PRODUCTS.map((product) => ({
     ...product,
@@ -151,7 +152,7 @@ test("normalizes a multi-store buy list and preserves a private token", () => {
   assert.equal(result.products[1].id, "walmart:123456789");
   assert.equal(result.products[2].productUrl, "https://www.amazon.com/dp/B0ABC12345");
   assert.equal(result.products[0].quantity, 2);
-  assert.equal(result.products[0].maxOrderTotal, 114.98);
+  assert.equal(result.products[0].maxOrderTotal, 141.98);
   assert.equal(result.companionToken, "existing-token");
   assert.equal(result.automationEnabled, true);
   assert.equal(result.fastMode, false);
@@ -358,13 +359,23 @@ test("rejects unsafe or ambiguous product settings", () => {
     products: [{ ...PRODUCTS[0], action: "review", maxOrderTotal: 0 }],
     automationEnabled: true
   });
-  assert.equal(repairedMissingTotal.products[0].maxOrderTotal, 114.98);
+  assert.equal(repairedMissingTotal.products[0].maxOrderTotal, 141.98);
   const customAllowance = normalizeSettings({
     products: [{ ...PRODUCTS[0], action: "review", maxOrderTotal: 50 }],
     storeOrderAllowances: { target: 22.02 },
     automationEnabled: true
   });
-  assert.equal(customAllowance.products[0].maxOrderTotal, 122);
+  assert.equal(customAllowance.products[0].maxOrderTotal, 134);
+  const customTax = normalizeSettings({
+    products: [{ ...PRODUCTS[0], action: "review" }],
+    orderTaxPercent: 8.25,
+    automationEnabled: true
+  });
+  assert.equal(customTax.products[0].maxOrderTotal, 138.23);
+  assert.throws(
+    () => normalizeSettings({ products: PRODUCTS, orderTaxPercent: -0.01 }),
+    /tax percentage/
+  );
   assert.throws(
     () => normalizeSettings({ products: PRODUCTS, storeOrderAllowances: { walmart: -1 } }),
     /Walmart order-total allowance/
@@ -385,6 +396,12 @@ test("rejects unsafe or ambiguous product settings", () => {
     }),
     /explicitly require shipping or pickup/
   );
+  const liveVerifiedCheckout = normalizeSettings({
+    products: [PRODUCTS[0]],
+    automationEnabled: true
+  });
+  assert.equal(liveVerifiedCheckout.automationEnabled, true);
+  assert.equal(liveVerifiedCheckout.products[0].checkoutEvidence, null);
 });
 
 test("review-only products are supported and armed product edits require disarming", () => {
