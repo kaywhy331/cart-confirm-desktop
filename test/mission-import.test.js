@@ -115,11 +115,15 @@ test("Quick add applies the default profile using a positive observed page price
     productUrl: "https://www.amazon.com/dp/B0ABC12345",
     title: "Unknown sealed item",
     price: 34.99
-  }, { profile: BUILT_IN_ITEM_PROFILES[0], msrpCatalog: [] });
+  }, {
+    profile: BUILT_IN_ITEM_PROFILES[0],
+    msrpCatalog: [],
+    storeOrderAllowances: { amazon: 5 }
+  });
   assert.equal(mission.action, "checkout");
   assert.equal(mission.fulfillmentMode, "shipping");
   assert.equal(mission.maxPrice, 34.99);
-  assert.equal(mission.maxOrderTotal, 49.99);
+  assert.equal(mission.maxOrderTotal, 39.99);
   assert.equal(mission.enabled, true);
   assert.equal(mission.priceSource, "observed-page");
 });

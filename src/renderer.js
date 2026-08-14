@@ -57,6 +57,11 @@ const elements = {
   catalogStatus: document.getElementById("catalogStatus"),
   catalogCount: document.getElementById("catalogCount"),
   catalogList: document.getElementById("catalogList"),
+  storeAllowanceForm: document.getElementById("storeAllowanceForm"),
+  targetOrderAllowance: document.getElementById("targetOrderAllowance"),
+  walmartOrderAllowance: document.getElementById("walmartOrderAllowance"),
+  amazonOrderAllowance: document.getElementById("amazonOrderAllowance"),
+  saveStoreAllowancesButton: document.getElementById("saveStoreAllowancesButton"),
   defaultItemProfile: document.getElementById("defaultItemProfile"),
   itemProfileForm: document.getElementById("itemProfileForm"),
   itemProfileId: document.getElementById("itemProfileId"),
@@ -64,7 +69,6 @@ const elements = {
   itemProfileQuantity: document.getElementById("itemProfileQuantity"),
   itemProfileAction: document.getElementById("itemProfileAction"),
   itemProfileFulfillment: document.getElementById("itemProfileFulfillment"),
-  itemProfileBuffer: document.getElementById("itemProfileBuffer"),
   itemProfileAlert: document.getElementById("itemProfileAlert"),
   itemProfileEnabled: document.getElementById("itemProfileEnabled"),
   itemProfileResetButton: document.getElementById("itemProfileResetButton"),
@@ -508,7 +512,8 @@ function applyProfileToEditor(card) {
   const applied = ItemDefaults.applyItemProfile(
     profileSeedFromFields(card),
     profile,
-    currentSnapshot?.settings?.msrpCatalog || []
+    currentSnapshot?.settings?.msrpCatalog || [],
+    { storeOrderAllowances: currentSnapshot?.settings?.storeOrderAllowances }
   );
   field(card, "maxPrice").value = String(applied.maxPrice || 0);
   field(card, "maxOrderTotal").value = String(applied.maxOrderTotal || 0);
@@ -567,6 +572,7 @@ function globalSettings(products, overrides = {}) {
     msrpCatalog: currentSnapshot?.settings?.msrpCatalog || [],
     itemProfiles: currentSnapshot?.settings?.itemProfiles || [],
     defaultItemProfileId: currentSnapshot?.settings?.defaultItemProfileId || ItemDefaults.DEFAULT_ITEM_PROFILE_ID,
+    storeOrderAllowances: currentSnapshot?.settings?.storeOrderAllowances || ItemDefaults.DEFAULT_STORE_ORDER_ALLOWANCES,
     scheduledOpenEnabled: false,
     scheduledRetailer: currentSnapshot?.settings?.scheduledRetailer || "target",
     scheduledOpenAt: "",
@@ -895,6 +901,7 @@ function buildEditCard(product, options = {}) {
   field(card, "openAt").value = toLocalInputValue(product?.openAt);
   field(card, "enabled").checked = product ? product.enabled !== false : false;
   updateEditStore(card);
+  updateMissionOrderTotal(card);
 
   const advanced = card.querySelector(".advanced-fields");
   advanced.open = Boolean(product && (
@@ -914,13 +921,17 @@ function buildEditCard(product, options = {}) {
   };
   validateFulfillmentSelection();
 
-  field(card, "retailer").addEventListener("change", () => updateEditStore(card));
+  field(card, "retailer").addEventListener("change", () => {
+    updateEditStore(card);
+    updateMissionOrderTotal(card);
+  });
   field(card, "productUrl").addEventListener("change", () => {
     const url = field(card, "productUrl").value;
     const detected = detectRetailer(url);
     if (detected) {
       field(card, "retailer").value = detected;
       updateEditStore(card);
+      updateMissionOrderTotal(card);
       const detectedSku = extractSku(detected, url);
       if (detectedSku) field(card, "sku").value = detectedSku;
     }
@@ -945,15 +956,16 @@ function buildEditCard(product, options = {}) {
     if (["review", "checkout"].includes(field(card, "action").value)) advanced.open = true;
     validateFulfillmentSelection();
     updateSignalEntryOptions(card);
+    updateMissionOrderTotal(card);
   });
   field(card, "fulfillmentMode").addEventListener("change", validateFulfillmentSelection);
   field(card, "maxPrice").addEventListener("change", () => {
     field(card, "priceSource").value = Number(field(card, "maxPrice").value) > 0 ? "manual" : "";
-    if (options.isNew) updateNewMissionPriceDefaults(card);
+    updateMissionOrderTotal(card, { enableWhenPriced: options.isNew });
   });
-  field(card, "quantity").addEventListener("change", () => {
-    if (options.isNew) updateNewMissionPriceDefaults(card);
-  });
+  field(card, "maxPrice").addEventListener("input", () => updateMissionOrderTotal(card));
+  field(card, "quantity").addEventListener("change", () => updateMissionOrderTotal(card));
+  field(card, "quantity").addEventListener("input", () => updateMissionOrderTotal(card));
   card.querySelector(".mission-apply-profile").addEventListener("click", () => {
     try {
       const applied = applyProfileToEditor(card);
@@ -1019,6 +1031,29 @@ function reportInvalid(input) {
   input.reportValidity();
 }
 
+function missionOrderTotalFromCard(card) {
+  return ItemDefaults.calculateOrderTotalCap({
+    retailer: field(card, "retailer").value,
+    maxPrice: Number(field(card, "maxPrice").value),
+    quantity: Number(field(card, "quantity").value),
+    action: field(card, "action").value
+  }, currentSnapshot?.settings?.storeOrderAllowances);
+}
+
+function updateMissionOrderTotal(card, options = {}) {
+  const total = missionOrderTotalFromCard(card);
+  field(card, "maxOrderTotal").value = String(total);
+  const maxPrice = Number(field(card, "maxPrice").value);
+  if (!options.enableWhenPriced || !Number.isFinite(maxPrice) || maxPrice <= 0) return;
+  const profile = ItemDefaults.itemProfileById(
+    field(card, "itemProfileId").value,
+    currentSnapshot?.settings?.itemProfiles || []
+  );
+  if (profile && ItemDefaults.normalizeItemProfileSettings(profile.settings).enabled) {
+    field(card, "enabled").checked = true;
+  }
+}
+
 function collectMission(card) {
   const retailer = field(card, "retailer").value;
   const sku = field(card, "sku").value.trim();
@@ -1033,7 +1068,7 @@ function collectMission(card) {
     productUrl: field(card, "productUrl").value.trim(),
     sku: retailer === "amazon" ? sku.toUpperCase() : sku,
     maxPrice: Number(field(card, "maxPrice").value),
-    maxOrderTotal: Number(field(card, "maxOrderTotal").value),
+    maxOrderTotal: missionOrderTotalFromCard(card),
     quantity: Number(field(card, "quantity").value),
     action: field(card, "action").value,
     alertLevel: field(card, "alertLevel").value,
@@ -1075,21 +1110,6 @@ async function finishEdit(card) {
       await runAction(() => resumeAutopilot(), "Autopilot resumed.");
     }
   }
-}
-
-function updateNewMissionPriceDefaults(card) {
-  const price = Number(field(card, "maxPrice").value);
-  const quantity = Number(field(card, "quantity").value);
-  const profile = ItemDefaults.itemProfileById(
-    field(card, "itemProfileId").value,
-    currentSnapshot?.settings?.itemProfiles || []
-  );
-  if (!profile || !Number.isFinite(price) || price <= 0 || !Number.isInteger(quantity) || quantity <= 0) return;
-  const profileSettings = ItemDefaults.normalizeItemProfileSettings(profile.settings);
-  if (["review", "checkout"].includes(field(card, "action").value)) {
-    field(card, "maxOrderTotal").value = String(Math.round((price * quantity + profileSettings.maxOrderBuffer) * 100) / 100);
-  }
-  if (profileSettings.enabled) field(card, "enabled").checked = true;
 }
 
 async function startEdit(product, seed = null) {
@@ -1388,7 +1408,6 @@ function resetItemProfileForm() {
   elements.itemProfileQuantity.value = "1";
   elements.itemProfileAction.value = "checkout";
   elements.itemProfileFulfillment.value = "shipping";
-  elements.itemProfileBuffer.value = "15";
   elements.itemProfileAlert.value = "standard";
   elements.itemProfileEnabled.checked = true;
   elements.itemProfileDeleteButton.hidden = true;
@@ -1402,7 +1421,6 @@ function fillItemProfileForm(profile) {
   elements.itemProfileQuantity.value = String(profile.settings.quantity);
   elements.itemProfileAction.value = profile.settings.action;
   elements.itemProfileFulfillment.value = profile.settings.fulfillmentMode;
-  elements.itemProfileBuffer.value = String(profile.settings.maxOrderBuffer);
   elements.itemProfileAlert.value = profile.settings.alertLevel;
   elements.itemProfileEnabled.checked = profile.settings.enabled;
   elements.itemProfileDeleteButton.hidden = false;
@@ -1421,7 +1439,7 @@ function renderItemProfilePickers(settings) {
     button.type = "button";
     button.className = `profile-chip${profile.id === editingItemProfileId ? " selected" : ""}`;
     button.textContent = `${profile.name} · ×${profile.settings.quantity} · ${ACTION_LABELS[profile.settings.action]}`;
-    button.title = profile.description || `${profile.settings.fulfillmentMode}, $${profile.settings.maxOrderBuffer.toFixed(2)} total allowance`;
+    button.title = profile.description || `${profile.settings.fulfillmentMode}; retailer allowance is applied automatically`;
     button.addEventListener("click", () => {
       if (profile.id.startsWith("custom:")) fillItemProfileForm(profile);
       else resetItemProfileForm();
@@ -1666,6 +1684,19 @@ function renderBulkMissionDefaults(settings) {
 }
 
 function renderItemDefaults(settings) {
+  const allowances = ItemDefaults.normalizeStoreOrderAllowances(settings.storeOrderAllowances);
+  const allowanceInputs = {
+    target: elements.targetOrderAllowance,
+    walmart: elements.walmartOrderAllowance,
+    amazon: elements.amazonOrderAllowance
+  };
+  for (const retailer of ItemDefaults.RETAILERS) {
+    if (document.activeElement !== allowanceInputs[retailer]) {
+      allowanceInputs[retailer].value = String(allowances[retailer]);
+    }
+    allowanceInputs[retailer].disabled = isArmed();
+  }
+  elements.saveStoreAllowancesButton.disabled = isArmed();
   renderItemProfilePickers(settings);
   renderMsrpCatalog(settings);
   renderBulkMissionDefaults(settings);
@@ -2390,7 +2421,12 @@ function signalMissionSeed(signal) {
   const profile = ItemDefaults.itemProfileById(seed.itemProfileId, currentSnapshot?.settings?.itemProfiles || []);
   if (!profile) return seed;
   return {
-    ...ItemDefaults.applyItemProfile(seed, profile, currentSnapshot?.settings?.msrpCatalog || []),
+    ...ItemDefaults.applyItemProfile(
+      seed,
+      profile,
+      currentSnapshot?.settings?.msrpCatalog || [],
+      { storeOrderAllowances: currentSnapshot?.settings?.storeOrderAllowances }
+    ),
     // Discord data prefills the workflow but still requires the operator to
     // review the editor and deliberately choose On before saving.
     enabled: false
@@ -2738,6 +2774,50 @@ elements.catalogSelectNoneButton.addEventListener("click", () => {
 elements.catalogAddButton.addEventListener("click", () => void addSelectedCatalogMissions());
 elements.catalogWalmartPrepButton.addEventListener("click", () => void addSelectedWalmartPrepCandidates());
 
+elements.storeAllowanceForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  void runAction(async () => {
+    if (isArmed()) throw new Error("Switch Autopilot off before changing store order-total allowances.");
+    const inputs = [
+      elements.targetOrderAllowance,
+      elements.walmartOrderAllowance,
+      elements.amazonOrderAllowance
+    ];
+    for (const input of inputs) {
+      if (!input.checkValidity()) {
+        input.reportValidity();
+        throw new Error("Enter a valid non-negative allowance for every retailer.");
+      }
+    }
+    const storeOrderAllowances = ItemDefaults.normalizeStoreOrderAllowances({
+      target: elements.targetOrderAllowance.value,
+      walmart: elements.walmartOrderAllowance.value,
+      amazon: elements.amazonOrderAllowance.value
+    });
+    const previous = ItemDefaults.normalizeStoreOrderAllowances(currentSnapshot.settings.storeOrderAllowances);
+    const changedRetailers = ItemDefaults.RETAILERS.filter((retailer) => (
+      storeOrderAllowances[retailer] !== previous[retailer]
+    ));
+    const affectedPreflights = currentSnapshot.settings.products.filter((product) => (
+      changedRetailers.includes(product.retailer)
+      && product.action === "checkout"
+      && product.checkoutPreflightApproved
+    )).length;
+    const next = await window.cartAssist.saveSettings({
+      ...currentSnapshot.settings,
+      storeOrderAllowances
+    });
+    render(next);
+    return { changed: changedRetailers.length, affectedPreflights };
+  }, ({ changed, affectedPreflights }) => {
+    if (!changed) return "Store allowances were already up to date.";
+    const preflightNote = affectedPreflights
+      ? ` Re-run checkout preflight for ${affectedPreflights} affected auto-submit mission${affectedPreflights === 1 ? "" : "s"}.`
+      : "";
+    return `Store allowances saved; final-order caps recalculated.${preflightNote}`;
+  });
+});
+
 elements.defaultItemProfile.addEventListener("change", () => void runAction(async () => {
   if (isArmed()) throw new Error("Switch Autopilot off before changing the default item profile.");
   const next = await window.cartAssist.saveSettings({
@@ -2764,8 +2844,7 @@ elements.itemProfileForm.addEventListener("submit", (event) => {
         fulfillmentMode: elements.itemProfileFulfillment.value,
         alertLevel: elements.itemProfileAlert.value,
         signalAutoOpen: true,
-        enabled: elements.itemProfileEnabled.checked,
-        maxOrderBuffer: elements.itemProfileBuffer.value
+        enabled: elements.itemProfileEnabled.checked
       }
     });
     const existing = currentSnapshot.settings.itemProfiles || [];
@@ -2885,7 +2964,12 @@ elements.applyBulkItemProfileButton.addEventListener("click", () => void runActi
   if (!profile) throw new Error("Choose an item profile.");
   const products = savedProducts().map((product) => (
     bulkMissionSelectedIds.has(product.id)
-      ? ItemDefaults.applyItemProfile(product, profile, currentSnapshot.settings.msrpCatalog)
+      ? ItemDefaults.applyItemProfile(
+          product,
+          profile,
+          currentSnapshot.settings.msrpCatalog,
+          { storeOrderAllowances: currentSnapshot.settings.storeOrderAllowances }
+        )
       : product
   ));
   const ready = products.filter((product) => bulkMissionSelectedIds.has(product.id) && product.enabled).length;

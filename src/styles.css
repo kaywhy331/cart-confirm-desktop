@@ -737,10 +737,18 @@ button:disabled:hover { transform: none; }
 .defaults-default-profile { min-width: 210px; margin: 0; }
 .item-profile-form {
   display: grid;
-  grid-template-columns: minmax(160px, 1.2fr) repeat(5, minmax(105px, 0.8fr));
+  grid-template-columns: minmax(160px, 1.2fr) repeat(4, minmax(105px, 0.8fr));
   align-items: end;
   gap: 8px;
 }
+.store-allowance-form {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(130px, 1fr)) auto;
+  align-items: end;
+  gap: 8px;
+}
+.store-allowance-form .field { margin: 0; }
+.field-note { color: var(--subtle); font-size: 9px; line-height: 1.35; }
 .item-profile-form .field { margin: 0; }
 .item-profile-form .toggle-row { min-height: 38px; }
 .item-profile-form .action-row { grid-column: 1 / -1; }
@@ -1261,7 +1269,7 @@ footer {
   .step-header { flex-wrap: wrap; }
   .product-row-top { flex-wrap: wrap; }
   .title-input { flex-basis: 100%; order: 5; }
-  .product-fields, .automation-grid, .discord-setup, .catalog-filter-grid, .catalog-import-defaults, .item-profile-form, .msrp-row, .bulk-mission-list, .mission-profile-row, .msrp-research-controls, .mission-toolbar { grid-template-columns: 1fr; }
+  .product-fields, .automation-grid, .discord-setup, .catalog-filter-grid, .catalog-import-defaults, .item-profile-form, .store-allowance-form, .msrp-row, .bulk-mission-list, .mission-profile-row, .msrp-research-controls, .mission-toolbar { grid-template-columns: 1fr; }
   .item-profile-form .action-row { grid-column: auto; }
   .defaults-heading { flex-direction: column; }
   .defaults-default-profile { width: 100%; }

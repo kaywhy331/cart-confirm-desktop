@@ -116,6 +116,10 @@ test("normalizes a multi-store buy list and preserves a private token", () => {
   assert.equal(defaults.blitzRetryDelayMs, 750);
   assert.equal(defaults.blitzWindowSeconds, 20);
   assert.equal(defaults.walmartQueueCaptureReloads, 0);
+  assert.deepEqual(defaults.storeOrderAllowances, { target: 15, walmart: 15, amazon: 15 });
+  assert.equal(defaults.products[0].maxOrderTotal, 114.98);
+  assert.equal(defaults.products[1].maxOrderTotal, 0);
+  assert.equal(defaults.products[2].maxOrderTotal, 27.5);
 
   const armedProducts = PRODUCTS.map((product) => ({
     ...product,
@@ -147,6 +151,7 @@ test("normalizes a multi-store buy list and preserves a private token", () => {
   assert.equal(result.products[1].id, "walmart:123456789");
   assert.equal(result.products[2].productUrl, "https://www.amazon.com/dp/B0ABC12345");
   assert.equal(result.products[0].quantity, 2);
+  assert.equal(result.products[0].maxOrderTotal, 114.98);
   assert.equal(result.companionToken, "existing-token");
   assert.equal(result.automationEnabled, true);
   assert.equal(result.fastMode, false);
@@ -349,19 +354,20 @@ test("rejects unsafe or ambiguous product settings", () => {
     () => normalizeSettings({ products: PRODUCTS, scheduledOpenEnabled: true, scheduledRetailer: "amazon" }),
     /date and time/
   );
+  const repairedMissingTotal = normalizeSettings({
+    products: [{ ...PRODUCTS[0], action: "review", maxOrderTotal: 0 }],
+    automationEnabled: true
+  });
+  assert.equal(repairedMissingTotal.products[0].maxOrderTotal, 114.98);
+  const customAllowance = normalizeSettings({
+    products: [{ ...PRODUCTS[0], action: "review", maxOrderTotal: 50 }],
+    storeOrderAllowances: { target: 22.02 },
+    automationEnabled: true
+  });
+  assert.equal(customAllowance.products[0].maxOrderTotal, 122);
   assert.throws(
-    () => normalizeSettings({
-      products: [{ ...PRODUCTS[0], maxOrderTotal: 0 }],
-      automationEnabled: true
-    }),
-    /maximum order total/
-  );
-  assert.throws(
-    () => normalizeSettings({
-      products: [{ ...PRODUCTS[0], maxOrderTotal: 50 }],
-      automationEnabled: true
-    }),
-    /capped item subtotal/
+    () => normalizeSettings({ products: PRODUCTS, storeOrderAllowances: { walmart: -1 } }),
+    /Walmart order-total allowance/
   );
   assert.equal(normalizeSettings({ products: [] }).products.length, 0);
   assert.throws(

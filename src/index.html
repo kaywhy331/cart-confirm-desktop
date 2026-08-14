@@ -210,8 +210,23 @@
             <div class="defaults-block">
               <div class="defaults-heading">
                 <div>
+                  <strong>Store order-total allowances</strong>
+                  <p>Final-order caps are calculated automatically as unit cap × quantity + this retailer allowance. Set enough for expected tax, shipping, and retailer fees; the checkout total must still remain under the result.</p>
+                </div>
+              </div>
+              <form class="store-allowance-form" id="storeAllowanceForm">
+                <label class="field"><span>Target extra allowance</span><span class="money-input"><span>$</span><input id="targetOrderAllowance" type="number" min="0" max="1000000" step="0.01" required></span></label>
+                <label class="field"><span>Walmart extra allowance</span><span class="money-input"><span>$</span><input id="walmartOrderAllowance" type="number" min="0" max="1000000" step="0.01" required></span></label>
+                <label class="field"><span>Amazon extra allowance</span><span class="money-input"><span>$</span><input id="amazonOrderAllowance" type="number" min="0" max="1000000" step="0.01" required></span></label>
+                <button class="button primary compact" id="saveStoreAllowancesButton" type="submit">Save allowances</button>
+              </form>
+            </div>
+
+            <div class="defaults-block">
+              <div class="defaults-heading">
+                <div>
                   <strong>Mission profiles</strong>
-                  <p>Create a complete quantity, action, fulfillment, alert, and order-total setup, then apply it while importing or in bulk.</p>
+                  <p>Create a reusable quantity, action, fulfillment, and alert setup, then apply it while importing or in bulk.</p>
                 </div>
                 <label class="field defaults-default-profile">
                   <span>Default for imports</span>
@@ -224,7 +239,6 @@
                 <label class="field"><span>Quantity</span><input id="itemProfileQuantity" type="number" min="1" max="99" step="1" value="1" required></label>
                 <label class="field"><span>Action</span><select id="itemProfileAction"><option value="checkout">Submit order automatically</option><option value="review">Prepare checkout, I submit</option><option value="cart">Add to cart only</option><option value="watch">Watch &amp; alert only</option></select></label>
                 <label class="field"><span>Fulfillment</span><select id="itemProfileFulfillment"><option value="shipping">Shipping / delivery</option><option value="pickup">Store pickup</option></select></label>
-                <label class="field"><span>Order-total allowance</span><span class="money-input"><span>$</span><input id="itemProfileBuffer" type="number" min="0" max="1000000" step="0.01" value="15" required></span></label>
                 <label class="field"><span>Alert</span><select id="itemProfileAlert"><option value="standard">Standard ping</option><option value="alarm">Loud alarm</option><option value="silent">Silent log</option></select></label>
                 <label class="toggle-row"><input id="itemProfileEnabled" type="checkbox" checked><span>Turn matching priced items On</span></label>
                 <div class="action-row"><button class="button primary compact" type="submit">Save profile</button><button class="button ghost compact" id="itemProfileResetButton" type="button">New profile</button><button class="button danger compact" id="itemProfileDeleteButton" type="button" hidden>Delete</button></div>
@@ -602,8 +616,9 @@
             <input data-field="sku" type="text" maxlength="20" autocomplete="off" spellcheck="false" placeholder="Auto-filled from the link">
           </label>
           <label class="field">
-            <span>Max final order total</span>
-            <span class="money-input"><span>$</span><input data-field="maxOrderTotal" type="number" min="0" max="1000000" step="0.01" inputmode="decimal" required></span>
+            <span>Calculated final-order cap</span>
+            <span class="money-input"><span>$</span><input data-field="maxOrderTotal" type="number" min="0" step="0.01" inputmode="decimal" readonly></span>
+            <span class="field-note">Unit cap × quantity + this retailer’s saved allowance</span>
           </label>
           <label class="field">
             <span>Required fulfillment</span>

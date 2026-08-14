@@ -58,6 +58,7 @@ function snapshotFixture() {
       msrpCatalog: [],
       itemProfiles: [],
       defaultItemProfileId: "built-in:shipping-watch",
+      storeOrderAllowances: { target: 15, walmart: 15, amazon: 15 },
       firstPartyOnly: true
     },
     status: {
@@ -509,15 +510,21 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
 
   // Item profiles support create/update/delete and bulk application without
   // changing unselected missions or enabling an unknown zero-dollar cap.
+  doc.getElementById("targetOrderAllowance").value = "12";
+  doc.getElementById("storeAllowanceForm").dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true }));
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(savedSettingsInputs.at(-1).storeOrderAllowances.target, 12);
+  assert.equal(savedSettingsInputs.at(-1).storeOrderAllowances.walmart, 15);
+  assert.equal(savedSettingsInputs.at(-1).storeOrderAllowances.amazon, 15);
+  assert.match(doc.getElementById("message").textContent, /final-order caps recalculated/);
   doc.getElementById("itemProfileName").value = "Two shipped";
   doc.getElementById("itemProfileQuantity").value = "2";
-  doc.getElementById("itemProfileBuffer").value = "12";
   doc.getElementById("itemProfileForm").dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true }));
   await new Promise((resolve) => setTimeout(resolve, 10));
   const customItemProfile = savedSettingsInputs.at(-1).itemProfiles[0];
   assert.equal(customItemProfile.name, "Two shipped");
   assert.equal(customItemProfile.settings.quantity, 2);
-  assert.equal(customItemProfile.settings.maxOrderBuffer, 12);
+  assert.equal("maxOrderBuffer" in customItemProfile.settings, false);
   assert.equal(doc.getElementById("itemProfileDeleteButton").hidden, false);
 
   doc.getElementById("itemProfileName").value = "Two shipped updated";
@@ -675,8 +682,14 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   const settingsBeforeUnsafeCheckout = savedSettingsInputs.length;
   const actionSelect = editCard.querySelector("[data-field='action']");
   const fulfillmentSelect = editCard.querySelector("[data-field='fulfillmentMode']");
+  const calculatedTotal = editCard.querySelector("[data-field='maxOrderTotal']");
+  assert.equal(calculatedTotal.readOnly, true);
   actionSelect.value = "checkout";
   actionSelect.dispatchEvent(new window.Event("change", { bubbles: true }));
+  assert.equal(calculatedTotal.value, "55");
+  editCard.querySelector("[data-field='quantity']").value = "2";
+  editCard.querySelector("[data-field='quantity']").dispatchEvent(new window.Event("change", { bubbles: true }));
+  assert.equal(calculatedTotal.value, "95");
   assert.equal(editCard.querySelector(".advanced-fields").open, true);
   assert.match(fulfillmentSelect.validationMessage, /Choose Shipping/);
   editCard.querySelector(".mission-done").click();
@@ -760,6 +773,10 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   assert.equal(editCard.querySelector("[data-field='action']").value, "watch");
   assert.equal(editCard.querySelector("[data-field='fulfillmentMode']").value, "shipping");
   assert.equal(editCard.querySelector("[data-field='enabled']").checked, false);
+  editCard.querySelector("[data-field='maxPrice']").value = "39.99";
+  editCard.querySelector("[data-field='maxPrice']").dispatchEvent(new window.Event("change", { bubbles: true }));
+  assert.equal(editCard.querySelector("[data-field='maxOrderTotal']").value, "0");
+  assert.equal(editCard.querySelector("[data-field='enabled']").checked, true);
   const urlInput = editCard.querySelector("[data-field='productUrl']");
   urlInput.value = "https://www.target.com/p/pokemon-scarlet-violet-booster-box/-/A-95298172";
   urlInput.dispatchEvent(new window.Event("change", { bubbles: true }));

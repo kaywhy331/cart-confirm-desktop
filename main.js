@@ -401,6 +401,7 @@ function publicSettings() {
     msrpCatalog: settings.msrpCatalog,
     itemProfiles: settings.itemProfiles,
     defaultItemProfileId: settings.defaultItemProfileId,
+    storeOrderAllowances: settings.storeOrderAllowances,
     msrpResearchEnabled: settings.msrpResearchEnabled,
     firstPartyOnly: true
   };
@@ -614,7 +615,11 @@ function quickAddMissionRequest(input) {
   let product;
   try {
     const profile = itemProfileById(settings.defaultItemProfileId, settings.itemProfiles);
-    product = quickAddMission(input, { profile, msrpCatalog: settings.msrpCatalog });
+    product = quickAddMission(input, {
+      profile,
+      msrpCatalog: settings.msrpCatalog,
+      storeOrderAllowances: settings.storeOrderAllowances
+    });
   } catch (error) {
     return {
       statusCode: 400,
@@ -1846,7 +1851,8 @@ function registerIpc() {
     const profile = itemProfileById(settings.defaultItemProfileId, settings.itemProfiles);
     const plan = planBulkImport(input, settings.products, MAX_PRODUCTS, {
       profile,
-      msrpCatalog: settings.msrpCatalog
+      msrpCatalog: settings.msrpCatalog,
+      storeOrderAllowances: settings.storeOrderAllowances
     });
     const nextSnapshot = plan.additions.length
       ? appendMissionProducts(
@@ -1875,7 +1881,8 @@ function registerIpc() {
     if (!profile) throw new Error("Choose a valid item profile before importing catalog results.");
     const plan = planCatalogMissionImport(catalogState, selectedIds, settings.products, MAX_PRODUCTS, {
       profile,
-      msrpCatalog: settings.msrpCatalog
+      msrpCatalog: settings.msrpCatalog,
+      storeOrderAllowances: settings.storeOrderAllowances
     });
     const nextSnapshot = plan.additions.length
       ? appendMissionProducts(
@@ -1894,7 +1901,13 @@ function registerIpc() {
       input?.selectedIds,
       settings.products,
       settings.walmartPrepCandidates,
-      { profile, msrpCatalog: settings.msrpCatalog, openAt: input?.openAt, now: Date.now() }
+      {
+        profile,
+        msrpCatalog: settings.msrpCatalog,
+        storeOrderAllowances: settings.storeOrderAllowances,
+        openAt: input?.openAt,
+        now: Date.now()
+      }
     );
     if (plan.additions.length) {
       settings = normalizeSettings({
