@@ -25,6 +25,7 @@
         </div>
       </div>
       <div class="topbar-controls">
+        <button class="button ghost compact update-button" id="updateButton" type="button" title="Check official GitHub releases for a newer Cart Confirm version">Check for updates</button>
         <div class="connection" id="connectionPill" title="">
           <span class="connection-dot"></span>
           <span id="connectionText">Waiting for companion</span>
@@ -85,6 +86,37 @@
             </div>
           </div>
           <div class="panel-content" id="missionsPanelBody">
+            <div class="mission-toolbar" aria-label="Mission filters">
+              <label class="mission-search-field">
+                <span class="sr-only">Search missions</span>
+                <input id="missionSearch" type="search" maxlength="100" autocomplete="off" spellcheck="false" placeholder="Search name or item ID">
+              </label>
+              <label>
+                <span class="sr-only">Filter missions by group</span>
+                <select id="missionGroupFilter" aria-label="Filter missions by group">
+                  <option value="all">All groups</option>
+                </select>
+              </label>
+              <label>
+                <span class="sr-only">Filter missions by retailer</span>
+                <select id="missionRetailerFilter" aria-label="Filter missions by retailer">
+                  <option value="all">All retailers</option>
+                  <option value="target">Target</option>
+                  <option value="walmart">Walmart</option>
+                  <option value="amazon">Amazon</option>
+                </select>
+              </label>
+              <label>
+                <span class="sr-only">Filter missions by status</span>
+                <select id="missionActiveFilter" aria-label="Filter missions by status">
+                  <option value="all">Active + inactive</option>
+                  <option value="active">Active</option>
+                  <option value="inactive">Inactive</option>
+                </select>
+              </label>
+              <button class="button secondary compact" id="newMissionGroupButton" type="button">+ Group</button>
+              <span class="mission-filter-count" id="missionFilterCount" aria-live="polite"></span>
+            </div>
             <p class="step-hint worst-case" id="worstCase"></p>
             <div class="mission-list" id="missionList"></div>
           </div>
@@ -178,8 +210,23 @@
             <div class="defaults-block">
               <div class="defaults-heading">
                 <div>
+                  <strong>Store order-total allowances</strong>
+                  <p>Final-order caps are calculated automatically as unit cap × quantity + this retailer allowance. Set enough for expected tax, shipping, and retailer fees; the checkout total must still remain under the result.</p>
+                </div>
+              </div>
+              <form class="store-allowance-form" id="storeAllowanceForm">
+                <label class="field"><span>Target extra allowance</span><span class="money-input"><span>$</span><input id="targetOrderAllowance" type="number" min="0" max="1000000" step="0.01" required></span></label>
+                <label class="field"><span>Walmart extra allowance</span><span class="money-input"><span>$</span><input id="walmartOrderAllowance" type="number" min="0" max="1000000" step="0.01" required></span></label>
+                <label class="field"><span>Amazon extra allowance</span><span class="money-input"><span>$</span><input id="amazonOrderAllowance" type="number" min="0" max="1000000" step="0.01" required></span></label>
+                <button class="button primary compact" id="saveStoreAllowancesButton" type="submit">Save allowances</button>
+              </form>
+            </div>
+
+            <div class="defaults-block">
+              <div class="defaults-heading">
+                <div>
                   <strong>Mission profiles</strong>
-                  <p>Create a complete quantity, action, fulfillment, alert, and order-total setup, then apply it while importing or in bulk.</p>
+                  <p>Create a reusable quantity, action, fulfillment, and alert setup, then apply it while importing or in bulk.</p>
                 </div>
                 <label class="field defaults-default-profile">
                   <span>Default for imports</span>
@@ -192,7 +239,6 @@
                 <label class="field"><span>Quantity</span><input id="itemProfileQuantity" type="number" min="1" max="99" step="1" value="1" required></label>
                 <label class="field"><span>Action</span><select id="itemProfileAction"><option value="checkout">Submit order automatically</option><option value="review">Prepare checkout, I submit</option><option value="cart">Add to cart only</option><option value="watch">Watch &amp; alert only</option></select></label>
                 <label class="field"><span>Fulfillment</span><select id="itemProfileFulfillment"><option value="shipping">Shipping / delivery</option><option value="pickup">Store pickup</option></select></label>
-                <label class="field"><span>Order-total allowance</span><span class="money-input"><span>$</span><input id="itemProfileBuffer" type="number" min="0" max="1000000" step="0.01" value="15" required></span></label>
                 <label class="field"><span>Alert</span><select id="itemProfileAlert"><option value="standard">Standard ping</option><option value="alarm">Loud alarm</option><option value="silent">Silent log</option></select></label>
                 <label class="toggle-row"><input id="itemProfileEnabled" type="checkbox" checked><span>Turn matching priced items On</span></label>
                 <div class="action-row"><button class="button primary compact" type="submit">Save profile</button><button class="button ghost compact" id="itemProfileResetButton" type="button">New profile</button><button class="button danger compact" id="itemProfileDeleteButton" type="button" hidden>Delete</button></div>
@@ -227,6 +273,7 @@
               </div>
               <div class="bulk-mission-list" id="bulkMissionList"></div>
               <div class="bulk-profile-actions"><select id="bulkItemProfile"></select><button class="button primary compact" id="applyBulkItemProfileButton" type="button">Apply profile to selected</button><button class="button secondary compact" id="copySelectedMissionListButton" type="button">Copy selected list</button></div>
+              <div class="bulk-group-actions"><select id="bulkMissionGroup" aria-label="Group for selected missions"><option value="">Ungrouped</option></select><button class="button secondary compact" id="applyBulkMissionGroupButton" type="button">Move selected to group</button></div>
               <div class="bulk-schedule-actions">
                 <label class="field compact-field">
                   <span>Shared candidate opening time</span>
@@ -471,6 +518,10 @@
 
   <template id="missionViewTemplate">
     <article class="mission-card">
+      <div class="mission-order-actions" aria-label="Reorder mission">
+        <button class="mission-icon-button mission-move-up" type="button">↑</button>
+        <button class="mission-icon-button mission-move-down" type="button">↓</button>
+      </div>
       <label class="toggle-row mission-enabled" title="Only enabled missions run">
         <input data-view="enabled" type="checkbox">
       </label>
@@ -481,14 +532,15 @@
         </div>
         <div class="mission-sub" data-view="sub"></div>
       </div>
+      <span class="mission-price-quantity" data-view="priceQuantity"></span>
       <span class="action-chip" data-view="action"></span>
       <span class="status-age" data-view="age"></span>
       <span class="state-chip" data-view="state"></span>
       <div class="row-actions">
-        <button class="button ghost compact mission-open" type="button">Open</button>
-        <button class="button secondary compact mission-copy-affiliate" type="button" hidden>Copy share link</button>
-        <button class="button ghost compact mission-edit" type="button">Edit</button>
-        <button class="button ghost compact mission-remove" type="button" aria-label="Remove mission">✕</button>
+        <button class="mission-icon-button mission-open" type="button">↗</button>
+        <button class="mission-icon-button mission-copy-affiliate" type="button" hidden>🔗</button>
+        <button class="mission-icon-button mission-edit" type="button">✎</button>
+        <button class="mission-icon-button mission-remove" type="button">✕</button>
       </div>
     </article>
   </template>
@@ -521,6 +573,10 @@
         <label class="field">
           <span>Item profile</span>
           <select data-field="itemProfileId"></select>
+        </label>
+        <label class="field">
+          <span>Mission group</span>
+          <select data-field="groupId"></select>
         </label>
         <button class="button secondary compact mission-apply-profile" type="button">Apply profile + approved MSRP</button>
         <small>Applies the reusable settings and the matching store MSRP. If no approved price matches, this mission stays Off.</small>
@@ -560,8 +616,9 @@
             <input data-field="sku" type="text" maxlength="20" autocomplete="off" spellcheck="false" placeholder="Auto-filled from the link">
           </label>
           <label class="field">
-            <span>Max final order total</span>
-            <span class="money-input"><span>$</span><input data-field="maxOrderTotal" type="number" min="0" max="1000000" step="0.01" inputmode="decimal" required></span>
+            <span>Calculated final-order cap</span>
+            <span class="money-input"><span>$</span><input data-field="maxOrderTotal" type="number" min="0" step="0.01" inputmode="decimal" readonly></span>
+            <span class="field-note">Unit cap × quantity + this retailer’s saved allowance</span>
           </label>
           <label class="field">
             <span>Required fulfillment</span>

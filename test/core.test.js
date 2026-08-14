@@ -9,7 +9,9 @@ const {
   createProductStatus,
   eventMessage,
   extractTcin,
+  MAX_MISSION_GROUPS,
   matchingProduct,
+  normalizeMissionGroups,
   normalizeProduct,
   normalizeSettings,
   normalizeTargetUrl,
@@ -114,6 +116,10 @@ test("normalizes a multi-store buy list and preserves a private token", () => {
   assert.equal(defaults.blitzRetryDelayMs, 750);
   assert.equal(defaults.blitzWindowSeconds, 20);
   assert.equal(defaults.walmartQueueCaptureReloads, 0);
+  assert.deepEqual(defaults.storeOrderAllowances, { target: 15, walmart: 15, amazon: 15 });
+  assert.equal(defaults.products[0].maxOrderTotal, 114.98);
+  assert.equal(defaults.products[1].maxOrderTotal, 0);
+  assert.equal(defaults.products[2].maxOrderTotal, 27.5);
 
   const armedProducts = PRODUCTS.map((product) => ({
     ...product,
@@ -145,6 +151,7 @@ test("normalizes a multi-store buy list and preserves a private token", () => {
   assert.equal(result.products[1].id, "walmart:123456789");
   assert.equal(result.products[2].productUrl, "https://www.amazon.com/dp/B0ABC12345");
   assert.equal(result.products[0].quantity, 2);
+  assert.equal(result.products[0].maxOrderTotal, 114.98);
   assert.equal(result.companionToken, "existing-token");
   assert.equal(result.automationEnabled, true);
   assert.equal(result.fastMode, false);
@@ -163,6 +170,41 @@ test("normalizes a multi-store buy list and preserves a private token", () => {
   assert.equal(result.discordAutoOpen, true);
   assert.equal(result.products[2].signalEntry, "product");
   assert.equal(result.products[2].signalAutoOpen, true);
+});
+
+test("normalizes persisted mission groups and clears unknown product assignments", () => {
+  const missionGroups = normalizeMissionGroups([
+    { id: "group:launch", name: "  Launch   night  ", collapsed: 1 },
+    { id: "group:launch", name: "Duplicate", collapsed: false },
+    { id: "", name: "Missing id" },
+    null
+  ]);
+  assert.deepEqual(missionGroups, [{
+    id: "group:launch",
+    name: "Launch night",
+    collapsed: true
+  }]);
+
+  const settings = normalizeSettings({
+    missionGroups,
+    products: [
+      { ...PRODUCTS[0], groupId: "group:launch" },
+      { ...PRODUCTS[1], groupId: "group:missing" }
+    ]
+  });
+  assert.equal(settings.products[0].groupId, "group:launch");
+  assert.equal(settings.products[1].groupId, "");
+  assert.deepEqual(settings.missionGroups, missionGroups);
+
+  const retained = normalizeSettings({ products: settings.products }, settings);
+  assert.deepEqual(retained.missionGroups, missionGroups);
+  assert.equal(retained.products[0].groupId, "group:launch");
+
+  const bounded = normalizeMissionGroups(Array.from({ length: MAX_MISSION_GROUPS + 5 }, (_, index) => ({
+    id: `group:${index}`,
+    name: `Group ${index}`
+  })));
+  assert.equal(bounded.length, MAX_MISSION_GROUPS);
 });
 
 test("an approved future Walmart prep candidate can arm monitoring before it becomes a mission", () => {
@@ -195,6 +237,7 @@ test("preserves only exact-SKU affiliate links resolved from the current Howl so
   const resolvedAt = "2026-08-08T18:00:00.000Z";
   const product = normalizeProduct({
     ...PRODUCTS[0],
+    groupId: "group:launch",
     howlUrl,
     affiliateUrl,
     affiliateResolvedFrom: howlUrl,
@@ -211,11 +254,13 @@ test("preserves only exact-SKU affiliate links resolved from the current Howl so
   assert.equal("affiliateUrl" in automationProduct, false);
   assert.equal("affiliateResolvedFrom" in automationProduct, false);
   assert.equal("affiliateResolvedAt" in automationProduct, false);
+  assert.equal("groupId" in automationProduct, false);
   const rendererProduct = toRendererProduct(product);
   assert.equal(rendererProduct.affiliateUrl, affiliateUrl);
   assert.equal("howlUrl" in rendererProduct, false);
   assert.equal("affiliateResolvedFrom" in rendererProduct, false);
   assert.equal("affiliateResolvedAt" in rendererProduct, false);
+  assert.equal(rendererProduct.groupId, "group:launch");
 
   const attemptedUserChange = normalizeProduct({
     ...PRODUCTS[0],
@@ -309,19 +354,20 @@ test("rejects unsafe or ambiguous product settings", () => {
     () => normalizeSettings({ products: PRODUCTS, scheduledOpenEnabled: true, scheduledRetailer: "amazon" }),
     /date and time/
   );
+  const repairedMissingTotal = normalizeSettings({
+    products: [{ ...PRODUCTS[0], action: "review", maxOrderTotal: 0 }],
+    automationEnabled: true
+  });
+  assert.equal(repairedMissingTotal.products[0].maxOrderTotal, 114.98);
+  const customAllowance = normalizeSettings({
+    products: [{ ...PRODUCTS[0], action: "review", maxOrderTotal: 50 }],
+    storeOrderAllowances: { target: 22.02 },
+    automationEnabled: true
+  });
+  assert.equal(customAllowance.products[0].maxOrderTotal, 122);
   assert.throws(
-    () => normalizeSettings({
-      products: [{ ...PRODUCTS[0], maxOrderTotal: 0 }],
-      automationEnabled: true
-    }),
-    /maximum order total/
-  );
-  assert.throws(
-    () => normalizeSettings({
-      products: [{ ...PRODUCTS[0], maxOrderTotal: 50 }],
-      automationEnabled: true
-    }),
-    /capped item subtotal/
+    () => normalizeSettings({ products: PRODUCTS, storeOrderAllowances: { walmart: -1 } }),
+    /Walmart order-total allowance/
   );
   assert.equal(normalizeSettings({ products: [] }).products.length, 0);
   assert.throws(
@@ -364,6 +410,13 @@ test("review-only products are supported and armed product edits require disarmi
     automationEnabled: true
   }, armed);
   assert.throws(() => assertSafeArmedUpdate(armed, metadataChanged), /Disarm automation/);
+
+  const grouped = normalizeSettings({
+    ...armed,
+    missionGroups: [{ id: "group:launch", name: "Launch", collapsed: true }],
+    products: armed.products.map((product) => ({ ...product, groupId: "group:launch" }))
+  }, armed);
+  assert.doesNotThrow(() => assertSafeArmedUpdate(armed, grouped));
 });
 
 test("returns store-aware cart and order links", () => {

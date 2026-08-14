@@ -4,7 +4,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { migrateStoredSettings } = require("../lib/migrations");
 
-test("legacy armed checkout settings are preserved but disarmed when the final-total cap is missing", () => {
+test("legacy armed checkout settings receive a derived cap and remain disarmed without current evidence", () => {
   const stored = {
     automationEnabled: true,
     retryIntervalSeconds: 30,
@@ -23,24 +23,29 @@ test("legacy armed checkout settings are preserved but disarmed when the final-t
   assert.equal(migrated.automationEnabled, false);
   assert.equal(migrated.retryIntervalSeconds, 30);
   assert.equal(migrated.products[0].sku, "1011960739");
+  assert.equal(migrated.products[0].maxOrderTotal, 115);
+  assert.deepEqual(migrated.storeOrderAllowances, { target: 15, walmart: 15, amazon: 15 });
   assert.equal(stored.automationEnabled, true);
 });
 
-test("legacy capped checkout without current evidence is preserved but disarmed", () => {
+test("legacy per-item checkout caps clear bound evidence and disarm", () => {
   const stored = {
     automationEnabled: true,
     products: [{
+      retailer: "target",
       maxPrice: 50,
       maxOrderTotal: 110,
       quantity: 2,
       action: "checkout",
       fulfillmentMode: "shipping",
+      checkoutEvidence: { version: 2 },
       enabled: true
     }]
   };
   const migrated = migrateStoredSettings(stored);
   assert.equal(migrated.automationEnabled, false);
-  assert.equal(migrated.products[0].maxOrderTotal, 110);
+  assert.equal(migrated.products[0].maxOrderTotal, 115);
+  assert.equal(migrated.products[0].checkoutEvidence, null);
 });
 
 test("legacy single-product auto-checkout settings are also preserved and disarmed", () => {

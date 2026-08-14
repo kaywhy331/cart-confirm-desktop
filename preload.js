@@ -4,6 +4,7 @@ const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("cartAssist", {
   getSnapshot: () => ipcRenderer.invoke("cart-assist:snapshot"),
+  checkForUpdates: () => ipcRenderer.invoke("cart-assist:check-for-updates"),
   saveSettings: (settings) => ipcRenderer.invoke("cart-assist:save-settings", settings),
   bulkImportMissions: (text) => ipcRenderer.invoke("cart-assist:bulk-import", text),
   searchCatalog: (input) => ipcRenderer.invoke("cart-assist:catalog-search", input),
@@ -38,5 +39,10 @@ contextBridge.exposeInMainWorld("cartAssist", {
     const listener = (_event, payload) => callback(payload);
     ipcRenderer.on("cart-assist:update", listener);
     return () => ipcRenderer.removeListener("cart-assist:update", listener);
+  },
+  onUpdaterState: (callback) => {
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on("cart-assist:updater-state", listener);
+    return () => ipcRenderer.removeListener("cart-assist:updater-state", listener);
   }
 });
