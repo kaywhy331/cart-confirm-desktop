@@ -116,6 +116,32 @@ test("Target checkout routes include co-cart while authentication stays manual",
   assert.equal(target.pageKind("https://www.target.com/account"), "auth");
 });
 
+test("Target product-page sign-in extras do not masquerade as an authentication wall", () => {
+  const target = getAdapter("target");
+  const doc = new JSDOM(`<body><main>
+    <h1>Pokémon 30th Collection Tin Trading Cards (Styles May Vary)</h1>
+    <button aria-label="sign in to favorite Pokémon 30th Collection Tin Trading Cards to keep tabs on it"></button>
+    <button data-test="registryListButton" aria-label="sign in to add item to registry and wish list">Sign in</button>
+    <button data-test="writeReviewPdp" aria-label="sign in to write a review">Write a review</button>
+    <button id="addToCartButtonOrTextIdFor1010892069" disabled>Add to cart</button>
+  </main></body>`, { url: "https://www.target.com/p/restocks/A-1010892069" }).window.document;
+
+  assert.equal(target.interactivePageState(doc), "");
+});
+
+test("Target reads the most conservative visible per-order product limit", () => {
+  const target = getAdapter("target");
+  const doc = new JSDOM(`<body><main>
+    <div role="alert">Limit 2 per order</div>
+    <div data-test="@web/ProductDetailPageHighlights">
+      <h2>Highlights</h2>
+      <ul><li>Styles May Vary</li><li>1 Tin per Order</li></ul>
+    </div>
+  </main></body>`, { url: "https://www.target.com/p/restocks/A-1010892069" }).window.document;
+
+  assert.equal(target.visibleQuantityLimit(doc, { retailer: "target", sku: "1010892069" }), 1);
+});
+
 for (const retailer of ["target", "walmart", "amazon"]) {
   test(`${retailer} classifies MFA, location, and membership interstitials for manual handling`, () => {
     const adapter = getAdapter(retailer);
@@ -123,6 +149,7 @@ for (const retailer of ["target", "walmart", "amazon"]) {
     assert.equal(adapter.interactivePageState(page(`<label>Verification code <input name="otp" autocomplete="one-time-code"></label>`)), "mfa");
     assert.equal(adapter.interactivePageState(page(`<div role="dialog"><button>Choose your pickup store</button></div>`)), "location");
     assert.equal(adapter.interactivePageState(page(`<div role="dialog"><button>Join ${retailer === "amazon" ? "Prime" : retailer === "walmart" ? "Walmart+" : "Target Circle 360"} free trial</button></div>`)), "membership");
+    assert.equal(adapter.interactivePageState(page(`<div role="dialog"><h2>Sign in</h2><button>Continue</button></div>`)), "auth");
     assert.equal(adapter.interactivePageState(page(`<button>Place your order</button>`)), "");
   });
 }
