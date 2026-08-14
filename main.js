@@ -2330,7 +2330,9 @@ function handleProductSchedule(decision) {
   void openProduct(decision.productId, {
     spacingMs: product.retailer === "walmart" ? 0 : DESKTOP_DROP_SPACING_MS,
     parallel: product.retailer === "walmart",
-    dedicatedTab: product.retailer === "walmart",
+    // A scheduled candidate must retain an independent page. Reusing one
+    // unrelated store tab would silently collapse a multi-SKU release set.
+    dedicatedTab: true,
     actionKind: "scheduled-drop"
   })
     .then((result) => {
@@ -2435,7 +2437,7 @@ function startScheduler() {
     void openBuyList(scheduledRetailer, {
       spacingMs: scheduledRetailer === "walmart" ? 0 : DESKTOP_DROP_SPACING_MS,
       parallel: scheduledRetailer === "walmart",
-      dedicatedTab: scheduledRetailer === "walmart",
+      dedicatedTab: true,
       actionKind: "scheduled-drop"
     })
       .then(() => {

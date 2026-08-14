@@ -227,6 +227,15 @@
               </div>
               <div class="bulk-mission-list" id="bulkMissionList"></div>
               <div class="bulk-profile-actions"><select id="bulkItemProfile"></select><button class="button primary compact" id="applyBulkItemProfileButton" type="button">Apply profile to selected</button><button class="button secondary compact" id="copySelectedMissionListButton" type="button">Copy selected list</button></div>
+              <div class="bulk-schedule-actions">
+                <label class="field compact-field">
+                  <span>Shared candidate opening time</span>
+                  <input id="bulkMissionOpenAt" type="datetime-local">
+                </label>
+                <button class="button primary compact" id="scheduleCandidateMissionsButton" type="button">Schedule candidate drop</button>
+                <button class="button ghost compact" id="clearSelectedMissionSchedulesButton" type="button">Clear selected times</button>
+              </div>
+              <small class="bulk-schedule-help">Use this when several pre-known SKUs might appear in the same release window. It gives every selected mission the same calendar gate and applies the bounded 15-minute <strong>Midnight candidates</strong> traffic setup; prices, quantities, and purchase actions do not change.</small>
             </div>
           </div>
         </section>

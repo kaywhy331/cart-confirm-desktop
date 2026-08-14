@@ -714,8 +714,10 @@ button:disabled:hover { transform: none; }
   font-size: 10px;
 }
 .bulk-mission-option span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.bulk-profile-actions { display: flex; gap: 8px; margin-top: 10px; }
+.bulk-profile-actions, .bulk-schedule-actions { display: flex; align-items: end; gap: 8px; margin-top: 10px; }
 .bulk-profile-actions select { max-width: 280px; }
+.bulk-schedule-actions .field { min-width: 210px; margin: 0; }
+.bulk-schedule-help { display: block; margin-top: 7px; color: var(--subtle); font-size: 9.5px; line-height: 1.45; }
 
 /* Discord signal setup and inbox */
 .discord-launcher {
@@ -1167,6 +1169,8 @@ footer {
   .defaults-default-profile { width: 100%; }
   .settings-explainer { grid-template-columns: 1fr; }
   .configuration-profile-heading { align-items: stretch; flex-direction: column; }
+  .bulk-profile-actions, .bulk-schedule-actions { align-items: stretch; flex-direction: column; }
+  .bulk-schedule-actions .field { min-width: 0; }
   .schedule-week { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .action-row .button { flex: 1 1 auto; }
 }

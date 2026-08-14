@@ -328,7 +328,8 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   assert.deepEqual([...profileSelect.options].map((option) => option.textContent), [
     "Recommended",
     "Low traffic",
-    "Scheduled drop"
+    "Scheduled drop",
+    "Midnight candidates"
   ]);
   assert.match(doc.querySelector(".settings-explainer").textContent, /never change products, price caps, quantities, or purchase actions/i);
   profileSelect.value = "built-in:low-traffic";
@@ -361,7 +362,7 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   doc.getElementById("deleteConfigurationProfileButton").click();
   await new Promise((resolve) => setTimeout(resolve, 10));
   assert.equal(savedSettingsInputs.at(-1).configurationProfiles.length, 0);
-  assert.equal(profileSelect.options.length, 3);
+  assert.equal(profileSelect.options.length, 4);
   assert.equal(doc.getElementById("deleteConfigurationProfileButton").hidden, true);
 
   // Item profiles support create/update/delete and bulk application without
@@ -395,6 +396,27 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   assert.equal(savedSettingsInputs.at(-1).products[0].maxPrice, 40);
   assert.equal(savedSettingsInputs.at(-1).products[0].maxOrderTotal, 92);
   assert.equal(savedSettingsInputs.at(-1).products[0].enabled, true);
+
+  // A pre-known candidate set gets one shared calendar gate and a sustained,
+  // bounded setup without altering product price, quantity, or action fields.
+  const beforeCandidateSchedule = structuredClone(savedSettingsInputs.at(-1).products[0]);
+  const candidateOpenAtValue = "2099-01-01T00:00";
+  doc.getElementById("bulkMissionOpenAt").value = candidateOpenAtValue;
+  doc.getElementById("scheduleCandidateMissionsButton").click();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  const candidateSchedule = savedSettingsInputs.at(-1);
+  assert.equal(candidateSchedule.products[0].openAt, new Date(candidateOpenAtValue).toISOString());
+  assert.equal(candidateSchedule.products[0].maxPrice, beforeCandidateSchedule.maxPrice);
+  assert.equal(candidateSchedule.products[0].quantity, beforeCandidateSchedule.quantity);
+  assert.equal(candidateSchedule.products[0].action, beforeCandidateSchedule.action);
+  assert.equal(candidateSchedule.scheduledBlitzDurationSeconds, 900);
+  assert.equal(candidateSchedule.eligibilityRefreshIntervalSeconds, 10);
+  assert.equal(candidateSchedule.storeNavigationIntervalSeconds, 10);
+  assert.equal(profileSelect.value, "built-in:candidate-drop");
+  assert.match(doc.getElementById("message").textContent, /1 candidate mission scheduled/);
+  doc.getElementById("clearSelectedMissionSchedulesButton").click();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(savedSettingsInputs.at(-1).products[0].openAt, "");
 
   doc.getElementById("itemProfileDeleteButton").click();
   await new Promise((resolve) => setTimeout(resolve, 10));

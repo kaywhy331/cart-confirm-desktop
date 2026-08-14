@@ -619,7 +619,23 @@
     if (/\b(?:one[- ]time (?:passcode|password|code)|verification code|security code|enter (?:the )?(?:code|otp)|two[- ](?:step|factor)|2fa|mfa|code (?:we|was) sent)\b/i.test(text)) return "mfa";
     if (/\b(?:select|choose|confirm|verify|set|change) (?:a |your )?(?:pickup )?(?:store|location)|enter (?:a |your )?(?:zip|zipcode|zip code|postal code)|use my location\b/i.test(text)) return "location";
     if (/\b(?:join|start|activate|continue with|try) (?:a |your )?(?:membership|free trial|walmart\+|prime|target circle 360)|membership (?:is )?(?:required|needed)|invitation[- ]only|invite required|early access (?:for|requires)\b/i.test(text)) return "membership";
-    if (/\b(?:sign in|log in|create (?:an )?account|forgot password|enter (?:your )?(?:email|password))\b/i.test(controlText)) return "auth";
+    const authPattern = /\b(?:sign in|log in|create (?:an )?account|forgot password|enter (?:your )?(?:email|password))\b/i;
+    const credentialControls = queryAll(doc, [
+      "input[type='password']",
+      "input[autocomplete='username' i]",
+      "input[autocomplete='current-password' i]",
+      "input[name*='password' i]"
+    ]).filter(isVisibleEvidence);
+    const authHeadings = queryAll(doc, ["main h1", "main h2", "main h3", "main [role='heading']"])
+      .filter(isVisibleEvidence)
+      .some((element) => /^(?:sign in|log in|create (?:an )?account|welcome back)\b/i.test(textOf(element)));
+    const authModal = queryAll(doc, ["[role='dialog']", "[role='alertdialog']", "[aria-modal='true']"])
+      .filter(isVisibleEvidence)
+      .some((root) => authPattern.test(visibleTextOf(root, 20_000)));
+    // Retail product pages commonly include unrelated "sign in to favorite",
+    // registry, and review controls. Only a credential prompt, explicit auth
+    // heading, or modal is an authentication wall.
+    if (credentialControls.length || authHeadings || authModal) return "auth";
     return "";
   }
 
@@ -808,17 +824,29 @@
 
   function visibleQuantityLimit(doc, product) {
     const line = product ? adapters?.[product.retailer]?.findLine?.(doc, product) : null;
-    const roots = [line?.container, ...queryAll(doc, ["[role='alert']", "[aria-live='assertive']", "[data-testid*='limit' i]", "[data-automation-id*='limit' i]"])].filter(Boolean);
+    const selectors = [
+      "[role='alert']",
+      "[aria-live='assertive']",
+      "[data-test*='limit' i]",
+      "[data-testid*='limit' i]",
+      "[data-automation-id*='limit' i]"
+    ];
+    if (product?.retailer === "target") {
+      selectors.push("[data-test*='ProductDetailPageHighlights' i]");
+    }
+    const roots = [...new Set([line?.container, ...queryAll(doc, selectors)])]
+      .filter((root) => root && isVisibleEvidence(root));
+    const limits = [];
     for (const root of roots.slice(0, 50)) {
-      const text = textOf(root).slice(0, 5000);
-      const match = text.match(/(?:limit|max(?:imum)?|up to|only)\s+(?:of\s+)?(\d{1,2})\s+(?:per (?:customer|order|household)|item|unit|allowed)/i)
-        || text.match(/(?:per (?:customer|order|household))\s*[:\-]?\s*(\d{1,2})/i);
+      const text = visibleTextOf(root, 5000);
+      const match = text.match(/(?:limit|max(?:imum)?|up to|only)\s+(?:of\s+)?(\d{1,2})\s+(?:per (?:customer|guest|order|household)|item|unit|allowed)/i)
+        || text.match(/(?:per (?:customer|guest|order|household))\s*[:\-]?\s*(\d{1,2})/i);
       if (match) {
         const limit = Number(match[1]);
-        if (Number.isInteger(limit) && limit > 0 && limit <= 99) return limit;
+        if (Number.isInteger(limit) && limit > 0 && limit <= 99) limits.push(limit);
       }
     }
-    return null;
+    return limits.length ? Math.min(...limits) : null;
   }
 
   const adapters = {

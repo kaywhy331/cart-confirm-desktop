@@ -21,7 +21,7 @@ test("per-product calendar firing persists blitz context before clearing its gat
   assert.ok(handler.indexOf("activateBlitzExecution(") < handler.indexOf("clearProductOpenAt(decision.productId)"));
   assert.match(handler, /runtimeState\.productScheduleReceipts\[decision\.key\]/);
   assert.match(handler, /parallel: product\.retailer === "walmart"/);
-  assert.match(handler, /dedicatedTab: product\.retailer === "walmart"/);
+  assert.match(handler, /dedicatedTab: true/);
 });
 
 test("legacy store schedule assigns every released product to blitz before disabling the schedule", () => {
@@ -31,7 +31,7 @@ test("legacy store schedule assigns every released product to blitz before disab
   assert.notEqual(activation, -1);
   assert.ok(activation < release);
   assert.match(scheduler, /parallel: scheduledRetailer === "walmart"/);
-  assert.match(scheduler, /dedicatedTab: scheduledRetailer === "walmart"/);
+  assert.match(scheduler, /dedicatedTab: true/);
 });
 
 test("desktop and extension configs carry execution mode and timing policy", () => {
