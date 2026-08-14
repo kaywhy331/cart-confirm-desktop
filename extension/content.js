@@ -1973,7 +1973,12 @@
     attributeFilter: ["disabled", "aria-disabled", "aria-hidden", "aria-label", "hidden", "href", "style", "value"]
   });
 
-  void refreshConfig(true);
+  void (async () => {
+    await refreshConfig(true);
+    if (!config) return;
+    const product = config.monitoringPaused ? null : activeProduct();
+    await send("heartbeat", product, {}, `heartbeat:startup:${Date.now()}`, 0);
+  })().catch(() => {});
   setInterval(() => void refreshConfig(false), CONFIG_REFRESH_MS);
   setInterval(() => {
     const product = config?.monitoringPaused ? null : activeProduct();

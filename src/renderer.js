@@ -2190,7 +2190,7 @@ function companionStepState() {
     return {
       done: false,
       label: "Waiting for Chrome",
-      hint: "Nothing from Chrome has reached this app yet. Click the Cart Confirm toolbar icon in Chrome (pin it via the puzzle-piece menu) and read its badge: IDLE/ARM = connected · OFF = Chrome cannot reach this app — close ALL other Cart Confirm/Electron processes (or reboot) and check antivirus/firewall web protection · UPD = reload the extension · PAIR = pairing issue. Also confirm the extension was loaded from the folder shown by “Show companion folder”."
+      hint: "Nothing from Chrome has reached this app yet. Autopilot and Test now open a mission page in Chrome and wait for the companion automatically. If that connection fails, confirm the extension was loaded once from the folder shown by “Show companion folder”; its badge explains the problem: IDLE/ARM = connected · OFF = desktop unreachable · UPD = reload needed · PAIR = pairing issue."
     };
   }
   if (hello.reason === "version-mismatch") {
@@ -2210,7 +2210,7 @@ function companionStepState() {
   return {
     done: false,
     label: "Open a store tab",
-    hint: "Extension loaded ✓ — now open (or reload) a Target, Walmart, or Amazon tab in the same Chrome profile. Product links opened by this app already go to Chrome."
+    hint: "Extension loaded ✓. Autopilot and Test will open a Target, Walmart, or Amazon mission page and finish this connection automatically."
   };
 }
 
@@ -2706,18 +2706,24 @@ elements.autopilotToggle.addEventListener("click", async () => {
       const autoSubmit = autoSubmitArmingSummary(saved);
       if (
         autoSubmit.count > 0
-        && !window.confirm(`${autoSubmit.count} enabled mission${autoSubmit.count === 1 ? "" : "s"} may submit a real order.${liveVerificationWarning(autoSubmit.liveVerificationCount)} Re-arming starts a new run. Unscheduled Target and Walmart missions start as quiet background watchers and open Chrome only after a likely stock signal; Amazon must open now. Scheduled missions wait for their exact time. Verify retailer order history first. "Prepare checkout, I submit" is safer. Switch Autopilot on anyway?`)
+        && !window.confirm(`${autoSubmit.count} enabled mission${autoSubmit.count === 1 ? "" : "s"} may submit a real order.${liveVerificationWarning(autoSubmit.liveVerificationCount)} Re-arming starts a new run. If the companion is disconnected, one mission page opens first to connect Chrome automatically. Remaining unscheduled Target and Walmart missions start as quiet background watchers and open Chrome after a likely stock signal; Amazon must open now. Scheduled missions wait for their exact time. Verify retailer order history first. "Prepare checkout, I submit" is safer. Switch Autopilot on anyway?`)
       ) {
         throw new Error("Autopilot was not switched on.");
       }
       const next = await window.cartAssist.saveSettings({ ...saved, automationEnabled: true });
       render(next);
-      setMessage("Autopilot ON. Starting Target/Walmart background watchers and Walmart prep monitors; opening only missions that require a browser now…");
+      setMessage("Autopilot ON. Connecting the Chrome companion automatically, then starting every due mission…");
       try {
         const launch = await window.cartAssist.openBuyList({ backgroundFirst: true });
         return { armed: true, ...launch };
       } catch (error) {
-        throw new Error(`Autopilot is ON, but its watchers or required browser pages could not start: ${error.message || "unknown opening error"}`);
+        try {
+          const stopped = await window.cartAssist.saveSettings({ ...next.settings, automationEnabled: false });
+          render(stopped);
+        } catch (rollbackError) {
+          throw new Error(`Autopilot could not finish starting and may still be ON. Stop it before retrying. Startup error: ${error.message || "unknown opening error"}. Stop error: ${rollbackError.message || "unknown save error"}`);
+        }
+        throw new Error(`Autopilot could not start and was switched back off: ${error.message || "unknown opening error"}`);
       }
     }, (result) => {
       if (!result?.armed) return "Autopilot OFF. Monitoring pages stay open, but nothing will be clicked.";
@@ -2726,6 +2732,11 @@ elements.autopilotToggle.addEventListener("click", async () => {
       const scheduled = Number(result.scheduled || 0);
       const prepMonitoring = Number(result.prepMonitoring || 0);
       const parts = ["Autopilot ON"];
+      if (result.connectionOpened) {
+        parts.push(result.connectionProductId
+          ? "Chrome companion connected automatically on one mission page"
+          : "Chrome companion connected automatically");
+      }
       if (background) {
         parts.push(`${background} Target/Walmart watcher${background === 1 ? "" : "s"} armed background-first`);
       }
@@ -2738,7 +2749,10 @@ elements.autopilotToggle.addEventListener("click", async () => {
       const browserNote = result.defaultBrowser
         ? " Chrome was not found, so some pages used your default browser; Autopilot only works inside Chrome."
         : "";
-      return `${parts.join(", ")}. A likely stock signal opens Chrome for authoritative validation and the configured action. Review missions remain on checkout review; a successful auto-submit remains on Target's confirmation page.${browserNote}`;
+      const watcherNote = background
+        ? " Remaining quiet watchers open in Chrome after a likely stock signal."
+        : "";
+      return `${parts.join(", ")}.${watcherNote} Every open mission performs authoritative browser validation before its configured action. Review missions remain on checkout review; a successful auto-submit remains on Target's confirmation page.${browserNote}`;
     });
   } finally {
     setMissionOpenBusy(false);
@@ -3185,7 +3199,7 @@ function setMissionOpenBusy(busy) {
 elements.testButton.addEventListener("click", async () => {
   if (openRunInFlight) return;
   setMissionOpenBusy(true);
-  setMessage("Checking every due enabled mission… same-store pages are paced for safety.");
+  setMessage("Connecting the Chrome companion automatically, then checking every due enabled mission…");
   try {
     await runAction(async () => {
       if (isArmed()) {
@@ -3195,6 +3209,7 @@ elements.testButton.addEventListener("click", async () => {
     }, (result) => {
       const count = Number(result?.count || 0);
       const parts = [`Test started for ${count} enabled mission${count === 1 ? "" : "s"}`];
+      if (result?.connectionOpened) parts.push("Chrome companion connected automatically");
       if (result?.reused) parts.push(`${result.reused} reused an existing Chrome tab`);
       if (result?.deduped) parts.push(`${result.deduped} already queued`);
       if (result?.scheduled) parts.push(`${result.scheduled} waiting for ${result.scheduled === 1 ? "its" : "their"} calendar time`);

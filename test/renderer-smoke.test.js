@@ -106,6 +106,7 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   let checkForUpdatesCalls = 0;
   let openProductCalls = 0;
   let openBuyListCalls = 0;
+  let openBuyListFailure = null;
   const openBuyListInputs = [];
   let testEventCalls = 0;
   const savedSettingsInputs = [];
@@ -259,8 +260,9 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
     openBuyList: async (options = {}) => {
       openBuyListCalls += 1;
       openBuyListInputs.push(options);
+      if (openBuyListFailure) throw openBuyListFailure;
       return options.backgroundFirst
-        ? { count: 0, background: 1, reused: 0, deduped: 0, scheduled: 0, armed: true }
+        ? { count: 0, background: 0, reused: 0, deduped: 0, scheduled: 0, armed: true, connectionOpened: true, connectionProductId: "target:95298172" }
         : { count: 1, background: 0, reused: 1, deduped: 0, scheduled: 0, armed: false };
     },
     openCart: async () => "",
@@ -284,7 +286,7 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
     stopAll: async () => snapshotFixture(),
     testEvent: async () => {
       testEventCalls += 1;
-      return { count: 1, reused: 1, deduped: 0, armed: false };
+      return { count: 1, reused: 1, deduped: 0, armed: false, connectionOpened: true };
     },
     onUpdate: (callback) => {
       pushUpdate = callback;
@@ -644,12 +646,13 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   assert.equal(testEventCalls, 1, "an overlapping Test all click must not enqueue another sweep");
   assert.equal(openProductCalls, 0, "the backend owns the paced all-mission Test run as one atomic action");
   assert.match(doc.getElementById("message").textContent, /Test started for 1 enabled mission/);
+  assert.match(doc.getElementById("message").textContent, /Chrome companion connected automatically/);
   assert.match(doc.getElementById("message").textContent, /nothing will be added/);
   assert.equal(doc.getElementById("testButton").disabled, false);
   assert.equal(doc.getElementById("openAllButton").disabled, false);
 
-  // Arming starts Target/Walmart background-first. It does not need a separate
-  // Open all click or keep a product tab open while waiting for likely stock.
+  // Arming establishes Chrome automatically, then leaves the remaining
+  // Target/Walmart missions background-first without a separate Open all click.
   doc.getElementById("autopilotToggle").click();
   assert.equal(doc.getElementById("autopilotToggle").disabled, true);
   await new Promise((resolve) => setTimeout(resolve, 10));
@@ -657,8 +660,8 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   assert.equal(openBuyListInputs[0]?.backgroundFirst, true);
   assert.equal(savedSettingsInputs.at(-1).automationEnabled, true);
   assert.match(doc.getElementById("message").textContent, /Autopilot ON/);
-  assert.match(doc.getElementById("message").textContent, /1 Target\/Walmart watcher armed background-first/);
-  assert.match(doc.getElementById("message").textContent, /likely stock signal opens Chrome/);
+  assert.match(doc.getElementById("message").textContent, /Chrome companion connected automatically/);
+  assert.match(doc.getElementById("message").textContent, /authoritative browser validation/);
   assert.equal(doc.getElementById("autopilotToggle").disabled, false);
   doc.getElementById("autopilotToggle").click();
   await new Promise((resolve) => setTimeout(resolve, 10));
@@ -672,6 +675,14 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
     0,
     "manual Open all must keep opening due browser pages immediately"
   );
+
+  openBuyListFailure = new Error("Chrome companion did not connect");
+  doc.getElementById("autopilotToggle").click();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(openBuyListCalls, 3);
+  assert.equal(savedSettingsInputs.at(-1).automationEnabled, false, "a failed automatic connection must disarm Autopilot again");
+  assert.match(doc.getElementById("message").textContent, /could not start and was switched back off/);
+  openBuyListFailure = null;
 
   // Edit flow: inline editor with values, cancel restores the view card.
   card.querySelector(".mission-edit").click();
