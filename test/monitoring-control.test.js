@@ -67,6 +67,8 @@ test("quiet public reads cannot consume the browser, cart, or checkout action le
   assert.doesNotMatch(quietTick, /reserveStoreAction/);
   assert.match(source, /actionKind:\s*"background-stock-open"/);
   assert.match(source, /recordQuietEvent\([\s\S]*?activity:\s*previous !== outcome\.availability/);
+  assert.match(quietTick, /eventType:\s*"watch-started"/);
+  assert.match(source, /function noteQuietProductFailure[\s\S]*?reason:\s*"retrying"[\s\S]*?retry automatically/);
 });
 
 test("Test all opens every enabled mission while remaining disarmed", () => {
@@ -88,6 +90,7 @@ test("arming Autopilot starts Target and Walmart background-first without changi
   assert.match(rendererSource, /waiting for[\s\S]*?calendar time/);
   assert.match(rendererSource, /openAllButton[\s\S]*?openBuyList\(\)/);
   assert.match(openBuyList, /backgroundFirst[\s\S]*?QUIET_STORES\.includes\(product\.retailer\)[\s\S]*?productExecutionMode[\s\S]*?=== "watcher"/);
+  assert.match(openBuyList, /backgroundFirst[\s\S]*?recordWatchStarts\(plan\.ready\)/);
   assert.match(openBuyList, /backgroundIds[\s\S]*?browserProducts/);
   assert.match(openBuyList, /background: backgroundProducts\.length/);
   assert.match(rendererSource, /Autopilot could not start and was switched back off/);

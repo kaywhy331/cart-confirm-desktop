@@ -2,61 +2,102 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { shouldRecordActivity } = require("../lib/activity");
+const { createActivityEvent, shouldRecordActivity } = require("../lib/activity");
 
 const base = {
   productId: "target:95298172",
   retailer: "target",
+  sku: "95298172",
   page: "https://www.target.com/p/item/-/A-95298172"
 };
+const product = {
+  id: base.productId,
+  title: "Riftbound Zed vs Shen",
+  sku: base.sku,
+  quantity: 2
+};
 
-test("unchanged observation states collapse across page refreshes", () => {
-  const existing = [
-    { ...base, eventType: "offer-observed", availability: "available", price: 34.99, seller: "", firstParty: true, eligible: true, reason: "eligible", message: "Test mode is observation-only." },
-    { ...base, eventType: "availability", availability: "available" },
-    { ...base, eventType: "page-observed" }
-  ];
-  assert.equal(shouldRecordActivity(existing, { ...existing[0], timestamp: new Date().toISOString(), attempt: 0 }), false);
-  assert.equal(shouldRecordActivity(existing, { ...existing[1], timestamp: new Date().toISOString() }), false);
-  assert.equal(shouldRecordActivity(existing, { ...existing[2], timestamp: new Date().toISOString() }), false);
+function activity(event, overrides = {}) {
+  return createActivityEvent({ ...base, ...event }, {
+    automationEnabled: true,
+    product,
+    runId: "run-1",
+    ...overrides
+  });
+}
+
+test("the activity feed retains only operator-facing milestones", () => {
+  for (const eventType of [
+    "availability",
+    "automation-status",
+    "retry-scheduled",
+    "automation-blocked",
+    "store-error",
+    "traffic-overload",
+    "add-clicked",
+    "quantity-updated",
+    "checkout-clicked",
+    "checkout-reached",
+    "review-ready"
+  ]) {
+    assert.equal(activity({ eventType }), null, eventType);
+  }
+  assert.equal(activity({ eventType: "offer-observed", eligible: false }), null);
+  assert.equal(activity({ eventType: "page-observed" }, { automationEnabled: false }), null);
+
+  assert.equal(activity({ eventType: "page-observed" }).eventType, "watch-started");
+  assert.equal(activity({ eventType: "offer-observed", eligible: true }).eventType, "offer-observed");
+  assert.equal(activity({ eventType: "cart-item-confirmed" }).eventType, "cart-item-confirmed");
+  assert.equal(activity({ eventType: "order-confirmed" }).eventType, "order-confirmed");
+  assert.equal(activity({ eventType: "notification-sent" }).eventType, "notification-sent");
 });
 
-test("real offer, availability, route, and operating-mode changes remain visible", () => {
-  const existing = [
-    { ...base, eventType: "offer-observed", availability: "available", price: 34.99, firstParty: true, eligible: true, reason: "eligible", message: "Test mode is observation-only." },
-    { ...base, eventType: "availability", availability: "available" },
-    { ...base, eventType: "page-observed" }
-  ];
-  assert.equal(shouldRecordActivity(existing, { ...existing[0], price: 35.99 }), true);
-  assert.equal(shouldRecordActivity(existing, { ...existing[0], message: "Autopilot is starting the auto-buy workflow." }), true);
-  assert.equal(shouldRecordActivity(existing, { ...existing[1], availability: "unavailable" }), true);
-  assert.equal(shouldRecordActivity(existing, { ...existing[2], page: "https://www.target.com/cart" }), true);
-  assert.equal(shouldRecordActivity(existing, { ...base, eventType: "add-clicked", attempt: 1 }), true);
+test("milestone entries use concise product, quantity, price, and order language", () => {
+  assert.equal(
+    activity({ eventType: "page-observed" }).message,
+    "Started watching Riftbound Zed vs Shen."
+  );
+  assert.equal(
+    activity({ eventType: "offer-observed", eligible: true, price: 34.99 }).message,
+    "Qualified Riftbound Zed vs Shen: the exact first-party offer at $34.99 matched the mission criteria."
+  );
+  assert.equal(
+    activity({ eventType: "cart-item-confirmed", quantity: 2 }).message,
+    "Added 2 × Riftbound Zed vs Shen to cart."
+  );
+  assert.equal(
+    activity({ eventType: "order-confirmed", quantity: 2, orderTotal: 69.98 }).message,
+    "Ordered 2 × Riftbound Zed vs Shen; the store confirmed a $69.98 total."
+  );
 });
 
-test("rapid retries collapse without hiding cadence or failure changes", () => {
-  const retry = {
-    ...base,
-    eventType: "retry-scheduled",
-    reason: "retrying",
-    message: "Target is refreshing one waiting mission every 2 seconds."
-  };
-  assert.equal(shouldRecordActivity([retry], { ...retry, attempt: 2 }), false);
-  assert.equal(shouldRecordActivity([retry], {
-    ...retry,
-    message: "Target is refreshing one waiting mission every 3 seconds."
+test("each milestone records once per mission run and returns on a new run", () => {
+  const first = activity({ eventType: "offer-observed", eligible: true, price: 34.99 });
+  assert.equal(shouldRecordActivity([], first), true);
+  assert.equal(shouldRecordActivity([first], activity({
+    eventType: "offer-observed",
+    eligible: true,
+    price: 35.99
+  })), false);
+  assert.equal(shouldRecordActivity([first], activity({
+    eventType: "offer-observed",
+    eligible: true,
+    price: 35.99
+  }, { runId: "run-2" })), true);
+  assert.equal(shouldRecordActivity([first], { ...base, eventType: "offer-observed", eligible: false }), false);
+});
+
+test("notification entries deduplicate by notification purpose", () => {
+  const first = activity({
+    eventType: "notification-sent",
+    notificationKey: "eligible",
+    message: "Notified: Target offer is eligible."
+  });
+  assert.equal(shouldRecordActivity([], first), true);
+  assert.equal(shouldRecordActivity([first], { ...first, timestamp: new Date().toISOString() }), false);
+  assert.equal(shouldRecordActivity([first], {
+    ...first,
+    notificationKey: "cart-confirmed",
+    message: "Notified: Target cart confirmed."
   }), true);
-  assert.equal(shouldRecordActivity([retry], { ...base, eventType: "store-error", reason: "store-error" }), true);
-});
-
-test("an unchanged overload cooldown is recorded once", () => {
-  const overload = {
-    eventType: "traffic-overload",
-    productId: "",
-    retailer: "target",
-    reason: "traffic-overload",
-    cooldownUntil: 123_000
-  };
-  assert.equal(shouldRecordActivity([overload], { ...overload, timestamp: new Date().toISOString() }), false);
-  assert.equal(shouldRecordActivity([overload], { ...overload, cooldownUntil: 456_000 }), true);
 });

@@ -308,6 +308,14 @@ function money(value) {
 }
 
 function eventName(type) {
+  const activityNames = {
+    "watch-started": "Watch Started",
+    "offer-observed": "Qualified",
+    "cart-item-confirmed": "Added to Cart",
+    "order-confirmed": "Ordered",
+    "notification-sent": "Notified"
+  };
+  if (activityNames[type]) return activityNames[type];
   return String(type || "event")
     .split("-")
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
@@ -2301,7 +2309,7 @@ function renderSchedule() {
 
 // --- Loud alarm for alert-level "alarm" missions (throttled per mission) ---
 
-const ALARM_EVENT_TYPES = new Set(["offer-observed", "cart-item-confirmed", "review-ready", "order-confirmed"]);
+const ALARM_EVENT_TYPES = new Set(["offer-observed", "cart-item-confirmed", "order-confirmed", "notification-sent"]);
 const ALARM_THROTTLE_MS = 5 * 60_000;
 const ALARM_MAX_MS = 30_000;
 
@@ -2377,7 +2385,7 @@ function renderEvents(allEvents) {
   if (!events.length) {
     const empty = document.createElement("div");
     empty.className = "empty-state";
-    empty.textContent = eventFilterProductId ? "No events for this mission yet." : "No events yet.";
+    empty.textContent = eventFilterProductId ? "No activity for this mission yet." : "No activity yet.";
     elements.eventList.replaceChildren(empty);
     return;
   }
@@ -3384,7 +3392,7 @@ elements.copyExtensionButton.addEventListener("click", () => runAction(
 elements.clearEventsButton.addEventListener("click", () => runAction(async () => {
   const next = await window.cartAssist.clearEvents();
   render(next);
-}, "Feed cleared."));
+}, "Activity cleared."));
 
 elements.enableScheduledButton.addEventListener("click", () => {
   const updates = new Map(
@@ -3423,9 +3431,12 @@ window.addEventListener("focus", () => {
   const count = (predicate) => recent.filter(predicate).length;
   const orders = count((event) => event.eventType === "order-confirmed");
   const secured = count((event) => event.eventType === "cart-item-confirmed");
-  const reviews = count((event) => event.eventType === "review-ready");
+  const reviews = count((event) => event.eventType === "notification-sent" && event.sourceEventType === "review-ready");
   const sightings = count((event) => event.eventType === "offer-observed" && event.eligible === true);
-  const blocks = count((event) => ["automation-blocked", "store-error"].includes(event.eventType));
+  const blocks = count((event) => (
+    event.eventType === "notification-sent"
+    && ["automation-blocked", "store-error"].includes(event.sourceEventType)
+  ));
   const parts = [];
   if (orders) parts.push(`${orders} order${orders === 1 ? "" : "s"} confirmed`);
   if (secured) parts.push(`${secured} cart${secured === 1 ? "" : "s"} secured`);
