@@ -100,6 +100,9 @@ h1 { font-size: 21px; letter-spacing: -0.025em; }
 .connection.connected .connection-dot { background: var(--success); box-shadow: 0 0 0 4px rgba(134, 239, 172, 0.08); }
 
 .topbar-controls { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 10px; }
+.update-notice { display: inline-flex; align-items: center; gap: 8px; color: var(--warning); font-size: 12px; font-weight: 800; }
+.update-notice[hidden] { display: none !important; }
+.update-available-text { white-space: nowrap; }
 .update-button { white-space: nowrap; }
 .autopilot {
   display: inline-flex;

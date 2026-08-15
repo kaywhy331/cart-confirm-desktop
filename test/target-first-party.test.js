@@ -156,6 +156,22 @@ test("a cart line without any quantity control reads null instead of a guess", (
   assert.equal(line.quantity, null);
 });
 
+test("a Target recommendation link cannot masquerade as a cart line", () => {
+  const doc = new JSDOM(`<body><main>
+    <h1>Your cart is empty</h1>
+    <section data-test="recommended-products">
+      <a href="https://www.target.com/p/restocks/-/A-95298172">Trading Cards Booster Box</a>
+      <span data-test="product-price">$39.99</span>
+      <button aria-label="Add to cart">Add to cart</button>
+    </section>
+  </main></body>`, { url: "https://www.target.com/cart" }).window.document;
+  const adapter = getAdapter("target");
+
+  assert.equal(adapter.findLine(doc, PRODUCT), null);
+  assert.equal(adapter.cartInventory(doc).complete, false);
+  assert.deepEqual(adapter.cartInventory(doc).ids, []);
+});
+
 test("walmart still requires an explicit first-party seller label", () => {
   const doc = new JSDOM(`<body><main>
     <div data-automation-id="product-price">$24.50</div>

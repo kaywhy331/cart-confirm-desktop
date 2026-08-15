@@ -530,3 +530,35 @@ test("status reducers track global and per-product milestones", () => {
   assert.equal(productStatus.observedOrderTotal, 108.42);
   assert.equal(matchingProduct([product], events[0]), product);
 });
+
+test("late delivery of an older observation cannot overwrite a newer safety stop", () => {
+  const product = normalizeProduct(PRODUCTS[0]);
+  const blocked = validateEvent({
+    eventType: "automation-blocked",
+    productId: product.id,
+    retailer: "target",
+    sku: product.sku,
+    eligible: false,
+    reason: "manual-action-required",
+    message: "The cart could not be verified.",
+    timestamp: "2026-08-15T20:00:02.000Z"
+  });
+  const olderQualified = validateEvent({
+    eventType: "offer-observed",
+    productId: product.id,
+    retailer: "target",
+    sku: product.sku,
+    price: 42,
+    seller: "Target.com",
+    firstParty: true,
+    eligible: true,
+    reason: "eligible",
+    timestamp: "2026-08-15T20:00:01.000Z"
+  });
+
+  const current = reduceProductStatus(createProductStatus(product), blocked);
+  const unchanged = reduceProductStatus(current, olderQualified);
+  assert.equal(unchanged.reason, "manual-action-required");
+  assert.equal(unchanged.eligible, false);
+  assert.equal(unchanged.lastMessage, "The cart could not be verified.");
+});

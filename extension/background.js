@@ -355,6 +355,35 @@ async function reserveNavigation(message, sender) {
   });
 }
 
+async function cancelNavigation(message, sender) {
+  const config = await discoverConfig(false);
+  if (!config) return { ok: false, reason: "desktop-not-found" };
+  const productId = String(message.productId || "");
+  const retailer = String(message.retailer || "");
+  const product = config.products.find((candidate) => (
+    candidate.id === productId && candidate.retailer === retailer
+  ));
+  if (!product) return { ok: false, reason: "product-disabled" };
+  const ownerId = `tab:${sender?.tab?.id ?? "unknown"}`;
+
+  return withTrafficStateLock(async () => {
+    const state = await readTrafficState(config);
+    const result = Traffic.cancelNavigationSlot(state.retailers[retailer], {
+      now: Date.now(),
+      reservationId: String(message.reservationId || ""),
+      ownerId,
+      productId
+    });
+    state.retailers[retailer] = result.state;
+    await writeTrafficState(state);
+    return {
+      ok: result.canceled || result.reason === "reservation-missing",
+      canceled: result.canceled,
+      reason: result.reason
+    };
+  });
+}
+
 async function revalidateNavigation(message, sender) {
   const config = await discoverConfig(true);
   if (!automationActive(config)) return { ok: false, reason: "disarmed" };
@@ -1355,6 +1384,8 @@ async function handleMessage(message, sender) {
       return pauseFastModeForChallenge();
     case "CART_CONFIRM_RESERVE_NAVIGATION":
       return reserveNavigation(message, sender);
+    case "CART_CONFIRM_CANCEL_NAVIGATION":
+      return cancelNavigation(message, sender);
     case "CART_CONFIRM_REVALIDATE_NAVIGATION":
       return revalidateNavigation(message, sender);
     case "CART_CONFIRM_TRAFFIC_OVERLOAD":

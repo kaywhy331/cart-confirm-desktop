@@ -4,7 +4,7 @@ const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("cartAssist", {
   getSnapshot: () => ipcRenderer.invoke("cart-assist:snapshot"),
-  checkForUpdates: () => ipcRenderer.invoke("cart-assist:check-for-updates"),
+  installUpdate: () => ipcRenderer.invoke("cart-assist:install-update"),
   saveSettings: (settings) => ipcRenderer.invoke("cart-assist:save-settings", settings),
   bulkImportMissions: (text) => ipcRenderer.invoke("cart-assist:bulk-import", text),
   searchCatalog: (input) => ipcRenderer.invoke("cart-assist:catalog-search", input),

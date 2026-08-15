@@ -433,19 +433,25 @@
     };
   }
 
-  function findLineResult(doc, retailer, selectors) {
+  function findLineResult(doc, retailer, selectors, options = {}) {
     let fallback = null;
     for (const candidate of queryAll(doc, selectors)) {
       const container = candidate.matches?.("[data-asin]") ? candidate : closestLineContainer(candidate);
       const result = lineResult(retailer, container);
       if (!result) continue;
-      const hasLineControl = Boolean(container.querySelector?.(
-        "select, input[aria-label*='quantity' i], button[aria-label*='quantity' i], button[aria-label*='remove' i], [data-action*='delete' i], [data-testid*='remove' i]"
-      ));
-      if (hasLineControl) return result;
+      const hasLineControl = hasLineControls(container);
+      const explicitCartLine = Boolean(candidate.closest?.([
+        "[data-tcin]",
+        "[data-test='cart-item']",
+        "[data-test='cartItem']",
+        "[data-testid='cart-item']",
+        "[data-test^='cart-item-']",
+        "[data-test^='cartItem-']"
+      ].join(",")));
+      if (hasLineControl || explicitCartLine) return result;
       fallback ||= result;
     }
-    return fallback;
+    return options.requireLineEvidence === true ? null : fallback;
   }
 
   function cartIdsFromLinks(doc, retailer, selectors) {
@@ -895,10 +901,13 @@
       },
       findLine(doc, product) {
         return findLineResult(doc, "target", [
-          `[data-test*='cart-item' i] a[href*='A-${cssEscape(product.sku)}']`,
-          `[data-test*='cartItem' i] a[href*='A-${cssEscape(product.sku)}']`,
-          `a[href*='A-${cssEscape(product.sku)}']`
-        ]);
+          `[data-tcin='${cssEscape(product.sku)}']`,
+          `[data-test='cart-item'] a[href*='A-${cssEscape(product.sku)}']`,
+          `[data-test='cartItem'] a[href*='A-${cssEscape(product.sku)}']`,
+          `[data-testid='cart-item'] a[href*='A-${cssEscape(product.sku)}']`,
+          `[data-test^='cart-item-'] a[href*='A-${cssEscape(product.sku)}']`,
+          `[data-test^='cartItem-'] a[href*='A-${cssEscape(product.sku)}']`
+        ], { requireLineEvidence: true });
       },
       cartProductIds(doc) {
         return this.cartInventory(doc).ids;

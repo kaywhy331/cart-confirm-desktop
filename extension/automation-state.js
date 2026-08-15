@@ -3,6 +3,11 @@
 (() => {
   const STATE_VERSION = 3;
   const LOCK_MS = 10 * 60_000;
+  // A plain claim has not crossed a cart boundary. Keep that lease short so a
+  // crashed page cannot strand every other mission for ten minutes. Reserving
+  // Add below restores the longer pre-click safety lease; a clicked receipt is
+  // still held indefinitely.
+  const CLAIM_LOCK_MS = 30_000;
   const TARGET_PERSISTENCE_WINDOW_MS = 20_000;
   const MIN_TARGET_PERSISTENCE_WINDOW_MS = 5_000;
   const MAX_TARGET_PERSISTENCE_WINDOW_MS = 120_000;
@@ -280,12 +285,12 @@
       state.locks[key] = {
         productId: product.id,
         ownerId,
-        expiresAt: now + LOCK_MS,
+        expiresAt: now + CLAIM_LOCK_MS,
         hold: false
       };
     }
-    if (!record.workflow.ownerId) {
-      record.workflow = { ...record.workflow, phase: "active", ownerId: String(ownerId || ""), updatedAt: now };
+    if (record.addAction.phase === "idle" && record.workflow.phase === "active") {
+      record.workflow = { ...record.workflow, ownerId: String(ownerId || ""), updatedAt: now };
     }
     return { ok: true };
   }
@@ -418,6 +423,11 @@
       ownerId: String(ownerId || ""),
       updatedAt: now
     };
+    for (const key of lockKeys(product)) {
+      if (state.locks[key]?.productId === product.id && state.locks[key]?.ownerId === ownerId) {
+        state.locks[key] = { ...state.locks[key], expiresAt: now + LOCK_MS };
+      }
+    }
     record.workflow = { phase: "active", ownerId: String(ownerId || ""), updatedAt: now, evidenceHash: "" };
     return { ok: true, addAction: record.addAction };
   }
@@ -465,13 +475,10 @@
       record.workflow = { phase: "active", ownerId: "", updatedAt: now, evidenceHash: "" };
       record.proof = null;
       for (const key of lockKeys(product)) {
-        if (state.locks[key]?.productId === product.id) {
-          state.locks[key] = {
-            ...state.locks[key],
-            hold: false,
-            expiresAt: now + LOCK_MS
-          };
-        }
+        if (
+          state.locks[key]?.productId === product.id
+          && state.locks[key]?.ownerId === ownerId
+        ) delete state.locks[key];
       }
       return { ok: true, addAction: record.addAction };
     }
@@ -736,6 +743,7 @@
 
   const api = Object.freeze({
     EVIDENCE_HASH_PATTERN,
+    CLAIM_LOCK_MS,
     LOCK_MS,
     MAX_TARGET_PERSISTENCE_WINDOW_MS,
     MIN_TARGET_PERSISTENCE_WINDOW_MS,

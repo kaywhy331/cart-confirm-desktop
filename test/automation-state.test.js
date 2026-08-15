@@ -89,6 +89,20 @@ test("a blocked pre-submit workflow releases its store lane for the next mission
   assert.equal(State.claim(state, next, "tab:2", 1_002).ok, true);
 });
 
+test("an orphaned pre-mutation claim expires quickly without weakening held receipts", () => {
+  const state = State.createState("run", 1_000);
+  const next = { ...PRODUCT, id: "walmart:987654321" };
+  assert.equal(State.claim(state, PRODUCT, "tab:1", 1_000).ok, true);
+  assert.equal(State.claim(state, next, "tab:2", 1_001).reason, "store-busy");
+
+  const restored = State.normalizeState(
+    structuredClone(state),
+    "run",
+    1_000 + State.CLAIM_LOCK_MS + 1
+  );
+  assert.equal(State.claim(restored, next, "tab:2", 1_000 + State.CLAIM_LOCK_MS + 2).ok, true);
+});
+
 test("a possible order submission can never be released automatically", () => {
   const state = State.createState("run", 1_000);
   State.claim(state, PRODUCT, "tab:1", 1_000);
@@ -246,8 +260,18 @@ test("a definitively missing cart line clears the add boundary for a bounded ret
 
   assert.equal(State.markAddAction(state, PRODUCT, "tab:1", "canceled", 1_030).reason, "add-uncertain");
   assert.equal(State.markAddAction(state, PRODUCT, "tab:1", "failed", 1_040).ok, true);
-  assert.equal(State.release(state, PRODUCT, "tab:1").released, true);
+  assert.equal(state.locks[`store:${PRODUCT.retailer}`], undefined);
   assert.equal(State.claim(state, PRODUCT, "tab:1", 1_050).ok, true);
+});
+
+test("a canceled pre-click Add reservation releases the store lane immediately", () => {
+  const state = State.createState("run", 1_000);
+  const next = { ...PRODUCT, id: "walmart:987654321" };
+  State.claim(state, PRODUCT, "tab:1", 1_000);
+  State.beginAddAction(state, PRODUCT, "tab:1", 1_010);
+
+  assert.equal(State.markAddAction(state, PRODUCT, "tab:1", "canceled", 1_020).ok, true);
+  assert.equal(State.claim(state, next, "tab:2", 1_021).ok, true);
 });
 
 test("Target blitz persistence bursts are durable, stage-specific, and bounded", () => {

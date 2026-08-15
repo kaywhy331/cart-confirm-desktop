@@ -6,6 +6,8 @@ const elements = {
   autopilotToggle: document.getElementById("autopilotToggle"),
   autopilotState: document.getElementById("autopilotState"),
   disarmButton: document.getElementById("disarmButton"),
+  updateNotice: document.getElementById("updateNotice"),
+  updateAvailableText: document.getElementById("updateAvailableText"),
   updateButton: document.getElementById("updateButton"),
   connectionPill: document.getElementById("connectionPill"),
   connectionText: document.getElementById("connectionText"),
@@ -194,6 +196,8 @@ let currentSnapshot = null;
 let messageTimer = null;
 let openRunInFlight = false;
 let updateOperationInFlight = false;
+let availableUpdateVersion = "";
+let lastUpdaterRevision = -1;
 let editingId = null; // null | product id | "new"
 let editCardNode = null;
 let resumeAutopilotAfterEdit = false;
@@ -232,51 +236,68 @@ function setMessage(text, kind = "") {
 }
 
 function renderUpdaterState(state = {}) {
-  const version = state.version ? ` v${state.version}` : "";
-  if (["checking", "available", "checksum", "downloading", "verifying", "installing"].includes(state.status)) {
-    updateOperationInFlight = true;
-    elements.updateButton.disabled = true;
+  const revision = Number(state.revision);
+  if (Number.isInteger(revision) && revision >= 0) {
+    if (revision <= lastUpdaterRevision) return;
+    lastUpdaterRevision = revision;
   }
-  if (state.status === "checking") elements.updateButton.textContent = "Checking…";
-  else if (state.status === "available") elements.updateButton.textContent = `Update${version} found`;
-  else if (state.status === "checksum") elements.updateButton.textContent = "Checking release…";
-  else if (state.status === "downloading") elements.updateButton.textContent = `Downloading ${state.percent || 0}%`;
-  else if (state.status === "verifying") elements.updateButton.textContent = "Verifying update…";
-  else if (state.status === "installing") elements.updateButton.textContent = `Installing${version}…`;
-  else if (["current", "cancelled", "error", "idle"].includes(state.status)) {
-    updateOperationInFlight = false;
-    elements.updateButton.disabled = false;
-    elements.updateButton.textContent = "Check for updates";
-  }
-  elements.updateButton.setAttribute("aria-label", elements.updateButton.textContent);
+  const status = String(state.status || "idle");
+  availableUpdateVersion = state.version ? String(state.version) : "";
+  const visible = Boolean(availableUpdateVersion) && [
+    "checking",
+    "available",
+    "checksum",
+    "downloading",
+    "verifying",
+    "installing",
+    "cancelled",
+    "error"
+  ].includes(status);
+  updateOperationInFlight = ["checking", "checksum", "downloading", "verifying", "installing"].includes(status);
+  elements.updateNotice.hidden = !visible;
+  elements.updateAvailableText.textContent = visible ? `v${availableUpdateVersion} available` : "";
+  elements.updateButton.disabled = updateOperationInFlight;
+
+  if (status === "checking") elements.updateButton.textContent = "Checking…";
+  else if (status === "checksum") elements.updateButton.textContent = "Checking release…";
+  else if (status === "downloading") elements.updateButton.textContent = `Downloading ${state.percent || 0}%`;
+  else if (status === "verifying") elements.updateButton.textContent = "Verifying…";
+  else if (status === "installing") elements.updateButton.textContent = "Installing…";
+  else elements.updateButton.textContent = "Update";
+
+  const label = visible && !updateOperationInFlight
+    ? `Update Cart Confirm to v${availableUpdateVersion}`
+    : elements.updateButton.textContent;
+  elements.updateButton.setAttribute("aria-label", label);
 }
 
 async function requestAppUpdate() {
-  if (updateOperationInFlight) return;
-  renderUpdaterState({ status: "checking" });
+  if (updateOperationInFlight || !availableUpdateVersion) return;
+  const requestedVersion = availableUpdateVersion;
+  renderUpdaterState({ status: "checking", version: requestedVersion });
   try {
-    const result = await window.cartAssist.checkForUpdates();
+    const result = await window.cartAssist.installUpdate();
     if (result?.status === "current") {
       renderUpdaterState({ status: "current" });
       setMessage(`Cart Confirm v${result.currentVersion} is already the newest published version.`, "success");
     } else if (result?.status === "cancelled") {
-      renderUpdaterState({ status: "cancelled" });
+      renderUpdaterState({ status: "cancelled", version: result.version || requestedVersion });
       setMessage("Update postponed. Your current version was not changed.");
     } else if (result?.status === "unavailable") {
-      renderUpdaterState({ status: "idle" });
+      renderUpdaterState({ status: "unavailable" });
       setMessage(result.message || "Automatic updates are unavailable in this build.", "warn");
     } else if (result?.status === "busy") {
-      renderUpdaterState({ status: "idle" });
-      setMessage("An update check is already running.", "warn");
+      renderUpdaterState({ status: "available", version: result.version || requestedVersion });
+      setMessage("An update is already being prepared.", "warn");
     } else if (result?.status === "installing") {
       renderUpdaterState({ status: "installing", version: result.version });
       setMessage(`Verified update v${result.version} is installing. Cart Confirm will relaunch automatically.`, "success");
     } else {
-      renderUpdaterState({ status: "idle" });
-      setMessage("The update check finished without a result.", "warn");
+      renderUpdaterState({ status: "available", version: requestedVersion });
+      setMessage("The update request finished without a result. You can try again.", "warn");
     }
   } catch (error) {
-    renderUpdaterState({ status: "error" });
+    renderUpdaterState({ status: "error", version: availableUpdateVersion || requestedVersion });
     setMessage(error.message || "The update could not be installed.", "error");
   }
 }
@@ -680,6 +701,7 @@ function stateLabel(product, status) {
   if (BLOCKING_REASONS.has(status.reason)) return status.reason.replaceAll("-", " ");
   if (status.checkout === "reached") return "Checkout reached";
   if (status.cart === "confirmed") return "Cart confirmed";
+  if (status.reason === "retrying" && status.eligible) return "Eligible offer — purchase action queued";
   if (status.eligible) return "Eligible offer";
   if (status.reason) return status.reason.replaceAll("-", " ");
   return "Waiting";
@@ -693,6 +715,7 @@ function stateShortLabel(product, status) {
   if (BLOCKING_REASONS.has(status.reason)) return "! Blocked";
   if (status.checkout === "reached") return "Checkout";
   if (status.cart === "confirmed") return "Cart";
+  if (status.reason === "retrying" && status.eligible) return "Processing";
   if (status.eligible) return "Ready";
   return "Waiting";
 }
@@ -2685,6 +2708,7 @@ function render(snapshot) {
   renderConfigurationProfiles(settings);
   elements.portBadge.textContent = app.companionPort ? `Port ${app.companionPort}` : "Port unavailable";
   elements.versionText.textContent = `${app.name} v${app.version}`;
+  renderUpdaterState(app.update || { status: "idle" });
 
   renderMissions();
   renderCatalog(snapshot.catalog || {});
