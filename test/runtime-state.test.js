@@ -6,8 +6,10 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const {
+  RUNTIME_STATE_VERSION,
   activateBlitzExecution,
   loadRuntimeState,
+  normalizeRuntimeState,
   productExecutionMode,
   productExecutionContext,
   queueCaptureForProduct,
@@ -16,6 +18,26 @@ const {
   reserveQueueCaptureAttempt,
   saveRuntimeState
 } = require("../lib/runtime-state");
+
+test("legacy runtime state gains bounded quiet-monitor fields and future floors fail closed", () => {
+  const before = Date.now();
+  const normalized = normalizeRuntimeState({
+    version: 5,
+    quietReadHistory: { target: [3, "2", -1, "bad"], amazon: [4] },
+    quietLastStartedAt: {
+      "target:1011483406": before + 60_000,
+      "target:not-a-sku": before,
+      "amazon:B0ABC12345": before
+    }
+  });
+  assert.equal(normalized.version, RUNTIME_STATE_VERSION);
+  assert.deepEqual(normalized.quietReadHistory.target, [2, 3]);
+  assert.equal(normalized.quietReadHistory.amazon, undefined);
+  assert.ok(normalized.quietLastStartedAt["target:1011483406"] >= before);
+  assert.ok(normalized.quietLastStartedAt["target:1011483406"] <= Date.now());
+  assert.equal(normalized.quietLastStartedAt["target:not-a-sku"], undefined);
+  assert.equal(normalized.quietLastStartedAt["amazon:B0ABC12345"], undefined);
+});
 
 test("runtime receipts and overload deadlines survive a process restart", () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "cart-confirm-state-"));
@@ -62,6 +84,8 @@ test("runtime receipts and overload deadlines survive a process restart", () => 
       },
       storeOverloadUntil: { walmart: 123456 },
       storeActionHistory: { walmart: [1000, 2000] },
+      quietReadHistory: { target: [3000, 4000], amazon: [5000] },
+      quietLastStartedAt: { "target:1011483406": 5000, "amazon:B0ABC12345": 6000 },
       discord: {
         channelId: "123456789012345678",
         channelName: "restocks",
@@ -86,6 +110,10 @@ test("runtime receipts and overload deadlines survive a process restart", () => 
     assert.equal(loaded.walmartPrepObservations["walmart:123456789"].etag, '"abc"');
     assert.equal(loaded.storeOverloadUntil.walmart, 123456);
     assert.deepEqual(loaded.storeActionHistory.walmart, [1000, 2000]);
+    assert.deepEqual(loaded.quietReadHistory.target, [3000, 4000]);
+    assert.equal(loaded.quietReadHistory.amazon, undefined);
+    assert.equal(loaded.quietLastStartedAt["target:1011483406"], 5000);
+    assert.equal(loaded.quietLastStartedAt["amazon:B0ABC12345"], undefined);
     assert.equal(loaded.discord.channelName, "restocks");
     assert.equal(loaded.discord.lastMessageId, "223456789012345678");
     assert.equal(loaded.signals[0].productId, "target:1011483406");

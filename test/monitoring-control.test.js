@@ -41,13 +41,32 @@ test("the desktop Stop path aborts quiet checks and internal stock opens cannot 
   const contentSource = fs.readFileSync(path.join(__dirname, "..", "extension", "content.js"), "utf8");
   const backgroundSource = fs.readFileSync(path.join(__dirname, "..", "extension", "background.js"), "utf8");
   assert.match(source, /quietAbortRegistry\.abortAll\(\)/);
-  assert.match(source, /quietCheck\(mission, stopEpoch\)/);
+  assert.match(source, /quietCheck\(product, stopEpoch, started\.startToken\)/);
   assert.match(source, /actionKind:\s*"background-stock-open"[\s\S]*?resumeMonitoring:\s*false[\s\S]*?stopEpoch:\s*taskEpoch/);
   assert.match(source, /reason:\s*"monitoring-paused"/);
-  assert.match(source, /quietMonitorTick\(\);[\s\S]*?if \(settings\.monitoringPaused\) return;[\s\S]*?evaluateProductSchedules/);
+  assert.match(source, /function startQuietMonitorDispatcher[\s\S]*?setInterval\(quietMonitorTick, QUIET_DISPATCH_TICK_MS\)/);
+  assert.match(source, /cart-assist:stop-all[\s\S]*?quietAbortRegistry\.abortAll\(\)[\s\S]*?resetQuietMonitorSchedule/);
   assert.match(contentSource, /if \(!await automationStillActive\(product\)\) return false;[\s\S]*?element\.click\(\)/);
   assert.match(backgroundSource, /function automationActive\(config\)[\s\S]*?config\.monitoringPaused !== true/);
   assert.match(backgroundSource, /resolveProductKnownNoOrder[\s\S]*?if \(config\.automationEnabled\) return \{ ok: false, reason: "automation-armed"/);
+});
+
+test("quiet public reads cannot consume the browser, cart, or checkout action ledger", () => {
+  const source = fs.readFileSync(path.join(__dirname, "..", "main.js"), "utf8");
+  const reserveQuietRead = source.slice(
+    source.indexOf("function reserveQuietRead"),
+    source.indexOf("function quietMonitorTick")
+  );
+  const quietTick = source.slice(
+    source.indexOf("function quietMonitorTick"),
+    source.indexOf("function startQuietMonitorDispatcher")
+  );
+  assert.match(reserveQuietRead, /consumeQuietRead/);
+  assert.match(reserveQuietRead, /quietReadHistory/);
+  assert.doesNotMatch(reserveQuietRead, /reserveStoreAction|storeActionHistory/);
+  assert.doesNotMatch(quietTick, /reserveStoreAction/);
+  assert.match(source, /actionKind:\s*"background-stock-open"/);
+  assert.match(source, /recordQuietEvent\([\s\S]*?activity:\s*previous !== outcome\.availability/);
 });
 
 test("Test all opens every enabled mission while remaining disarmed", () => {
@@ -87,7 +106,7 @@ test("calendar-owned missions stay out of quiet checks and missed schedules stay
     source.indexOf("function startScheduler")
   );
   assert.match(source, /function extensionConfig[\s\S]*?calendarOwned: productCalendarOwned\(settings, product\)/);
-  assert.match(source, /function quietMonitorTick[\s\S]*?!productCalendarOwned\(settings, product\)/);
+  assert.match(source, /function quietProductEligible[\s\S]*?productCalendarOwned\(settings, product\)/);
   assert.match(scheduleHandler, /if \(decision\.action === "missed"\)[\s\S]*?return;[\s\S]*?clearProductOpenAt\(decision\.productId\)/);
   assert.match(backgroundSource, /function configuredProduct[\s\S]*?!ScheduleGate\.calendarOwned\(candidate\)/);
 });

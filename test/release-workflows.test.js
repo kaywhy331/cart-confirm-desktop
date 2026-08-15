@@ -11,6 +11,13 @@ const unsigned = fs.readFileSync(
   path.join(root, ".github", "workflows", "unsigned-prerelease.yml"),
   "utf8"
 );
+const main = fs.readFileSync(path.join(root, "main.js"), "utf8");
+const packageJson = require(path.join(root, "package.json"));
+
+test("packaged desktop dependencies stay inside the application file set", () => {
+  assert.ok(packageJson.build.files.includes("lib/**/*"));
+  assert.doesNotMatch(main, /require\("\.\/extension\//);
+});
 
 test("the stable release lane remains signed and tag-gated", () => {
   assert.match(signed, /tags: \["v\*"\]/);

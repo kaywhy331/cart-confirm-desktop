@@ -222,17 +222,9 @@ for one supervised run) and manually walk the checkout to the final review page:
       Confirm automation begins only after the configured time is reached. In
       a separate supervised test, miss the time by over two minutes and confirm
       it stays locked until you explicitly clear or reschedule **Open at**.
-- [ ] Arm one harmless unavailable mission without an **Open at** time. Confirm
-      its card says **continuous watcher**, checks at the configured Watcher
-      interval (60 seconds by default), and remains active over an extended
-      supervised period until you press **Stop everything**. The source tests
-      cover continuity beyond the former run/attempt limits; do not manufacture
-      live actions to reproduce them. If the rolling store budget fills during
-      normal use, confirm the watcher waits and later resumes.
-- [ ] Arm Autopilot once with two harmless unavailable, unscheduled Target or
-      Walmart missions and confirm neither product page opens. Confirm their
-      cards remain continuous watchers and that **Open all due** still opens
-      them immediately when explicitly selected.
+- [ ] Arm one harmless unavailable Target or Walmart mission without an **Open at** time or fresh browser tab. Confirm its card says **continuous watcher**, its first public check enters the immediate paced ramp, and each later start receives an independently randomized 45–90 second deadline. Keep the app supervised long enough to observe both varying intervals and continued operation until **Stop everything**. Safety cooldowns and capacity may delay the target and must report the delay without issuing catch-up requests.
+- [ ] Arm Autopilot once with several harmless unavailable, unscheduled Target or Walmart missions and confirm every eligible product participates rather than one retailer-level item rotating every minute. Confirm starts are shuffled and gapped, no product overlaps itself, the cards remain continuous watchers, and **Open all due** still opens them immediately when explicitly selected.
+- [ ] In a controlled/mock run, confirm quiet reads increment only the separate 4,000/hour/store public-read ledger and persist each product's 45-second restart floor. Confirm they do not change the 120/hour browser/cart/checkout ledger; a likely-stock Chrome opening still requires that existing browser-action reservation.
 - [ ] With a supervised, low-risk in-stock Target mission set to **Watch & alert
       only**, confirm its background stock hint opens Chrome on the canonical
       product page and the browser independently revalidates it. Then validate
@@ -262,6 +254,7 @@ for one supervised run) and manually walk the checkout to the final review page:
       background, press **Stop everything** while a check is in flight. Confirm
       it cannot add a feed event, reopen Chrome, or lift the `STOPPED` state
       after its network response or timeout arrives.
+- [ ] In controlled/mock responses, confirm three unreadable results rest only that exact product for ten minutes. Confirm a `429`/overload or visible security challenge pauses the retailer, while four distinct transport-failing products within one minute open the shared store cooldown without stopping the other retailer.
 - [ ] When Walmart naturally serves `/qp` or an explicit product-route waiting
       room, confirm the first queued mission produces only one simultaneous
       fan-out for that Autopilot run. The winning tab and every tab that later
