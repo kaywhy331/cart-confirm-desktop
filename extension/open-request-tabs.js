@@ -8,6 +8,10 @@
     return Retailers?.extractSkuFromUrl?.(String(retailer || ""), String(url || "")) || "";
   }
 
+  function shouldActivateTab(request = {}) {
+    return request.background !== true;
+  }
+
   function chooseReusableTab(config = {}, request = {}, tabs = []) {
     const retailer = String(request.retailer || "");
     const requestedSku = tabSku(retailer, request.url);
@@ -39,7 +43,7 @@
       || null;
   }
 
-  const api = Object.freeze({ chooseReusableTab, tabSku });
+  const api = Object.freeze({ chooseReusableTab, shouldActivateTab, tabSku });
   globalThis.CartConfirmOpenRequestTabs = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;
 })();

@@ -2,7 +2,7 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { chooseReusableTab, tabSku } = require("../extension/open-request-tabs");
+const { chooseReusableTab, shouldActivateTab, tabSku } = require("../extension/open-request-tabs");
 
 function walmartQueueUrl(itemId) {
   const qpdata = encodeURIComponent(JSON.stringify({
@@ -19,6 +19,12 @@ const config = {
     { id: "walmart:3", retailer: "walmart", sku: "333333333", enabled: true }
   ]
 };
+
+test("only explicit background requests keep their claimed tab inactive", () => {
+  assert.equal(shouldActivateTab({ background: true }), false);
+  assert.equal(shouldActivateTab({ background: false }), true);
+  assert.equal(shouldActivateTab({}), true);
+});
 
 test("the product's own tab is reused first", () => {
   const own = { id: 2, url: "https://www.walmart.com/ip/item/222222222" };

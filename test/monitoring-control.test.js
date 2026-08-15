@@ -53,6 +53,7 @@ test("the desktop Stop path aborts quiet checks and internal stock opens cannot 
 
 test("quiet public reads cannot consume the browser, cart, or checkout action ledger", () => {
   const source = fs.readFileSync(path.join(__dirname, "..", "main.js"), "utf8");
+  const backgroundSource = fs.readFileSync(path.join(__dirname, "..", "extension", "background.js"), "utf8");
   const reserveQuietRead = source.slice(
     source.indexOf("function reserveQuietRead"),
     source.indexOf("function quietMonitorTick")
@@ -66,9 +67,12 @@ test("quiet public reads cannot consume the browser, cart, or checkout action le
   assert.doesNotMatch(reserveQuietRead, /reserveStoreAction|storeActionHistory/);
   assert.doesNotMatch(quietTick, /reserveStoreAction/);
   assert.match(source, /actionKind:\s*"background-stock-open"/);
+  assert.match(source, /function noteQuietProductFailure[\s\S]*?actionKind:\s*"quiet-unreadable-fallback"[\s\S]*?background:\s*true[\s\S]*?resumeMonitoring:\s*false[\s\S]*?stopEpoch:\s*taskEpoch/);
+  assert.match(source, /function noteQuietProductFailure[\s\S]*?lastAutoOpenAt[\s\S]*?QUIET_AUTO_OPEN_COOLDOWN_MS/);
   assert.match(source, /recordQuietEvent\([\s\S]*?activity:\s*previous !== outcome\.availability/);
   assert.match(quietTick, /eventType:\s*"watch-started"/);
-  assert.match(source, /function noteQuietProductFailure[\s\S]*?reason:\s*"retrying"[\s\S]*?retry automatically/);
+  assert.match(source, /function noteQuietProductFailure[\s\S]*?reason:\s*"retrying"[\s\S]*?browser watcher can continue/);
+  assert.match(backgroundSource, /const active = OpenRequestTabs\.shouldActivateTab\(request\)[\s\S]*?chrome\.tabs\.update\(tab\.id, \{ url, active \}\)[\s\S]*?if \(active\) await chrome\.windows\.update/);
 });
 
 test("Test all opens every enabled mission while remaining disarmed", () => {

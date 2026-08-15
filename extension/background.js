@@ -535,6 +535,7 @@ async function reuseTabForOpenRequest(config, request) {
   if (!patterns || retailerFromUrl(url) !== retailer) return;
   const contextPlan = TabContext.validateOpenRequest(config, request, Date.now());
   if (!contextPlan.ok) return;
+  const active = OpenRequestTabs.shouldActivateTab(request);
   const tabs = await chrome.tabs.query({ url: patterns });
   // Queue URLs are resolved through the same safe embedded-item parser used
   // by the content script, so a live /qp tab is recognized as its mission and
@@ -548,9 +549,9 @@ async function reuseTabForOpenRequest(config, request) {
   const createContextTab = async (destination = url) => {
     let created = null;
     try {
-      created = await chrome.tabs.create({ url: "about:blank", active: true });
+      created = await chrome.tabs.create({ url: "about:blank", active });
       if (contextPlan.context) await saveTabProductContext(created.id, contextPlan.context);
-      await chrome.tabs.update(created.id, { url: destination, active: true });
+      await chrome.tabs.update(created.id, { url: destination, active });
       return created;
     } catch (error) {
       if (created?.id !== undefined) {
@@ -563,8 +564,8 @@ async function reuseTabForOpenRequest(config, request) {
   try {
     if (tab) {
       if (contextPlan.context) await saveTabProductContext(tab.id, contextPlan.context);
-      await chrome.tabs.update(tab.id, { url, active: true });
-      await chrome.windows.update(tab.windowId, { focused: true }).catch(() => {});
+      await chrome.tabs.update(tab.id, { url, active });
+      if (active) await chrome.windows.update(tab.windowId, { focused: true }).catch(() => {});
     } else {
       // Every existing tab belongs to another enabled mission. Claim the
       // request and create a tab immediately instead of making the desktop
@@ -580,7 +581,7 @@ async function reuseTabForOpenRequest(config, request) {
       await createContextTab();
     } catch {
       const product = (config.products || []).find((candidate) => candidate?.id === contextPlan.context?.productId);
-      if (product?.productUrl) await chrome.tabs.create({ url: product.productUrl, active: true });
+      if (product?.productUrl) await chrome.tabs.create({ url: product.productUrl, active });
     }
   }
 }
