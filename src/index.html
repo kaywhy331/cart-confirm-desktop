@@ -25,7 +25,10 @@
         </div>
       </div>
       <div class="topbar-controls">
-        <button class="button ghost compact update-button" id="updateButton" type="button" title="Check official GitHub releases for a newer Cart Confirm version">Check for updates</button>
+        <div class="update-notice" id="updateNotice" hidden>
+          <span class="update-available-text" id="updateAvailableText" role="status" aria-live="polite"></span>
+          <button class="button ghost compact update-button" id="updateButton" type="button" title="Review patch notes and install this Cart Confirm update">Update</button>
+        </div>
         <div class="connection" id="connectionPill" title="">
           <span class="connection-dot"></span>
           <span id="connectionText">Waiting for companion</span>

@@ -5,6 +5,7 @@ const assert = require("node:assert/strict");
 
 const {
   compareVersions,
+  normalizeReleaseNotes,
   parseChecksumManifest,
   parseVersion,
   releasePlan,
@@ -17,6 +18,7 @@ function githubRelease(version, options = {}) {
   return {
     tag_name: tag,
     name: `Cart Confirm v${version}`,
+    body: options.body || "",
     draft: false,
     prerelease: Boolean(options.prerelease),
     published_at: "2026-08-14T12:00:00Z",
@@ -65,6 +67,14 @@ test("requires official repository release assets", () => {
   const wrongRepository = githubRelease("3.4.0");
   wrongRepository.assets[0].browser_download_url = "https://github.com/other/repository/releases/download/v3.4.0/update.exe";
   assert.throws(() => releasePlan(wrongRepository), /official Cart Confirm release path/);
+});
+
+test("keeps bounded plain-text release notes for the approval prompt", () => {
+  const notes = "## Changes\r\n\r\n- Faster checks\u0000\r\n\r\n\r\n- Clearer status";
+  const plan = releasePlan(githubRelease("3.4.0", { body: notes }));
+  assert.equal(plan.releaseNotes, "## Changes\n\n- Faster checks\n\n- Clearer status");
+  assert.equal(normalizeReleaseNotes("x".repeat(7_000)).length, 6_000);
+  assert.match(normalizeReleaseNotes("x".repeat(7_000)), /…$/);
 });
 
 test("accepts exactly one checksum for the expected installer", () => {

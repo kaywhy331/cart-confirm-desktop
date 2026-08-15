@@ -45,6 +45,17 @@ test("continuous watchers requeue after rolling-budget or overload gates", () =>
   assert.match(retry, /if \(watcherMode\)[\s\S]*?retryAt[\s\S]*?void scheduleRetry/);
 });
 
+test("a qualified purchase cancels stale refresh traffic and retries a busy claim in place", () => {
+  const productPage = section("async function handleProductPage", "async function handleCartPage");
+  assert.match(productPage, /clearNavigationRetry\(\)[\s\S]*?claimProduct\(product\)/);
+  assert.match(productPage, /\["store-busy", "product-busy"\][\s\S]*?scheduleClaimRetry/);
+  assert.doesNotMatch(
+    productPage.match(/\["store-busy", "product-busy"\][\s\S]*?return;/)?.[0] || "",
+    /scheduleRetry\(/
+  );
+  assert.match(source, /CART_CONFIRM_CANCEL_NAVIGATION/);
+});
+
 test("unchanged config polling does not rescan and duplicate the same observation", () => {
   const refresh = section("async function refreshConfig", "document.addEventListener");
   assert.match(refresh, /const contextChanged =/);
@@ -56,8 +67,18 @@ test("blocked and retrying workflows release only their pre-submit mission locks
   const sendEvent = section("async function send", "async function requestConfig");
   assert.match(sendEvent, /\["automation-blocked", "store-error", "retry-scheduled"\]\.includes\(eventType\)/);
   assert.match(sendEvent, /CART_CONFIRM_RELEASE_PRODUCT/);
+  assert.match(sendEvent, /details\.releaseLane !== false/);
   assert.match(source, /kind === "auth"[\s\S]*?postMutation[\s\S]*?keeps the store lane/);
   assert.match(source, /\["auth", "mfa", "location", "membership"\]\.includes\(interactiveState\)/);
+});
+
+test("manual cart holds emit a Notified safety milestone without releasing uncertain state", () => {
+  const productPage = section("async function handleProductPage", "async function handleCartPage");
+  const cartPage = section("async function handleCartPage", "async function readCheckoutReview");
+  assert.match(productPage, /add-receipt-uncertain[\s\S]*?return;/);
+  assert.match(productPage, /send\("automation-blocked"[\s\S]*?releaseLane: false[\s\S]*?add-receipt-uncertain/);
+  assert.match(cartPage, /send\("automation-blocked"[\s\S]*?releaseLane: false[\s\S]*?missing-cart-line-unverifiable/);
+  assert.match(cartPage, /send\("automation-blocked"[\s\S]*?releaseLane: false[\s\S]*?cart-add-reservation-pending/);
 });
 
 test("calendar ownership blocks scans, retry scheduling, and final retry navigation", () => {
@@ -78,6 +99,11 @@ test("only calendar-fired Target blitz mode uses configurable bounded persistenc
   assert.match(cartPage, /TARGET_CART_LINE_CONFIRMATION_WAIT_MS/);
   assert.match(cartPage, /markAddAction\(product, "failed"\)[\s\S]*?scheduleTargetPersistenceNavigation/);
   assert.match(cartPage, /markAddAction\(product, "confirmed"\)/);
+  assert.ok(
+    cartPage.indexOf("const quantity = await ensureQuantity(product, line)")
+      < cartPage.indexOf('markAddAction(product, "confirmed")'),
+    "durable cart confirmation must follow readable quantity verification"
+  );
   assert.match(source, /product\?\.executionMode === "blitz"/);
   assert.match(source, /config\?\.blitzRetryDelayMs/);
   assert.match(source, /product\.retailer !== "target" \|\| !isBlitz\(product\)/);

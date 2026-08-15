@@ -5,6 +5,7 @@ const assert = require("node:assert/strict");
 
 const {
   applyOverloadSignal,
+  cancelNavigationSlot,
   canBypassOverloadCooldown,
   isOverloadStatus,
   isRelevantOverloadSignal,
@@ -65,6 +66,42 @@ test("traffic slots serialize independent tabs for one retailer", () => {
     productId: "target:1"
   });
   assert.equal(consumed.allowed, true);
+});
+
+test("a cleared tab timer removes only its own durable navigation reservation", () => {
+  const first = reserveNavigationSlot({}, {
+    now: 1_000,
+    notBefore: 61_000,
+    intervalMs: 20_000,
+    reservationId: "one",
+    ownerId: "tab:1",
+    productId: "target:1"
+  });
+  const second = reserveNavigationSlot(first.state, {
+    now: 1_000,
+    notBefore: 61_000,
+    intervalMs: 20_000,
+    reservationId: "two",
+    ownerId: "tab:2",
+    productId: "target:2"
+  });
+  const mismatch = cancelNavigationSlot(second.state, {
+    now: 2_000,
+    reservationId: "one",
+    ownerId: "tab:2",
+    productId: "target:1"
+  });
+  assert.equal(mismatch.canceled, false);
+  assert.equal(mismatch.reason, "reservation-mismatch");
+
+  const canceled = cancelNavigationSlot(second.state, {
+    now: 2_000,
+    reservationId: "one",
+    ownerId: "tab:1",
+    productId: "target:1"
+  });
+  assert.equal(canceled.canceled, true);
+  assert.deepEqual(Object.keys(canceled.state.reservations), ["two"]);
 });
 
 test("an overload circuit shifts an existing reservation", () => {

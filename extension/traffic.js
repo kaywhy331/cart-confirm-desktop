@@ -96,6 +96,22 @@
     return { state, allowedAt, waitMs: Math.max(0, allowedAt - now) };
   }
 
+  function cancelNavigationSlot(input, options) {
+    const now = finiteTime(options.now, Date.now());
+    const state = pruneReservations(cloneState(input), now);
+    const reservationId = String(options.reservationId || "");
+    const reservation = state.reservations[reservationId];
+    if (!reservation) return { state, canceled: false, reason: "reservation-missing" };
+    if (
+      reservation.ownerId !== String(options.ownerId || "")
+      || reservation.productId !== String(options.productId || "")
+    ) {
+      return { state, canceled: false, reason: "reservation-mismatch" };
+    }
+    delete state.reservations[reservationId];
+    return { state, canceled: true, reason: "canceled" };
+  }
+
   function revalidateNavigationSlot(input, options) {
     const now = finiteTime(options.now, Date.now());
     let state = pruneReservations(cloneState(input), now);
@@ -179,6 +195,7 @@
     MAX_COOLDOWN_MS,
     OVERLOAD_DECAY_MS,
     applyOverloadSignal,
+    cancelNavigationSlot,
     canBypassOverloadCooldown,
     isOverloadStatus,
     isRelevantOverloadSignal,

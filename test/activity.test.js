@@ -2,7 +2,11 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { createActivityEvent, shouldRecordActivity } = require("../lib/activity");
+const {
+  createActivityEvent,
+  notificationDeliveryMode,
+  shouldRecordActivity
+} = require("../lib/activity");
 
 const base = {
   productId: "target:95298172",
@@ -100,4 +104,11 @@ test("notification entries deduplicate by notification purpose", () => {
     notificationKey: "cart-confirmed",
     message: "Notified: Target cart confirmed."
   }), true);
+});
+
+test("silent missions retain an Activity-only safety notification", () => {
+  assert.equal(notificationDeliveryMode("standard", "automation-blocked"), "desktop");
+  assert.equal(notificationDeliveryMode("alarm", "automation-blocked"), "desktop");
+  assert.equal(notificationDeliveryMode("silent", "offer-observed"), "none");
+  assert.equal(notificationDeliveryMode("silent", "automation-blocked"), "activity");
 });

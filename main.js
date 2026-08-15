@@ -101,7 +101,11 @@ const {
   walmartPrepObservation,
   walmartPrepTransition
 } = require("./lib/walmart-prep-monitor");
-const { createActivityEvent, shouldRecordActivity } = require("./lib/activity");
+const {
+  createActivityEvent,
+  notificationDeliveryMode,
+  shouldRecordActivity
+} = require("./lib/activity");
 const {
   companionEventAllowed,
   createAbortRegistry,
@@ -162,6 +166,7 @@ const DESKTOP_DROP_SPACING_MS = 1_000;
 const DISCORD_POLL_INTERVAL_MS = 2_500;
 const DISCORD_ERROR_RETRY_MS = 10_000;
 const QUIET_STORES = Object.freeze(["target", "walmart"]);
+const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60_000;
 
 let mainWindow = null;
 let companionServer = null;
@@ -198,6 +203,11 @@ let serverDiagnostics = {
 let lastDiagnosticsBroadcastAt = 0;
 let stopEpoch = 0;
 let updateInFlight = false;
+let updateDiscoveryPromise = null;
+let updateCheckTimer = null;
+let availableUpdatePlan = null;
+let updaterRevision = 0;
+let updaterState = { status: "idle", revision: updaterRevision };
 const lastNotificationAt = new Map();
 const storeOverloadUntil = new Map();
 const retailerTabSeenAt = new Map();
@@ -488,7 +498,8 @@ function snapshot() {
       name: app.getName(),
       version: app.getVersion(),
       companionPort,
-      extensionPath: extensionPath()
+      extensionPath: extensionPath(),
+      update: { ...updaterState }
     }
   };
 }
@@ -499,10 +510,74 @@ function broadcast() {
   }
 }
 
-function sendUpdaterState(payload) {
+function publishUpdaterState(payload) {
+  updaterRevision += 1;
+  updaterState = { ...payload, revision: updaterRevision };
   if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send("cart-assist:updater-state", payload);
+    mainWindow.webContents.send("cart-assist:updater-state", updaterState);
   }
+}
+
+function automaticUpdatesSupported() {
+  return app.isPackaged && process.platform === "win32" && process.arch === "x64";
+}
+
+async function refreshUpdateAvailability() {
+  if (!automaticUpdatesSupported()) {
+    availableUpdatePlan = null;
+    publishUpdaterState({
+      status: "unavailable",
+      message: "Automatic updates are available in the packaged 64-bit Windows app."
+    });
+    return null;
+  }
+  if (updateDiscoveryPromise) return updateDiscoveryPromise;
+
+  const currentVersion = app.getVersion();
+  const knownVersion = availableUpdatePlan?.version || "";
+  publishUpdaterState({
+    status: "checking",
+    currentVersion,
+    ...(knownVersion ? { version: knownVersion } : {})
+  });
+  const discovery = (async () => {
+    try {
+      const plan = await checkForUpdate(currentVersion);
+      availableUpdatePlan = plan;
+      if (!plan) {
+        publishUpdaterState({ status: "current", currentVersion });
+        return null;
+      }
+      publishUpdaterState({
+        status: "available",
+        version: plan.version,
+        prerelease: plan.prerelease
+      });
+      return plan;
+    } catch (error) {
+      publishUpdaterState({
+        status: "error",
+        ...(knownVersion ? { version: knownVersion } : {}),
+        message: error.message || "The update check failed."
+      });
+      throw error;
+    }
+  })();
+  updateDiscoveryPromise = discovery;
+  try {
+    return await discovery;
+  } finally {
+    if (updateDiscoveryPromise === discovery) updateDiscoveryPromise = null;
+  }
+}
+
+function startUpdateChecks() {
+  void refreshUpdateAvailability().catch(() => {});
+  if (!automaticUpdatesSupported()) return;
+  updateCheckTimer = setInterval(() => {
+    if (updateInFlight) return;
+    void refreshUpdateAvailability().catch(() => {});
+  }, UPDATE_CHECK_INTERVAL_MS);
 }
 
 function launchVerifiedInstaller(installerPath) {
@@ -539,9 +614,29 @@ function pauseAutomationForUpdate() {
   broadcast();
 }
 
-async function checkAndInstallUpdate() {
-  if (updateInFlight) return { status: "busy" };
-  if (!app.isPackaged || process.platform !== "win32" || process.arch !== "x64") {
+function updateApprovalDetail(plan) {
+  const unsigned = plan.prerelease || plan.tagName.startsWith("unsigned-");
+  const releaseNotes = plan.releaseNotes || "No patch notes were provided.";
+  const installDetail = unsigned
+    ? "This release is intentionally unsigned. Windows may show Unknown publisher or a Microsoft Defender SmartScreen warning. If you continue, Cart Confirm will download the official GitHub Setup asset, verify its exact SHA-256 checksum, install it, close this version, and relaunch."
+    : "Cart Confirm will download the official GitHub Setup asset, verify its exact SHA-256 checksum, install it, close this version, and relaunch.";
+  return [
+    `What's new in v${plan.version}`,
+    "",
+    releaseNotes,
+    "",
+    installDetail
+  ].join("\n");
+}
+
+async function installAvailableUpdate() {
+  if (updateInFlight) {
+    return {
+      status: "busy",
+      ...(availableUpdatePlan?.version ? { version: availableUpdatePlan.version } : {})
+    };
+  }
+  if (!automaticUpdatesSupported()) {
     return {
       status: "unavailable",
       message: "Automatic updates are available in the packaged 64-bit Windows app."
@@ -552,14 +647,11 @@ async function checkAndInstallUpdate() {
   let installLaunched = false;
   try {
     const currentVersion = app.getVersion();
-    sendUpdaterState({ status: "checking", currentVersion });
-    const plan = await checkForUpdate(currentVersion);
+    const plan = await refreshUpdateAvailability();
     if (!plan) {
-      sendUpdaterState({ status: "current", currentVersion });
       return { status: "current", currentVersion };
     }
 
-    sendUpdaterState({ status: "available", version: plan.version, prerelease: plan.prerelease });
     const unsigned = plan.prerelease || plan.tagName.startsWith("unsigned-");
     const confirmation = await dialog.showMessageBox(mainWindow, {
       type: unsigned ? "warning" : "info",
@@ -569,12 +661,10 @@ async function checkAndInstallUpdate() {
       noLink: true,
       title: "Cart Confirm update available",
       message: `Cart Confirm v${plan.version} is available.`,
-      detail: unsigned
-        ? "This release is intentionally unsigned. Windows may show Unknown publisher or a Microsoft Defender SmartScreen warning. If you continue, Cart Confirm will download the official GitHub Setup asset, verify its exact SHA-256 checksum, install it, close this version, and relaunch."
-        : "Cart Confirm will download the official GitHub Setup asset, verify its exact SHA-256 checksum, install it, close this version, and relaunch."
+      detail: updateApprovalDetail(plan)
     });
     if (confirmation.response !== 0) {
-      sendUpdaterState({ status: "cancelled", version: plan.version });
+      publishUpdaterState({ status: "cancelled", version: plan.version });
       return { status: "cancelled", version: plan.version };
     }
 
@@ -586,17 +676,21 @@ async function checkAndInstallUpdate() {
         const percent = total > 0 ? Math.min(100, Math.floor((received / total) * 100)) : 0;
         if (phase === "downloading" && percent === lastProgress) return;
         if (phase === "downloading") lastProgress = percent;
-        sendUpdaterState({ status: phase, version: plan.version, received, total, percent });
+        publishUpdaterState({ status: phase, version: plan.version, received, total, percent });
       }
     );
-    sendUpdaterState({ status: "installing", version: plan.version });
+    publishUpdaterState({ status: "installing", version: plan.version });
     pauseAutomationForUpdate();
     await launchVerifiedInstaller(downloaded.installerPath);
     installLaunched = true;
     setTimeout(() => app.quit(), 500);
     return { status: "installing", version: plan.version };
   } catch (error) {
-    sendUpdaterState({ status: "error", message: error.message || "The update failed." });
+    publishUpdaterState({
+      status: "error",
+      ...(availableUpdatePlan?.version ? { version: availableUpdatePlan.version } : {}),
+      message: error.message || "The update failed."
+    });
     throw error;
   } finally {
     if (!installLaunched) updateInFlight = false;
@@ -801,7 +895,9 @@ function addEvent(event, options = {}) {
   events = [
     activity,
     ...events
-  ].slice(0, MAX_EVENTS);
+  ].sort((left, right) => (
+    Date.parse(right.timestamp || "") - Date.parse(left.timestamp || "")
+  )).slice(0, MAX_EVENTS);
   if (options.persist !== false) persistRuntimeState();
   return true;
 }
@@ -826,11 +922,11 @@ function recordWatchStarts(products) {
   return recorded;
 }
 
-function notifyOnce(key, title, body, force = false, activity = {}) {
+function notifyOnce(key, title, body, force = false, activity = {}, options = {}) {
   const now = Date.now();
   if (!force && now - (lastNotificationAt.get(key) || 0) < NOTIFICATION_COOLDOWN_MS) return false;
   lastNotificationAt.set(key, now);
-  const desktopSupported = Notification.isSupported();
+  const desktopSupported = options.desktop !== false && Notification.isSupported();
   if (desktopSupported) new Notification({ title, body, silent: false }).show();
   const recorded = addEvent({
     eventType: "notification-sent",
@@ -1184,7 +1280,8 @@ function sendEventNotification(event, product, queueFanout = null) {
     return;
   }
   if (!product) return;
-  if (product.alertLevel === "silent") return;
+  const deliveryMode = notificationDeliveryMode(product.alertLevel, event.eventType);
+  if (deliveryMode === "none") return;
   const force = product.alertLevel === "alarm";
   const store = retailerLabel(product.retailer);
   const key = `${product.id}:${event.eventType}:${event.reason || ""}`;
@@ -1204,7 +1301,14 @@ function sendEventNotification(event, product, queueFanout = null) {
       activity
     );
   } else if (event.eventType === "automation-blocked") {
-    notifyOnce(key, `${store} safety check stopped`, event.message || "The offer did not pass every configured check.", false, activity);
+    notifyOnce(
+      key,
+      `${store} safety check stopped`,
+      event.message || "The offer did not pass every configured check.",
+      false,
+      activity,
+      { desktop: deliveryMode === "desktop" }
+    );
   } else if (event.eventType === "cart-item-confirmed") {
     notifyOnce(key, `${store} cart confirmed`, `${product.title || product.sku}, quantity ${product.quantity}, is in the cart.`, force, activity);
   } else if (event.eventType === "checkout-reached") {
@@ -1908,7 +2012,7 @@ function createWindow() {
 
 function registerIpc() {
   ipcMain.handle("cart-assist:snapshot", () => snapshot());
-  ipcMain.handle("cart-assist:check-for-updates", () => checkAndInstallUpdate());
+  ipcMain.handle("cart-assist:install-update", () => installAvailableUpdate());
 
   ipcMain.handle("cart-assist:save-settings", (_event, nextSettings) => {
     const wasArmed = settings.automationEnabled;
@@ -2323,6 +2427,7 @@ const quietState = {
   productFailures: new Map(),
   productQuarantineUntil: new Map(),
   storeFailureProducts: new Map(),
+  storeCooldownUntil: new Map(),
   lastAutoOpenAt: new Map(),
   storeControllers: new Map(),
   lastCadenceNoticeAt: new Map(),
@@ -2487,17 +2592,38 @@ async function quietCheck(product, taskEpoch, startToken) {
   }
 }
 
-function pauseQuietStore(retailer, requestedDeadline, message) {
-  const deadline = Math.max(
-    Number(requestedDeadline) || 0,
+function quietStoreCooldown(retailer) {
+  return Math.max(
+    quietState.storeCooldownUntil.get(retailer) || 0,
     storeOverloadUntil.get(retailer) || 0
   );
-  const advanced = deadline > (storeOverloadUntil.get(retailer) || 0);
-  storeOverloadUntil.set(retailer, deadline);
-  runtimeState.storeOverloadUntil[retailer] = deadline;
-  deferQuietMonitorStore(quietState.schedule, retailer, deadline, crypto.randomInt);
+}
+
+function quietStoreCooldowns() {
+  return new Map(QUIET_STORES.map((retailer) => [retailer, quietStoreCooldown(retailer)]));
+}
+
+function pauseQuietStore(retailer, requestedDeadline, message, options = {}) {
+  const shared = options.shared !== false;
+  const previousSharedDeadline = storeOverloadUntil.get(retailer) || 0;
+  const sharedDeadline = Math.max(
+    Number(requestedDeadline) || 0,
+    previousSharedDeadline
+  );
+  const quietDeadline = Math.max(
+    sharedDeadline,
+    quietState.storeCooldownUntil.get(retailer) || 0
+  );
+  const advanced = quietDeadline > (quietState.storeCooldownUntil.get(retailer) || 0);
+  const sharedAdvanced = shared && sharedDeadline > previousSharedDeadline;
+  quietState.storeCooldownUntil.set(retailer, quietDeadline);
+  if (shared) {
+    storeOverloadUntil.set(retailer, sharedDeadline);
+    runtimeState.storeOverloadUntil[retailer] = sharedDeadline;
+  }
+  deferQuietMonitorStore(quietState.schedule, retailer, quietDeadline, crypto.randomInt);
   for (const controller of quietState.storeControllers.get(retailer) || []) controller.abort();
-  if (advanced) {
+  if (advanced || sharedAdvanced) {
     status = { ...status, lastMessage: message };
     persistRuntimeState();
     broadcast();
@@ -2517,7 +2643,8 @@ function noteQuietStoreFailure(product) {
   pauseQuietStore(
     product.retailer,
     now + settings.overloadCooldownSeconds * 1000,
-    `${retailerLabel(product.retailer)} public monitoring paused after several distinct product pages failed together.`
+    `${retailerLabel(product.retailer)} public monitoring paused after several distinct product pages failed together; authenticated Chrome actions remain independent.`,
+    { shared: false }
   );
 }
 
@@ -2561,7 +2688,7 @@ function reserveQuietRead(product, now) {
     runtimeState.quietReadHistory[product.retailer],
     now,
     undefined,
-    storeOverloadUntil.get(product.retailer) || 0
+    quietStoreCooldown(product.retailer)
   );
   runtimeState.quietReadHistory[product.retailer] = result.history;
   if (result.allowed) runtimeState.quietLastStartedAt[product.id] = now;
@@ -2582,7 +2709,7 @@ function quietMonitorTick() {
   });
   const candidate = nextQuietMonitorCandidate(quietState.schedule, {
     now,
-    blockedUntil: storeOverloadUntil
+    blockedUntil: quietStoreCooldowns()
   });
   if (!candidate) return;
   const product = settings.products.find((item) => item.id === candidate.productId);
@@ -2964,6 +3091,7 @@ if (!gotLock) {
     }
 
     createWindow();
+    startUpdateChecks();
     startScheduler();
     startQuietMonitorDispatcher();
     startDiscordPoller();
@@ -2981,6 +3109,7 @@ app.on("before-quit", () => {
   if (schedulerTimer) clearInterval(schedulerTimer);
   if (quietMonitorTimer) clearInterval(quietMonitorTimer);
   if (discordPollTimer) clearInterval(discordPollTimer);
+  if (updateCheckTimer) clearInterval(updateCheckTimer);
   quietAbortRegistry.abortAll();
   if (companionServer) companionServer.close();
 });

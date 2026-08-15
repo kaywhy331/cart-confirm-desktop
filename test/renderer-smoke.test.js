@@ -94,7 +94,13 @@ function snapshotFixture() {
       lastError: ""
     },
     retailers: {},
-    app: { name: "Cart Confirm", version: "0.0.0-test", companionPort: 32191, extensionPath: "/tmp" }
+    app: {
+      name: "Cart Confirm",
+      version: "0.0.0-test",
+      companionPort: 32191,
+      extensionPath: "/tmp",
+      update: { status: "idle", revision: 0 }
+    }
   };
 }
 
@@ -103,7 +109,7 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   const { window } = dom;
   let pushUpdate = null;
   let pushUpdaterState = null;
-  let checkForUpdatesCalls = 0;
+  let installUpdateCalls = 0;
   let openProductCalls = 0;
   let openBuyListCalls = 0;
   let openBuyListFailure = null;
@@ -122,9 +128,9 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   window.document.head.append(style);
   window.cartAssist = {
     getSnapshot: async () => snapshotFixture(),
-    checkForUpdates: async () => {
-      checkForUpdatesCalls += 1;
-      return { status: "current", currentVersion: "0.0.0-test" };
+    installUpdate: async () => {
+      installUpdateCalls += 1;
+      return { status: "cancelled", version: "3.6.0" };
     },
     saveSettings: async (input) => {
       savedSettingsInputs.push(input);
@@ -330,16 +336,33 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
     "Test lives in the header next to Autopilot"
   );
   assert.match(doc.getElementById("testButton").textContent, /Test all/);
+  assert.equal(doc.getElementById("updateNotice").hidden, true);
+  assert.equal(window.getComputedStyle(doc.getElementById("updateNotice")).display, "none");
+  pushUpdaterState({ status: "available", version: "3.6.0", revision: 2 });
+  assert.equal(doc.getElementById("updateNotice").hidden, false);
+  assert.equal(doc.getElementById("updateAvailableText").textContent, "v3.6.0 available");
+  assert.equal(doc.getElementById("updateButton").textContent, "Update");
+  const staleUpdateSnapshot = snapshotFixture();
+  staleUpdateSnapshot.app.update = { status: "checking", revision: 1 };
+  pushUpdate(staleUpdateSnapshot);
+  assert.equal(doc.getElementById("updateButton").textContent, "Update");
   doc.getElementById("updateButton").click();
   await new Promise((resolve) => setTimeout(resolve, 10));
-  assert.equal(checkForUpdatesCalls, 1);
-  assert.equal(doc.getElementById("updateButton").textContent, "Check for updates");
-  assert.match(doc.getElementById("message").textContent, /already the newest published version/);
-  pushUpdaterState({ status: "downloading", version: "3.4.0", percent: 42 });
+  assert.equal(installUpdateCalls, 1);
+  assert.equal(doc.getElementById("updateButton").textContent, "Update");
+  assert.equal(doc.getElementById("updateNotice").hidden, false);
+  assert.match(doc.getElementById("message").textContent, /Update postponed/);
+  pushUpdaterState({ status: "downloading", version: "3.4.0", percent: 42, revision: 3 });
   assert.equal(doc.getElementById("updateButton").textContent, "Downloading 42%");
   assert.equal(doc.getElementById("updateButton").disabled, true);
-  pushUpdaterState({ status: "cancelled", version: "3.4.0" });
+  pushUpdaterState({ status: "cancelled", version: "3.4.0", revision: 4 });
   assert.equal(doc.getElementById("updateButton").disabled, false);
+  const updateSnapshot = snapshotFixture();
+  updateSnapshot.app.update = { status: "available", version: "3.7.0", revision: 5 };
+  pushUpdate(updateSnapshot);
+  assert.equal(doc.getElementById("updateAvailableText").textContent, "v3.7.0 available");
+  pushUpdaterState({ status: "current", currentVersion: "3.7.0", revision: 6 });
+  assert.equal(doc.getElementById("updateNotice").hidden, true);
   assert.equal(doc.getElementById("eligibilityRefreshIntervalSeconds").value, "2");
   assert.equal(doc.getElementById("watcherIntervalSeconds").value, "60");
   assert.equal(doc.getElementById("walmartQueueCaptureReloads").value, "0");
@@ -866,6 +889,14 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   assert.equal(liveCard.querySelector(".state-chip").textContent, "Ready");
   assert.match(liveCard.querySelector(".state-chip").getAttribute("aria-label"), /Eligible offer/);
   assert.match(liveCard.querySelector(".status-age").textContent, /^\d+s ago$/);
+
+  const queued = structuredClone(eligible);
+  queued.productStatuses["target:95298172"].reason = "retrying";
+  queued.productStatuses["target:95298172"].lastMessage = "The eligible offer is waiting for the store lane.";
+  pushUpdate(queued);
+  const queuedCard = doc.querySelector(".mission-card");
+  assert.equal(queuedCard.querySelector(".state-chip").textContent, "Processing");
+  assert.match(queuedCard.querySelector(".state-chip").getAttribute("aria-label"), /purchase action queued/i);
 
   // The drop calendar stays hidden until something is scheduled, then acts
   // as a coverage board with per-chip toggling and batch enabling.
