@@ -331,12 +331,12 @@
               <small>After one scheduled Walmart cohort tab enters the official queue, each nonqueued cohort tab may use this many durable final reloads. Recommended: 0 (never reload).</small>
             </label>
             <label class="control-card field compact-field">
-              <span class="control-title">Regular watch check</span>
+              <span class="control-title">Open-tab watch check</span>
               <span class="number-suffix">
                 <input id="watcherIntervalSeconds" type="number" min="30" max="3600" step="1" inputmode="numeric" required>
                 <span>seconds</span>
               </span>
-              <small>How long to wait between normal stock checks. A smaller number checks more often. Recommended: 60 seconds.</small>
+              <small>How long an authenticated mission tab waits between normal reloads. Tabless Target/Walmart background missions separately schedule every product at a randomized 45–90 seconds. Recommended: 60 seconds.</small>
             </label>
             <label class="control-card field compact-field">
               <span class="control-title">Scheduled-drop error wait</span>

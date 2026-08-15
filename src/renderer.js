@@ -2706,7 +2706,7 @@ elements.autopilotToggle.addEventListener("click", async () => {
       const autoSubmit = autoSubmitArmingSummary(saved);
       if (
         autoSubmit.count > 0
-        && !window.confirm(`${autoSubmit.count} enabled mission${autoSubmit.count === 1 ? "" : "s"} may submit a real order.${liveVerificationWarning(autoSubmit.liveVerificationCount)} Re-arming starts a new run. If the companion is disconnected, one mission page opens first to connect Chrome automatically. Remaining unscheduled Target and Walmart missions start as quiet background watchers and open Chrome after a likely stock signal; Amazon must open now. Scheduled missions wait for their exact time. Verify retailer order history first. "Prepare checkout, I submit" is safer. Switch Autopilot on anyway?`)
+        && !window.confirm(`${autoSubmit.count} enabled mission${autoSubmit.count === 1 ? "" : "s"} may submit a real order.${liveVerificationWarning(autoSubmit.liveVerificationCount)} Re-arming starts a new run. If the companion is disconnected, one mission page opens first to connect Chrome automatically. Every remaining eligible, tabless Target and Walmart mission gets its own randomized 45–90 second public-page check and opens Chrome after a likely stock signal; Amazon must open now. Scheduled missions wait for their exact time. Verify retailer order history first. "Prepare checkout, I submit" is safer. Switch Autopilot on anyway?`)
       ) {
         throw new Error("Autopilot was not switched on.");
       }
@@ -2750,7 +2750,7 @@ elements.autopilotToggle.addEventListener("click", async () => {
         ? " Chrome was not found, so some pages used your default browser; Autopilot only works inside Chrome."
         : "";
       const watcherNote = background
-        ? " Remaining quiet watchers open in Chrome after a likely stock signal."
+        ? " Every eligible quiet watcher is checked independently on a randomized 45–90 second target and opens in Chrome after a likely stock signal."
         : "";
       return `${parts.join(", ")}.${watcherNote} Every open mission performs authoritative browser validation before its configured action. Review missions remain on checkout review; a successful auto-submit remains on Target's confirmation page.${browserNote}`;
     });
