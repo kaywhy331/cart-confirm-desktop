@@ -101,7 +101,7 @@ const {
   walmartPrepObservation,
   walmartPrepTransition
 } = require("./lib/walmart-prep-monitor");
-const { shouldRecordActivity } = require("./lib/activity");
+const { createActivityEvent, shouldRecordActivity } = require("./lib/activity");
 const {
   companionEventAllowed,
   createAbortRegistry,
@@ -292,7 +292,11 @@ function loadSettings() {
 
 function loadPersistedRuntimeState() {
   runtimeState = loadRuntimeState(runtimeStatePath());
-  events = runtimeState.events;
+  events = [];
+  for (const event of runtimeState.events) {
+    if (shouldRecordActivity(events, event)) events.push(event);
+  }
+  runtimeState.events = events;
   if (runtimeState.discord.channelId !== settings.discordChannelId) {
     runtimeState.discord = emptyDiscordRuntime(settings.discordChannelId);
   }
@@ -786,25 +790,60 @@ async function startCatalogSearch(input) {
   return { snapshot: snapshot(), openings };
 }
 
-function addEvent(event) {
-  if (event.eventType === "heartbeat") return;
-  if (!shouldRecordActivity(events, event)) return;
+function addEvent(event, options = {}) {
+  const product = settings?.products?.find((candidate) => candidate.id === event.productId) || null;
+  const activity = createActivityEvent(event, {
+    automationEnabled: settings?.automationEnabled === true,
+    product,
+    runId: settings?.automationRunId
+  });
+  if (!activity || !shouldRecordActivity(events, activity)) return false;
   events = [
-    {
-      ...event,
-      message: productStatuses[event.productId]?.lastMessage || status.lastMessage
-    },
+    activity,
     ...events
   ].slice(0, MAX_EVENTS);
-  persistRuntimeState();
+  if (options.persist !== false) persistRuntimeState();
+  return true;
 }
 
-function notifyOnce(key, title, body, force = false) {
-  if (!Notification.isSupported()) return;
+function recordWatchStarts(products) {
+  const timestamp = new Date().toISOString();
+  let recorded = false;
+  for (const product of [...(products || [])].reverse()) {
+    recorded = addEvent({
+      eventType: "watch-started",
+      productId: product.id,
+      retailer: product.retailer,
+      sku: product.sku,
+      page: product.productUrl,
+      timestamp
+    }, { persist: false }) || recorded;
+  }
+  if (recorded) {
+    persistRuntimeState();
+    broadcast();
+  }
+  return recorded;
+}
+
+function notifyOnce(key, title, body, force = false, activity = {}) {
   const now = Date.now();
-  if (!force && now - (lastNotificationAt.get(key) || 0) < NOTIFICATION_COOLDOWN_MS) return;
+  if (!force && now - (lastNotificationAt.get(key) || 0) < NOTIFICATION_COOLDOWN_MS) return false;
   lastNotificationAt.set(key, now);
-  new Notification({ title, body, silent: false }).show();
+  const desktopSupported = Notification.isSupported();
+  if (desktopSupported) new Notification({ title, body, silent: false }).show();
+  const recorded = addEvent({
+    eventType: "notification-sent",
+    productId: activity.productId || "",
+    retailer: activity.retailer || "",
+    sku: activity.sku || "",
+    notificationKey: String(key || ""),
+    sourceEventType: activity.sourceEventType || "",
+    message: `Notified: ${title} — ${body}`,
+    timestamp: new Date(now).toISOString()
+  });
+  if (recorded) broadcast();
+  return desktopSupported;
 }
 
 function reserveStoreAction(retailer, kind = "navigation") {
@@ -1049,6 +1088,7 @@ async function openBuyList(retailer = "", options = {}) {
   const connection = ensureCompanion
     ? await ensureCompanionConnection(plan, prepCandidates)
     : { connected: companionConnectionReady(status), opened: false, productId: "", retailer: "", via: "" };
+  if (backgroundFirst && settings.automationEnabled) recordWatchStarts(plan.ready);
   const backgroundProducts = backgroundFirst
     ? plan.ready.filter((product) => (
         QUIET_STORES.includes(product.retailer)
@@ -1137,7 +1177,8 @@ function sendEventNotification(event, product, queueFanout = null) {
       `${event.retailer}:traffic-overload`,
       `${retailerLabel(event.retailer)} traffic cooldown`,
       "Queued and automatic page openings for this store are paused.",
-      true
+      true,
+      { retailer: event.retailer, sourceEventType: event.eventType }
     );
     return;
   }
@@ -1146,31 +1187,40 @@ function sendEventNotification(event, product, queueFanout = null) {
   const force = product.alertLevel === "alarm";
   const store = retailerLabel(product.retailer);
   const key = `${product.id}:${event.eventType}:${event.reason || ""}`;
+  const activity = {
+    productId: product.id,
+    retailer: product.retailer,
+    sku: product.sku,
+    sourceEventType: event.eventType
+  };
 
   if (event.eventType === "offer-observed" && event.eligible) {
     notifyOnce(
       key,
       `${store} offer is eligible`,
       `${product.title || product.sku} is first-party at $${event.price.toFixed(2)} (cap $${product.maxPrice.toFixed(2)}).`,
-      force
+      force,
+      activity
     );
   } else if (event.eventType === "automation-blocked") {
-    notifyOnce(key, `${store} safety check stopped`, event.message || "The offer did not pass every configured check.");
+    notifyOnce(key, `${store} safety check stopped`, event.message || "The offer did not pass every configured check.", false, activity);
   } else if (event.eventType === "cart-item-confirmed") {
-    notifyOnce(key, `${store} cart confirmed`, `${product.title || product.sku}, quantity ${product.quantity}, is in the cart.`, force);
+    notifyOnce(key, `${store} cart confirmed`, `${product.title || product.sku}, quantity ${product.quantity}, is in the cart.`, force, activity);
   } else if (event.eventType === "checkout-reached") {
-    notifyOnce(key, `${store} checkout reached`, "The browser companion is validating the order review before submission.");
+    notifyOnce(key, `${store} checkout reached`, "The browser companion is validating the order review before submission.", false, activity);
   } else if (event.eventType === "order-confirmed") {
-    notifyOnce(key, `${store} order confirmed`, `${product.sku} reached an order-confirmation page.`, true);
+    notifyOnce(key, `${store} order confirmed`, `${product.sku} reached an order-confirmation page.`, true, activity);
   } else if (event.eventType === "review-ready") {
-    notifyOnce(key, `${store} final review ready`, "Review the complete order in the browser and submit it manually.", true);
+    notifyOnce(key, `${store} final review ready`, "Review the complete order in the browser and submit it manually.", true, activity);
   } else if (event.eventType === "queue-waiting") {
     notifyOnce(
       key,
       `${store} purchase queue`,
       queueFanout
         ? `Official queue active. Opening ${queueFanout.productIds.length} other enabled mission${queueFanout.productIds.length === 1 ? "" : "s"} together; scheduled Walmart loser tabs may use their configured bounded final reloads.`
-        : "The companion is waiting for the official retailer queue without refreshing it."
+        : "The companion is waiting for the official retailer queue without refreshing it.",
+      false,
+      activity
     );
   }
 }
@@ -2385,6 +2435,8 @@ async function quietCheck(product, taskEpoch, startToken) {
       retailer,
       sku: product.sku,
       availability: outcome.availability,
+      eligible: false,
+      reason: outcome.availability === "available" ? "retrying" : "out-of-stock",
       price: outcome.price === null ? undefined : outcome.price,
       page: product.productUrl,
       timestamp: new Date().toISOString()
@@ -2396,7 +2448,13 @@ async function quietCheck(product, taskEpoch, startToken) {
           `quiet-stock:${product.id}`,
           `${retailerLabel(retailer)} stock detected`,
           `${product.title || product.sku} looks in stock — opening it in Chrome now.`,
-          true
+          true,
+          {
+            productId: product.id,
+            retailer: product.retailer,
+            sku: product.sku,
+            sourceEventType: "availability"
+          }
         );
         void openProduct(product.id, {
           actionKind: "background-stock-open",
@@ -2475,8 +2533,8 @@ function noteQuietProductFailure(product, taskEpoch) {
     productId: product.id,
     retailer: product.retailer,
     sku: product.sku,
-    reason: "manual-action-required",
-    message: `This public product page was unreadable three times. Its quiet checks will retry after a 10-minute rest; keeping the exact ${retailerLabel(product.retailer)} tab open uses the browser watcher instead.`,
+    reason: "retrying",
+    message: `The public product page was unreadable after three attempts. Quiet checks will rest for 10 minutes, then retry automatically; keeping the exact ${retailerLabel(product.retailer)} tab open uses the browser watcher instead.`,
     page: product.productUrl,
     timestamp: new Date().toISOString()
   }, taskEpoch);
@@ -2536,6 +2594,14 @@ function quietMonitorTick() {
     randomInt: crypto.randomInt
   });
   if (!started) return;
+  if (addEvent({
+    eventType: "watch-started",
+    productId: product.id,
+    retailer: product.retailer,
+    sku: product.sku,
+    page: product.productUrl,
+    timestamp: new Date(now).toISOString()
+  })) broadcast();
   if (started.cadenceMissed && now - (quietState.lastCadenceNoticeAt.get(product.id) || 0) >= 5 * 60_000) {
     quietState.lastCadenceNoticeAt.set(product.id, now);
     recordQuietEvent({

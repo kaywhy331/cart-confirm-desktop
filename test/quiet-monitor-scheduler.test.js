@@ -61,6 +61,33 @@ test("the initial 50-product ramp is shuffled, complete, and paced", () => {
   }
 });
 
+test("slow first reads still cover every product before any quiet-check repeat", () => {
+  const randomInt = seededRandom(84);
+  const state = createQuietMonitorSchedule();
+  const list = products(12);
+  const startAt = 1_000_000;
+  const starts = [];
+  const pending = [];
+  reconcileQuietMonitorSchedule(state, list, { now: startAt, randomInt, persistedStarts: {} });
+
+  for (let now = startAt; starts.length <= list.length && now < startAt + 180_000; now += 250) {
+    for (let index = pending.length - 1; index >= 0; index -= 1) {
+      if (pending[index].finishAt > now) continue;
+      markQuietMonitorFinished(state, pending[index].productId, pending[index].startToken);
+      pending.splice(index, 1);
+    }
+    const candidate = nextQuietMonitorCandidate(state, { now, blockedUntil: new Map() });
+    if (!candidate) continue;
+    const started = markQuietMonitorStarted(state, candidate.productId, { now, randomInt });
+    starts.push(started);
+    pending.push({ ...started, finishAt: now + 8_000 });
+  }
+
+  assert.equal(starts.length, list.length + 1);
+  assert.equal(new Set(starts.slice(0, list.length).map((entry) => entry.productId)).size, list.length);
+  assert.equal(new Set(starts.map((entry) => entry.productId)).size, list.length);
+});
+
 test("per-product deadlines include both exact 45 and 90 second boundaries", () => {
   const minimum = createQuietMonitorSchedule();
   reconcileQuietMonitorSchedule(minimum, products(1), { now: 100_000, randomInt: (min) => min });
