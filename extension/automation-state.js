@@ -2,11 +2,11 @@
 
 (() => {
   const STATE_VERSION = 3;
-  const LOCK_MS = 10 * 60_000;
+  const PRE_CLICK_LEASE_MS = 15_000;
   // A plain claim has not crossed a cart boundary. Keep that lease short so a
-  // crashed page cannot strand every other mission for ten minutes. Reserving
-  // Add below restores the longer pre-click safety lease; a clicked receipt is
-  // still held indefinitely.
+  // crashed page cannot strand every other mission. Reserving Add below uses
+  // a separate bounded pre-click lease; a clicked receipt is still held
+  // indefinitely.
   const CLAIM_LOCK_MS = 30_000;
   const TARGET_PERSISTENCE_WINDOW_MS = 20_000;
   const MIN_TARGET_PERSISTENCE_WINDOW_MS = 5_000;
@@ -193,6 +193,22 @@
       record.addAction = normalizeAddAction(record.addAction);
       record.workflow = normalizeWorkflow(record.workflow, record);
       record.targetPersistence = normalizeTargetPersistence(record.targetPersistence);
+      if (
+        record.addAction.phase === "reserved"
+        && record.addAction.updatedAt + PRE_CLICK_LEASE_MS <= now
+      ) {
+        // No retailer mutation has happened at the reserved phase. Recover a
+        // crashed preparation promptly, but never remove a held lock that may
+        // represent a clicked Add, confirmed cart, or uncertain submission.
+        record.addAction = { phase: "idle", ownerId: "", updatedAt: now };
+        record.proof = null;
+        if (record.workflow.phase === "active") {
+          record.workflow = { phase: "active", ownerId: "", updatedAt: now, evidenceHash: "" };
+        }
+        for (const [key, lock] of Object.entries(state.locks)) {
+          if (lock?.productId === productId && lock.hold !== true) delete state.locks[key];
+        }
+      }
       if (state.completed[productId]) {
         record.workflow = { ...record.workflow, phase: "confirmed" };
         for (const [key, lock] of Object.entries(state.locks)) {
@@ -273,11 +289,23 @@
     const keys = lockKeys(product);
     for (const key of keys) {
       const lock = state.locks[key];
-      if (lock && (lock.ownerId !== ownerId || lock.productId !== product.id)) {
+      const orphanedHeldLock = lock?.hold === true
+        && record.addAction.phase === "idle"
+        && record.workflow.phase === "active";
+      if (lock && (lock.ownerId !== ownerId || lock.productId !== product.id || orphanedHeldLock)) {
+        const blockingRecord = state.products[lock.productId];
+        const blockingWorkflowPhase = String(blockingRecord?.workflow?.phase || "");
+        const blockingAddPhase = String(blockingRecord?.addAction?.phase || "");
         return {
           ok: false,
           reason: key.startsWith("store:") ? "store-busy" : "product-busy",
-          activeProductId: lock.productId
+          activeProductId: lock.productId,
+          held: lock.hold === true,
+          blockingPhase: HELD_WORKFLOW_PHASES.has(blockingWorkflowPhase)
+            ? blockingWorkflowPhase
+            : ["clicked", "confirmed"].includes(blockingAddPhase)
+              ? `add-${blockingAddPhase}`
+              : blockingWorkflowPhase || blockingAddPhase || (lock.hold ? "post-mutation-held" : "active")
         };
       }
     }
@@ -301,6 +329,35 @@
     const record = recordFor(state, product.id);
     record.attempts += 1;
     return { ok: true, attempt: record.attempts };
+  }
+
+  function authorizeAddClick(state, product, ownerId, now = Date.now()) {
+    if (state.completed[product.id]) return { ok: false, reason: "completed" };
+    const budget = budgetReason(state, product, now);
+    if (budget) return { ok: false, reason: budget };
+    const record = recordFor(state, product.id);
+    if (record.addAction.phase !== "reserved" || record.addAction.ownerId !== ownerId) {
+      return {
+        ok: false,
+        reason: record.addAction.phase === "idle" ? "add-reservation-expired" : "add-in-flight",
+        addAction: record.addAction
+      };
+    }
+    for (const key of lockKeys(product)) {
+      const lock = state.locks[key];
+      if (
+        !lock
+        || lock.hold === true
+        || lock.productId !== product.id
+        || lock.ownerId !== ownerId
+      ) return { ok: false, reason: key.startsWith("store:") ? "store-busy" : "product-busy" };
+    }
+    record.attempts += 1;
+    record.addAction = { ...record.addAction, updatedAt: now };
+    for (const key of lockKeys(product)) {
+      state.locks[key] = { ...state.locks[key], expiresAt: now + PRE_CLICK_LEASE_MS };
+    }
+    return { ok: true, attempt: record.attempts, addAction: record.addAction };
   }
 
   // A blocked or retrying pre-submit workflow must not starve the rest of the
@@ -425,7 +482,7 @@
     };
     for (const key of lockKeys(product)) {
       if (state.locks[key]?.productId === product.id && state.locks[key]?.ownerId === ownerId) {
-        state.locks[key] = { ...state.locks[key], expiresAt: now + LOCK_MS };
+        state.locks[key] = { ...state.locks[key], expiresAt: now + PRE_CLICK_LEASE_MS };
       }
     }
     record.workflow = { phase: "active", ownerId: String(ownerId || ""), updatedAt: now, evidenceHash: "" };
@@ -744,12 +801,14 @@
   const api = Object.freeze({
     EVIDENCE_HASH_PATTERN,
     CLAIM_LOCK_MS,
-    LOCK_MS,
+    LOCK_MS: PRE_CLICK_LEASE_MS,
     MAX_TARGET_PERSISTENCE_WINDOW_MS,
     MIN_TARGET_PERSISTENCE_WINDOW_MS,
+    PRE_CLICK_LEASE_MS,
     STATE_VERSION,
     TARGET_PERSISTENCE_LIMITS,
     TARGET_PERSISTENCE_WINDOW_MS,
+    authorizeAddClick,
     beginAddAction,
     beginManualReview,
     beginSubmission,

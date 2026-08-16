@@ -984,6 +984,52 @@ async function claimProduct(productId, ownerId) {
   });
 }
 
+async function prepareProductAddAction(productId, ownerId, proof) {
+  const config = await discoverConfig(true);
+  if (!automationActive(config)) return { ok: false, reason: "disarmed" };
+  const product = configuredProduct(config, productId);
+  if (!product) return { ok: false, reason: "product-disabled" };
+  return withAutomationStateLock(async () => {
+    const state = await readAutomationState(config);
+    const now = Date.now();
+    const claimed = AutomationState.claim(state, product, ownerId, now);
+    if (!claimed.ok) {
+      await writeAutomationState(state);
+      return claimed;
+    }
+    const saved = AutomationState.saveProof(state, product, proof, now);
+    if (!saved.ok) {
+      AutomationState.release(state, product, ownerId);
+      await writeAutomationState(state);
+      return saved;
+    }
+    const reserved = AutomationState.beginAddAction(state, product, ownerId, now);
+    if (!reserved.ok) AutomationState.release(state, product, ownerId);
+    await writeAutomationState(state);
+    return {
+      ...reserved,
+      proof: reserved.ok ? saved.proof : undefined,
+      product: reserved.ok ? product : undefined
+    };
+  });
+}
+
+async function authorizeProductAddClick(productId, ownerId) {
+  // This is the final Stop/config check and reservation revalidation directly
+  // adjacent to the content-script click. It also records the purchase attempt
+  // in the same durable write instead of adding another serialized round trip.
+  const config = await discoverConfig(true);
+  if (!automationActive(config)) return { ok: false, reason: "disarmed" };
+  const product = configuredProduct(config, productId);
+  if (!product) return { ok: false, reason: "product-disabled" };
+  return withAutomationStateLock(async () => {
+    const state = await readAutomationState(config);
+    const result = AutomationState.authorizeAddClick(state, product, ownerId, Date.now());
+    await writeAutomationState(state);
+    return result;
+  });
+}
+
 async function getProductState(productId) {
   const config = await discoverConfig(false);
   if (!config) return { ok: false, reason: "desktop-not-found" };
@@ -1319,6 +1365,17 @@ async function handleMessage(message, sender) {
       return postCatalogResults(message.capture);
     case "CART_CONFIRM_CLAIM_PRODUCT":
       return claimProduct(String(message.productId || ""), `tab:${sender?.tab?.id ?? "unknown"}`);
+    case "CART_CONFIRM_PREPARE_ADD_ACTION":
+      return prepareProductAddAction(
+        String(message.productId || ""),
+        `tab:${sender?.tab?.id ?? "unknown"}`,
+        message.proof
+      );
+    case "CART_CONFIRM_AUTHORIZE_ADD_CLICK":
+      return authorizeProductAddClick(
+        String(message.productId || ""),
+        `tab:${sender?.tab?.id ?? "unknown"}`
+      );
     case "CART_CONFIRM_PRODUCT_STATE":
       return getProductState(String(message.productId || ""));
     case "CART_CONFIRM_COMPLETE_PRODUCT":

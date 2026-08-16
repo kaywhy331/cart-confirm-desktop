@@ -11,6 +11,7 @@ const {
   extractTcin,
   MAX_MISSION_GROUPS,
   matchingProduct,
+  missionOpenUrl,
   normalizeMissionGroups,
   normalizeProduct,
   normalizeSettings,
@@ -297,6 +298,43 @@ test("preserves only exact-SKU affiliate links resolved from the current Howl so
     affiliateUrl: "https://www.target.com/p/-/A-95298172?nrtv_cid=wrong",
     affiliateResolvedFrom: howlUrl
   }), /does not match this mission's item ID/);
+});
+
+test("validates a user-managed affiliate Open link and keeps it out of automation config", () => {
+  const affiliateOpenUrl = "https://www.target.com/p/-/A-1011960739?afid=user-campaign";
+  const adminAffiliateUrl = "https://www.target.com/p/example/-/A-1011960739?nrtv_cid=admin";
+  const product = normalizeProduct({
+    ...PRODUCTS[0],
+    affiliateOpenUrl
+  });
+
+  assert.equal(product.affiliateOpenUrl, affiliateOpenUrl);
+  assert.equal("affiliateOpenUrl" in toAutomationProduct(product), false);
+  assert.equal(toRendererProduct(product).affiliateOpenUrl, affiliateOpenUrl);
+  assert.equal(missionOpenUrl({ ...product, affiliateUrl: adminAffiliateUrl }), affiliateOpenUrl);
+  assert.equal(missionOpenUrl({ ...product, affiliateOpenUrl: "", affiliateUrl: adminAffiliateUrl }), adminAffiliateUrl);
+  assert.equal(missionOpenUrl({ ...product, affiliateOpenUrl: "", affiliateUrl: "" }), product.productUrl);
+
+  const changedAffiliateOpenUrl = "https://www.target.com/p/exact/-/A-1011960739?afid=changed";
+  const preserved = preserveAdminCampaignFields(
+    [{ ...product, affiliateOpenUrl: changedAffiliateOpenUrl }],
+    [{ ...product, affiliateUrl: adminAffiliateUrl }]
+  )[0];
+  assert.equal(preserved.affiliateOpenUrl, changedAffiliateOpenUrl);
+  assert.equal(preserved.affiliateUrl, adminAffiliateUrl);
+
+  assert.throws(() => normalizeProduct({
+    ...PRODUCTS[0],
+    affiliateOpenUrl: "https://www.target.com/p/-/A-95298172?afid=wrong-item"
+  }), /exact store and item ID/);
+  assert.throws(() => normalizeProduct({
+    ...PRODUCTS[0],
+    affiliateOpenUrl: "https://www.walmart.com/ip/1011960739"
+  }), /exact store and item ID/);
+  assert.throws(() => normalizeProduct({
+    ...PRODUCTS[0],
+    affiliateOpenUrl: "https://howl.me/short-link"
+  }), /direct HTTPS link/);
 });
 
 test("migrates the original Target-only settings", () => {

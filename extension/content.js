@@ -24,7 +24,8 @@
   const CART_LINE_CONFIRMATION_WAIT_MS = 10_000;
   const ADD_SETTLE_MS = 5_000;
   const TARGET_CART_LINE_CONFIRMATION_WAIT_MS = 2_500;
-  const TARGET_ADD_SETTLE_MS = 900;
+  const TARGET_ADD_CONFIRMATION_WAIT_MS = 3_000;
+  const TARGET_CART_COUNT_POLL_MS = 75;
   const DEFAULT_TARGET_PERSISTENCE_RETRY_MS = 750;
   const CLAIM_RETRY_MIN_MS = 500;
   const CLAIM_RETRY_MAX_MS = 2_000;
@@ -292,20 +293,32 @@
     return proof;
   }
 
+  function proofInput(offer, source = "product", quantityConfirmed = false, inventory = null) {
+    return {
+      price: Number.isFinite(offer?.price) ? offer.price : null,
+      seller: offer?.seller || "",
+      firstParty: offer?.firstParty === true,
+      quantityConfirmed: source === "cart" && quantityConfirmed === true,
+      inventoryConfirmed: source === "cart" && inventory?.independentlyCounted === true,
+      cartLineCount: source === "cart" ? inventory?.items?.length : 0,
+      cartSku: source === "cart" ? inventory?.items?.[0]?.sku : "",
+      source
+    };
+  }
+
   function saveProof(product, offer, source = "product", quantityConfirmed = false, inventory = null) {
     return runtimeMessage({
       type: "CART_CONFIRM_SAVE_PROOF",
       productId: product.id,
-      proof: {
-        price: Number.isFinite(offer?.price) ? offer.price : null,
-        seller: offer?.seller || "",
-        firstParty: offer?.firstParty === true,
-        quantityConfirmed: source === "cart" && quantityConfirmed === true,
-        inventoryConfirmed: source === "cart" && inventory?.independentlyCounted === true,
-        cartLineCount: source === "cart" ? inventory?.items?.length : 0,
-        cartSku: source === "cart" ? inventory?.items?.[0]?.sku : "",
-        source
-      }
+      proof: proofInput(offer, source, quantityConfirmed, inventory)
+    });
+  }
+
+  function prepareAddAction(product, offer) {
+    return runtimeMessage({
+      type: "CART_CONFIRM_PREPARE_ADD_ACTION",
+      productId: product.id,
+      proof: proofInput(offer)
     });
   }
 
@@ -363,6 +376,15 @@
       message: "The durable automation state could not record this purchase action. Automatic action stopped for manual review."
     }, `attempt-state:${product.id}:${result.reason}`, 60_000);
     return null;
+  }
+
+  async function authorizeAddClick(product) {
+    const result = await runtimeMessage({
+      type: "CART_CONFIRM_AUTHORIZE_ADD_CLICK",
+      productId: product.id
+    });
+    if (result.ok) attemptCache.set(product.id, result.attempt);
+    return result;
   }
 
   async function requireStoreAction(product, kind, targetPersistence = false) {
@@ -434,10 +456,6 @@
 
   async function claimProduct(product) {
     return runtimeMessage({ type: "CART_CONFIRM_CLAIM_PRODUCT", productId: product.id });
-  }
-
-  async function beginAddAction(product) {
-    return runtimeMessage({ type: "CART_CONFIRM_BEGIN_ADD_ACTION", productId: product.id });
   }
 
   async function markAddAction(product, outcome) {
@@ -669,6 +687,9 @@
       attempt: currentAttempt(product),
       message: `${message} Target persistence ${kind} ${persistence.attempt} is queued.`
     }, `target-persistence:${product.id}:${kind}:${persistence.attempt}`, 0);
+    const navigationDelayMs = delayMs === null
+      ? targetPersistenceRetryMs()
+      : Math.max(0, Number(delayMs) || 0);
     retryTimer = setTimeout(async () => {
       retryTimer = null;
       if (!await automationStillActive(product) || adapter.securityChallenge(document)) return;
@@ -676,7 +697,7 @@
       if (destination === "product") location.assign(product.productUrl);
       else if (destination === "cart") location.assign(adapter.cartUrl);
       else location.reload();
-    }, Math.max(250, Number(delayMs) || targetPersistenceRetryMs()));
+    }, navigationDelayMs);
     return true;
   }
 
@@ -720,7 +741,7 @@
     return true;
   }
 
-  async function clickAction(element, product, beforeClick = null) {
+  async function clickAction(element, product, beforeClick = null, options = {}) {
     if (!Retailers.isActionable(element)) return false;
     element.scrollIntoView?.({ block: "center", inline: "nearest" });
     element.focus?.({ preventScroll: true });
@@ -728,7 +749,7 @@
     if (!Retailers.isActionable(element) || adapter.securityChallenge(document)) return false;
     // Stop can arrive while a scan is between awaits. Re-read the desktop
     // gate at the final click boundary so stale in-tab state cannot act.
-    if (!await automationStillActive(product)) return false;
+    if (options.finalAutomationCheck !== false && !await automationStillActive(product)) return false;
     // A final-submit callback ends by creating its durable intent. Keep that
     // response directly adjacent to the click instead of adding another await.
     if (beforeClick && !await beforeClick()) return false;
@@ -739,6 +760,20 @@
     } catch {
       return false;
     }
+  }
+
+  async function waitForTargetCartCountIncrease(previousCount) {
+    const deadline = Date.now() + TARGET_ADD_CONFIRMATION_WAIT_MS;
+    while (Date.now() < deadline) {
+      const currentCount = adapter.cartItemCount?.(document);
+      if (
+        Number.isInteger(previousCount)
+        && Number.isInteger(currentCount)
+        && currentCount > previousCount
+      ) return currentCount;
+      await sleep(Math.min(TARGET_CART_COUNT_POLL_MS, Math.max(0, deadline - Date.now())));
+    }
+    return null;
   }
 
   function setNativeValue(input, value) {
@@ -988,7 +1023,10 @@
       const addPhase = state.ok ? String(state.addAction?.phase || "idle") : "idle";
       if (addPhase === "clicked" && product.retailer === "target") {
         if (await recoverTargetAddError(product, state, error)) return;
-        const settleRemaining = Math.max(0, TARGET_ADD_SETTLE_MS - (Date.now() - Number(state.addAction.updatedAt || 0)));
+        const settleRemaining = Math.max(
+          0,
+          TARGET_ADD_CONFIRMATION_WAIT_MS - (Date.now() - Number(state.addAction.updatedAt || 0))
+        );
         if (settleRemaining > 0) {
           scheduleScan(settleRemaining);
           return;
@@ -1140,6 +1178,15 @@
       return;
     }
 
+    // Publish Processing as soon as the exact offer qualifies. This status is
+    // intentionally non-blocking and is not part of the milestone Activity
+    // feed; durable preparation below still gates every possible cart click.
+    void send("automation-status", product, {
+      eligible: true,
+      reason: "retrying",
+      message: `${adapter.label} qualified this exact item and is preparing the authorized Add to cart action now.`
+    }, `qualified-processing:${product.id}:${offer.price}`, Number.MAX_SAFE_INTEGER);
+
     // A qualified purchase mission no longer needs its pending stock-refresh
     // navigation. Cancel both the tab timer and its durable traffic slot before
     // claiming the cart lane so an obsolete reload cannot interrupt Add or
@@ -1147,64 +1194,50 @@
     clearNavigationRetry();
     if (!await requireQuantityWithinLimits(product)) return;
 
-    const claim = await claimProduct(product);
-    if (!claim.ok) {
-      if (claim.reason === "submission-uncertain") {
+    const prepared = await prepareAddAction(product, offer);
+    if (!prepared.ok) {
+      if (prepared.reason === "submission-uncertain") {
         await send("automation-blocked", product, {
           reason: "manual-action-required",
           message: "A prior order submission is uncertain and remains locked for manual review."
         }, `claim-uncertain:${product.id}`, 60_000);
-      } else if (claim.reason === "completed") {
+      } else if (prepared.reason === "completed") {
         await send("automation-status", product, {
           message: "This mission completed in another tab during the current Autopilot run, so no duplicate action was taken."
         }, `claim-completed:${product.id}:${config.automationRunId}`, Number.MAX_SAFE_INTEGER);
-      } else if (["add-in-flight", "cart-confirmed"].includes(claim.reason)) {
+      } else if (["add-in-flight", "cart-confirmed"].includes(prepared.reason)) {
         await offerReport;
         await send("automation-status", product, {
           eligible: true,
           reason: "retrying",
-          message: claim.reason === "cart-confirmed"
+          message: prepared.reason === "cart-confirmed"
             ? `The exact item is already confirmed in the ${adapter.label} cart; it will not be added twice.`
             : `${adapter.label} Add to cart is already in flight; duplicate page scans will not click it again.`
-        }, `claim-add-state:${product.id}:${claim.reason}`, Number.MAX_SAFE_INTEGER);
-      } else if (["store-busy", "product-busy"].includes(claim.reason)) {
+        }, `claim-add-state:${product.id}:${prepared.reason}`, Number.MAX_SAFE_INTEGER);
+      } else if (["store-busy", "product-busy"].includes(prepared.reason) && prepared.held) {
         await offerReport;
-        await scheduleClaimRetry(product, claim.reason === "store-busy"
+        await send("automation-blocked", product, {
+          eligible: true,
+          reason: "manual-action-required",
+          releaseLane: false,
+          message: `${adapter.label}'s purchase lane is held by ${prepared.activeProductId || "another configured item"} after a possible cart mutation (${prepared.blockingPhase || "held state"}). Review that workflow manually; Autopilot will not preempt it or click this item.`
+        }, `claim-held:${product.id}:${prepared.activeProductId}:${prepared.blockingPhase}`, Number.MAX_SAFE_INTEGER);
+      } else if (["store-busy", "product-busy"].includes(prepared.reason)) {
+        await offerReport;
+        await scheduleClaimRetry(product, prepared.reason === "store-busy"
           ? `${adapter.label} is processing another configured product in this store.`
           : "Another tab is already processing this configured product.");
       } else {
         await send("automation-blocked", product, {
           reason: "manual-action-required",
-          message: `Autopilot could not claim this mission (${claim.reason || "unknown claim error"}). Its store lane was released so the remaining missions can continue.`
-        }, `claim-error:${product.id}:${claim.reason}`, 30_000);
+          message: `Autopilot could not prepare this mission's add-to-cart boundary (${prepared.reason || "unknown state error"}). Its pre-click store lane was released so the remaining missions can continue.`
+        }, `add-preparation-error:${product.id}:${prepared.reason}`, 30_000);
       }
       return;
     }
 
     clearClaimRetry();
     setActiveProduct(product);
-    const savedProof = await saveProof(product, offer, "product");
-    if (!savedProof.ok) {
-      await send("automation-blocked", product, {
-        reason: "manual-action-required",
-        message: `Autopilot could not save the verified offer proof (${savedProof.reason || "unknown proof error"}). Its store lane was released so the remaining missions can continue.`
-      }, `product-proof-error:${product.id}:${savedProof.reason}`, 30_000);
-      return;
-    }
-    const addReservation = await beginAddAction(product);
-    if (!addReservation.ok) {
-      const alreadyInFlight = ["add-in-flight", "cart-confirmed"].includes(addReservation.reason);
-      await send(alreadyInFlight ? "automation-status" : "automation-blocked", product, {
-        eligible: alreadyInFlight ? true : undefined,
-        reason: alreadyInFlight ? "retrying" : "manual-action-required",
-        message: addReservation.reason === "cart-confirmed"
-          ? `The exact item is already confirmed in the ${adapter.label} cart; it will not be added twice.`
-          : addReservation.reason === "add-in-flight"
-            ? `${adapter.label} Add to cart is already in flight; duplicate page scans will not click it again.`
-            : `Autopilot could not reserve the add-to-cart boundary (${addReservation.reason || "unknown state error"}).`
-      }, `add-reservation:${product.id}:${addReservation.reason}`, Number.MAX_SAFE_INTEGER);
-      return;
-    }
     const addPersistence = await reserveTargetPersistence(product, "add");
     if (!addPersistence.ok) {
       await markAddAction(product, "canceled");
@@ -1218,19 +1251,39 @@
       await markAddAction(product, "canceled");
       return;
     }
-    const attempt = await requireAttempt(product);
-    if (attempt === null) {
-      await markAddAction(product, "canceled");
-      return;
-    }
-    const clicked = await clickAction(offer.addButton, product);
+    const targetCartCountBeforeAdd = product.retailer === "target"
+      ? adapter.cartItemCount?.(document)
+      : null;
+    let attempt = null;
+    let addAuthorizationReason = "";
+    const clicked = await clickAction(offer.addButton, product, async () => {
+      const authorization = await authorizeAddClick(product);
+      if (!authorization.ok) {
+        addAuthorizationReason = String(authorization.reason || "add-authorization-failed");
+        return false;
+      }
+      attempt = authorization.attempt;
+      return true;
+    }, { finalAutomationCheck: false });
     if (!clicked) {
       await markAddAction(product, "canceled");
+      if (["disarmed", "product-disabled"].includes(addAuthorizationReason)) return;
+      if (addAuthorizationReason === "add-reservation-expired") {
+        await scheduleClaimRetry(product, "The pre-click reservation expired before any Target action, so Autopilot safely reopened the lane.");
+        return;
+      }
+      if (addAuthorizationReason) {
+        await send("automation-blocked", product, {
+          reason: "manual-action-required",
+          message: `The final add-to-cart authorization failed (${addAuthorizationReason}). No Add click was made.`
+        }, `add-authorization:${product.id}:${addAuthorizationReason}`, 30_000);
+        return;
+      }
       await send("store-error", product, {
-        attempt,
+        attempt: currentAttempt(product),
         reason: "store-error",
         message: "The eligible Add to cart control was no longer actionable."
-      }, `add-failed:${product.id}:${attempt}`, 0);
+      }, `add-failed:${product.id}:${currentAttempt(product)}`, 0);
       await scheduleRetry(product, "Add to cart changed before it could be selected.", "reload", true);
       return;
     }
@@ -1247,7 +1300,7 @@
     }
     quantityRechecks.delete(product.id);
     missingCartLineSince.delete(product.id);
-    await send("add-clicked", product, {
+    void send("add-clicked", product, {
       attempt,
       price: offer.price,
       seller: offer.seller,
@@ -1255,8 +1308,29 @@
       eligible: true,
       reason: "eligible"
     }, `add-clicked:${product.id}:${attempt}`, 0);
-    await sleep(product.retailer === "target" ? TARGET_ADD_SETTLE_MS : ADD_SETTLE_MS);
+    const targetCartCount = product.retailer === "target"
+      ? await waitForTargetCartCountIncrease(targetCartCountBeforeAdd)
+      : null;
+    if (product.retailer !== "target") await sleep(ADD_SETTLE_MS);
     if (await handleChallenge(product)) return;
+    if (Number.isInteger(targetCartCount)) {
+      void send("cart-count-increased", product, {
+        attempt,
+        cartCount: targetCartCount,
+        eligible: true,
+        reason: "eligible",
+        message: `Target's visible cart count increased to ${targetCartCount}; opening the cart now to verify the exact TCIN.`
+      }, `target-cart-count-increased:${product.id}:${attempt}:${targetCartCount}`, 0);
+      if (await scheduleTargetPersistenceNavigation(
+        product,
+        "Target's visible cart count increased after Add; verifying the exact TCIN now.",
+        "cart",
+        "cart",
+        0
+      )) return;
+      await navigateOnce(product, "cart", "cart-verification");
+      return;
+    }
     const postAddError = adapter.storeError(document);
     const postAddState = await productAutomationState(product);
     if (await recoverTargetAddError(product, postAddState, postAddError)) return;
@@ -1267,7 +1341,8 @@
           ? "Target did not explicitly prove whether Add succeeded; verifying the exact TCIN in the cart."
           : "Target did not show an Add rejection; verifying the exact TCIN in the cart.",
         "cart",
-        "cart"
+        "cart",
+        0
       )) return;
       await navigateOnce(product, "cart", "cart-verification");
       return;
@@ -1341,7 +1416,9 @@
       }
       const pageText = Retailers.textOf(document.body);
       const exactSkuAbsent = inventory.complete && !inventory.ids.includes(product.sku);
-      const cartClearlyEmpty = /(?:your )?cart is empty|no items in (?:your )?cart|cart has no items/i.test(pageText);
+      const visibleCartCount = adapter.cartItemCount?.(document);
+      const cartClearlyEmpty = visibleCartCount === 0
+        || /(?:your )?cart is empty|no items in (?:your )?cart|cart has no items/i.test(pageText);
       if (exactSkuAbsent || cartClearlyEmpty) {
         const failed = await markAddAction(product, "failed");
         if (!failed.ok) {

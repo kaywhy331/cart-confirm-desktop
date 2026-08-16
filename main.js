@@ -25,6 +25,7 @@ const {
   createInitialStatus,
   createProductStatus,
   matchingProduct,
+  missionOpenUrl,
   normalizeSettings,
   preserveAdminCampaignFields,
   preserveCheckoutEvidence,
@@ -1108,7 +1109,7 @@ async function openProduct(productId, options = {}) {
   } else {
     resumeMonitoring();
   }
-  const directEntry = requested.parsed.href !== product.productUrl;
+  const directEntry = options.productEntry !== true && requested.parsed.href !== product.productUrl;
   const opened = await openExternalRetailer(requested.parsed.href, {
     ...options,
     productId: product.id,
@@ -1122,6 +1123,15 @@ async function openProduct(productId, options = {}) {
     directFallback: opened.directFallback === true,
     signalOrderLimit: Number.isInteger(options.signalOrderLimit) ? options.signalOrderLimit : null
   };
+}
+
+async function openMissionProduct(productId) {
+  const product = findProduct(productId);
+  return openProduct(product.id, {
+    urlOverride: missionOpenUrl(product),
+    productEntry: true,
+    actionKind: "mission-open"
+  });
 }
 
 async function ensureCompanionConnection(plan, prepCandidates) {
@@ -2024,7 +2034,8 @@ function registerIpc() {
           products: Array.isArray(nextSettings.products)
             ? nextSettings.products.map((product) => ({
                 ...toAutomationProduct(product),
-                groupId: String(product?.groupId || "")
+                groupId: String(product?.groupId || ""),
+                affiliateOpenUrl: String(product?.affiliateOpenUrl || "")
               }))
             : nextSettings.products
         }
@@ -2276,7 +2287,7 @@ function registerIpc() {
     return snapshot();
   });
 
-  ipcMain.handle("cart-assist:open-product", (_event, productId) => openProduct(productId));
+  ipcMain.handle("cart-assist:open-product", (_event, productId) => openMissionProduct(productId));
   ipcMain.handle("cart-assist:open-buy-list", (_event, input = {}) => openBuyList("", {
     backgroundFirst: input?.backgroundFirst === true,
     ensureCompanion: true

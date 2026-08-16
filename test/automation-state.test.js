@@ -103,6 +103,49 @@ test("an orphaned pre-mutation claim expires quickly without weakening held rece
   assert.equal(State.claim(restored, next, "tab:2", 1_000 + State.CLAIM_LOCK_MS + 2).ok, true);
 });
 
+test("an orphaned pre-click Add reservation expires without stranding its proof or store lane", () => {
+  const state = State.createState("run", 1_000);
+  const next = { ...PRODUCT, id: "walmart:987654321" };
+  State.claim(state, PRODUCT, "tab:1", 1_000);
+  State.saveProof(state, PRODUCT, {
+    source: "product",
+    price: 12.34,
+    seller: "Walmart.com",
+    firstParty: true
+  }, 1_005);
+  State.beginAddAction(state, PRODUCT, "tab:1", 1_010);
+
+  const restored = State.normalizeState(
+    structuredClone(state),
+    "run",
+    1_010 + State.PRE_CLICK_LEASE_MS + 1
+  );
+  const productState = State.productState(restored, PRODUCT, 1_010 + State.PRE_CLICK_LEASE_MS + 1);
+  assert.equal(productState.addAction.phase, "idle");
+  assert.equal(productState.addAction.ownerId, "");
+  assert.equal(productState.proof, null);
+  assert.equal(productState.workflow.ownerId, "");
+  assert.equal(restored.locks[`product:${PRODUCT.id}`], undefined);
+  assert.equal(restored.locks[`store:${PRODUCT.retailer}`], undefined);
+  assert.equal(State.claim(restored, next, "tab:2", 1_010 + State.PRE_CLICK_LEASE_MS + 2).ok, true);
+});
+
+test("a held post-mutation store blocker is reported explicitly and never expires", () => {
+  const state = State.createState("run", 1_000);
+  const next = { ...PRODUCT, id: "walmart:987654321" };
+  State.claim(state, PRODUCT, "tab:1", 1_000);
+  State.beginAddAction(state, PRODUCT, "tab:1", 1_010);
+  State.markAddAction(state, PRODUCT, "tab:1", "clicked", 1_020);
+
+  const restored = State.normalizeState(structuredClone(state), "run", 99_000_000);
+  const blocked = State.claim(restored, next, "tab:2", 99_000_001);
+  assert.equal(blocked.reason, "store-busy");
+  assert.equal(blocked.held, true);
+  assert.equal(blocked.activeProductId, PRODUCT.id);
+  assert.equal(blocked.blockingPhase, "add-clicked");
+  assert.equal(restored.locks[`store:${PRODUCT.retailer}`].hold, true);
+});
+
 test("a possible order submission can never be released automatically", () => {
   const state = State.createState("run", 1_000);
   State.claim(state, PRODUCT, "tab:1", 1_000);
@@ -125,6 +168,30 @@ test("one durable add boundary rejects duplicate scans from the same tab", () =>
   assert.equal(locked.ok, false);
   assert.equal(locked.reason, "add-uncertain");
   assert.equal(State.productState(state, PRODUCT, 1_030).addAction.phase, "clicked");
+});
+
+test("the final Add authorization validates its owner and records the attempt atomically", () => {
+  const state = State.createState("run", 1_000);
+  State.claim(state, PRODUCT, "tab:1", 1_000);
+  State.beginAddAction(state, PRODUCT, "tab:1", 1_010);
+
+  assert.equal(State.authorizeAddClick(state, PRODUCT, "tab:2", 1_020).reason, "add-in-flight");
+  const authorized = State.authorizeAddClick(state, PRODUCT, "tab:1", 1_030);
+  assert.equal(authorized.ok, true);
+  assert.equal(authorized.attempt, 1);
+  assert.equal(State.productState(state, PRODUCT, 1_030).attempts, 1);
+  assert.equal(State.productState(state, PRODUCT, 1_030).addAction.updatedAt, 1_030);
+  assert.equal(state.locks[`store:${PRODUCT.retailer}`].expiresAt, 1_030 + State.PRE_CLICK_LEASE_MS);
+
+  const expired = State.normalizeState(
+    structuredClone(state),
+    "run",
+    1_030 + State.PRE_CLICK_LEASE_MS + 1
+  );
+  assert.equal(
+    State.authorizeAddClick(expired, PRODUCT, "tab:1", 1_030 + State.PRE_CLICK_LEASE_MS + 2).reason,
+    "add-reservation-expired"
+  );
 });
 
 test("cart verification resolves the add boundary without allowing a second add", () => {

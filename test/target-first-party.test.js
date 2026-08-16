@@ -172,6 +172,33 @@ test("a Target recommendation link cannot masquerade as a cart line", () => {
   assert.deepEqual(adapter.cartInventory(doc).ids, []);
 });
 
+test("a Target recommendation Add button cannot qualify a missing exact product", () => {
+  const doc = new JSDOM(`<body>
+    <header><a data-test="@web/CartLink" aria-label="cart 0 items" href="/cart">Cart</a></header>
+    <main>
+      <h1>Page not found</h1>
+      <div data-test="product-price">$34.99</div>
+      <section data-test="recommended-products">
+        <article data-test="product-card">
+          <a href="https://www.target.com/p/other/-/A-11111111">Other product</a>
+          <button data-test="shipItButton" aria-label="Add to cart">Add to cart</button>
+        </article>
+      </section>
+    </main>
+  </body>`, { url: "https://www.target.com/p/-/A-95298172" }).window.document;
+  const offer = getAdapter("target").offer(doc, PRODUCT);
+
+  assert.equal(offer.addButton, null);
+  assert.equal(offer.available, false);
+});
+
+test("Target exposes a readable header cart count for Add settlement and empty-cart proof", () => {
+  const doc = new JSDOM(`<body><header>
+    <a data-test="@web/CartLink" aria-label="cart 2 items" href="/cart">Cart</a>
+  </header></body>`, { url: "https://www.target.com/p/-/A-95298172" }).window.document;
+  assert.equal(getAdapter("target").cartItemCount(doc), 2);
+});
+
 test("walmart still requires an explicit first-party seller label", () => {
   const doc = new JSDOM(`<body><main>
     <div data-automation-id="product-price">$24.50</div>

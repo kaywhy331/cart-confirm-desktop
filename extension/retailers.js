@@ -855,6 +855,66 @@
     return limits.length ? Math.min(...limits) : null;
   }
 
+  function targetAddControlExcluded(element) {
+    return Boolean(element?.closest?.([
+      "[data-test*='recommend' i]",
+      "[data-testid*='recommend' i]",
+      "[data-automation-id*='recommend' i]",
+      "[data-test*='carousel' i]",
+      "[data-testid*='carousel' i]",
+      "[data-test*='related' i]",
+      "[data-testid*='related' i]",
+      "[data-test*='similar' i]",
+      "[data-testid*='similar' i]",
+      "[data-test*='sponsored' i]",
+      "[data-testid*='sponsored' i]",
+      "[data-test*='product-card' i]",
+      "[data-testid*='product-card' i]"
+    ].join(",")));
+  }
+
+  function targetAddControlMatchesProduct(doc, element, product) {
+    if (!element || targetAddControlExcluded(element)) return false;
+    const sku = String(product?.sku || "");
+    if (!sku || extractSkuFromUrl("target", doc?.location?.href) !== sku) return false;
+    const identity = `${element.id || ""} ${element.getAttribute?.("data-tcin") || ""}`;
+    if (new RegExp(`(?:^|\\D)${sku}(?:\\D|$)`).test(identity)) return true;
+    const tcinContainer = element.closest?.("[data-tcin]");
+    if (normalizedEmbeddedSku("target", tcinContainer?.getAttribute?.("data-tcin")) === sku) return true;
+    return Boolean(element.closest?.([
+      "[data-test*='ProductDetailPage' i]",
+      "[data-testid*='ProductDetailPage' i]",
+      "[data-automation-id*='ProductDetailPage' i]"
+    ].join(",")));
+  }
+
+  function targetAddButton(doc, product) {
+    const sku = cssEscape(product.sku);
+    const candidates = queryAll(doc, [
+      `#addToCartButtonOrTextIdFor${sku}`,
+      `button[id$='${sku}'][aria-label*='add to cart' i]`,
+      `[data-tcin='${sku}'] button[data-test='shipItButton']`,
+      `[data-tcin='${sku}'] button[data-test*='addToCart' i]`,
+      "button[data-test='shipItButton']",
+      "button[data-test*='addToCart' i]",
+      "button[aria-label*='add to cart' i]"
+    ]);
+    return candidates.find((candidate) => targetAddControlMatchesProduct(doc, candidate, product)) || null;
+  }
+
+  function targetCartItemCount(doc) {
+    for (const element of queryAll(doc, [
+      "a[data-test='@web/CartLink'][aria-label]",
+      "a[href^='/cart'][aria-label*='cart' i]",
+      "a[href*='target.com/cart'][aria-label*='cart' i]"
+    ])) {
+      const label = String(element.getAttribute?.("aria-label") || "");
+      const match = label.match(/\bcart\s+(\d{1,3})\s+items?\b/i);
+      if (match) return Number(match[1]);
+    }
+    return null;
+  }
+
   const adapters = {
     target: {
       ...STORE_CONFIG.target,
@@ -875,12 +935,10 @@
         return extractSkuFromUrl("target", url) ? "product" : "other";
       },
       offer(doc, product) {
-        const addButton = query(doc, [
-          `#addToCartButtonOrTextIdFor${cssEscape(product.sku)}`,
-          `button[id$='${cssEscape(product.sku)}'][aria-label*='add to cart' i]`,
-          "button[data-test='shipItButton']",
-          "button[data-test*='addToCart' i]"
-        ]) || findAction(doc, [], /add to cart/i);
+        // Target error/404 pages can render recommendation cards with their
+        // own generic Add buttons. Only a control bound to this page's exact
+        // TCIN or its explicit product-detail surface may qualify the mission.
+        const addButton = targetAddButton(doc, product);
         const offerRoot = closestOfferContainer(addButton);
         const seller = sellerRegion(offerRoot, ["[data-test*='sold-by' i]", "[data-test*='seller' i]", "[data-test*='fulfillment' i]"]);
         // The climb can stop at a fulfillment blurb whose "$35 orders" text
@@ -920,6 +978,9 @@
           "[data-test^='cart-item-']",
           "[data-test^='cartItem-']"
         ]);
+      },
+      cartItemCount(doc) {
+        return targetCartItemCount(doc);
       },
       orderTotal(doc) {
         return readOrderTotal(doc, [

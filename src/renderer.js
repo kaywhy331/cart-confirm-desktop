@@ -816,6 +816,7 @@ function buildViewCard(product, status) {
     : product.signalEntry && product.signalEntry !== "product"
       ? product.signalEntry.replaceAll("-", " ")
       : "signals open product");
+  if (product.affiliateOpenUrl) subParts.push("Custom Open link");
   if (product.affiliateUrl) subParts.push("Campaign share ready");
   if (product.action === "checkout") {
     subParts.push(product.checkoutPreflightApproved
@@ -857,7 +858,10 @@ function buildViewCard(product, status) {
   downButton.disabled = peerIndex === -1 || peerIndex >= peers.length - 1 || Boolean(editingId);
   setMissionButtonLabel(upButton, `Move ${productLabel(product)} up within its group`);
   setMissionButtonLabel(downButton, `Move ${productLabel(product)} down within its group`);
-  setMissionButtonLabel(openButton, `Open ${productLabel(product)} product page`);
+  setMissionButtonLabel(
+    openButton,
+    `Open ${productLabel(product)} ${product.affiliateOpenUrl ? "using its custom affiliate product link" : "product page"}`
+  );
   setMissionButtonLabel(editButton, `Edit ${productLabel(product)}`);
   setMissionButtonLabel(removeButton, `Remove ${productLabel(product)}`);
   if (armedNow) {
@@ -941,6 +945,7 @@ function buildEditCard(product, options = {}) {
   field(card, "retailer").value = retailer;
   field(card, "title").value = product?.title || "";
   field(card, "productUrl").value = product?.productUrl || "";
+  field(card, "affiliateOpenUrl").value = product?.affiliateOpenUrl || "";
   field(card, "sku").value = product?.sku || "";
   field(card, "maxPrice").value = product ? String(Number(product.maxPrice || 0)) : "";
   field(card, "maxOrderTotal").value = String(Number(product?.maxOrderTotal || 0));
@@ -961,6 +966,33 @@ function buildEditCard(product, options = {}) {
   field(card, "enabled").checked = product ? product.enabled !== false : false;
   updateEditStore(card);
   updateMissionOrderTotal(card);
+
+  const validateAffiliateOpenUrl = () => {
+    const input = field(card, "affiliateOpenUrl");
+    const value = input.value.trim();
+    if (!value) {
+      input.setCustomValidity("");
+      return;
+    }
+    try {
+      const parsed = new URL(value);
+      const expectedRetailer = field(card, "retailer").value;
+      const expectedSku = field(card, "sku").value.trim().toUpperCase();
+      const actualRetailer = detectRetailer(parsed.href);
+      const actualSku = extractSku(actualRetailer, parsed.href).toUpperCase();
+      const valid = parsed.protocol === "https:"
+        && !parsed.username
+        && !parsed.password
+        && actualRetailer === expectedRetailer
+        && actualSku === expectedSku;
+      input.setCustomValidity(valid
+        ? ""
+        : "Use a direct HTTPS product link for this mission’s exact store and item ID.");
+    } catch {
+      input.setCustomValidity("Enter a valid direct HTTPS product link.");
+    }
+  };
+  validateAffiliateOpenUrl();
 
   const advanced = card.querySelector(".advanced-fields");
   advanced.open = Boolean(product && (
@@ -983,6 +1015,7 @@ function buildEditCard(product, options = {}) {
   field(card, "retailer").addEventListener("change", () => {
     updateEditStore(card);
     updateMissionOrderTotal(card);
+    validateAffiliateOpenUrl();
   });
   field(card, "productUrl").addEventListener("change", () => {
     const url = field(card, "productUrl").value;
@@ -1005,12 +1038,15 @@ function buildEditCard(product, options = {}) {
         // matching itself remains a convenience during editing.
       }
     }
+    validateAffiliateOpenUrl();
   });
   field(card, "sku").addEventListener("change", () => {
     if (field(card, "retailer").value === "amazon") {
       field(card, "sku").value = field(card, "sku").value.trim().toUpperCase();
     }
+    validateAffiliateOpenUrl();
   });
+  field(card, "affiliateOpenUrl").addEventListener("input", validateAffiliateOpenUrl);
   field(card, "action").addEventListener("change", () => {
     if (["review", "checkout"].includes(field(card, "action").value)) advanced.open = true;
     validateFulfillmentSelection();
@@ -1125,6 +1161,7 @@ function collectMission(card) {
     title: field(card, "title").value.trim(),
     openAt: openAtValue ? new Date(openAtValue).toISOString() : "",
     productUrl: field(card, "productUrl").value.trim(),
+    affiliateOpenUrl: field(card, "affiliateOpenUrl").value.trim(),
     sku: retailer === "amazon" ? sku.toUpperCase() : sku,
     maxPrice: Number(field(card, "maxPrice").value),
     maxOrderTotal: missionOrderTotalFromCard(card),
