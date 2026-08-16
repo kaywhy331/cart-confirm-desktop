@@ -72,6 +72,9 @@ test("quiet public reads cannot consume the browser, cart, or checkout action le
   assert.match(source, /recordQuietEvent\([\s\S]*?activity:\s*previous !== outcome\.availability/);
   assert.match(quietTick, /eventType:\s*"watch-started"/);
   assert.match(source, /function noteQuietProductFailure[\s\S]*?reason:\s*"retrying"[\s\S]*?browser watcher can continue/);
+  assert.match(source, /function noteQuietProductFailure[\s\S]*?structural \? 1 : QUIET_PRODUCT_FAILURE_LIMIT/);
+  assert.match(source, /noteQuietProductFailure\(currentProduct, taskEpoch, \{ structural: error\?\.code === "unreadable-product" \}\)/);
+  assert.match(source, /loaded without readable stock data/);
   assert.match(source, /function noteQuietStoreFailure[\s\S]*?\{ shared: false \}/);
   assert.match(source, /function pauseQuietStore[\s\S]*?options\.shared !== false[\s\S]*?storeOverloadUntil\.set/);
   assert.match(backgroundSource, /const active = OpenRequestTabs\.shouldActivateTab\(request\)[\s\S]*?chrome\.tabs\.update\(tab\.id, \{ url, active \}\)[\s\S]*?if \(active\) await chrome\.windows\.update/);

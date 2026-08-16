@@ -14,6 +14,16 @@ test("three unreadable results quarantine only the exact product", () => {
   assert.equal(failures.get("target:222222"), 1);
 });
 
+test("a structural shell response quarantines on the first failure", () => {
+  const failures = new Map();
+  failures.set("target:222222", 2);
+  assert.deepEqual(registerProductFailure(failures, "target:111111", 1), { quarantined: true, count: 1 });
+  assert.equal(failures.has("target:111111"), false);
+  // A prior transient count still resolves through the structural limit.
+  assert.deepEqual(registerProductFailure(failures, "target:222222", 1), { quarantined: true, count: 3 });
+  assert.equal(failures.has("target:222222"), false);
+});
+
 test("a store breaker requires distinct products inside the rolling window", () => {
   const failures = new Map();
   const input = { retailer: "target", now: 100_000, windowMs: 60_000, distinctLimit: 4 };
