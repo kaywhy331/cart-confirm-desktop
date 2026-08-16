@@ -47,13 +47,25 @@ test("continuous watchers requeue after rolling-budget or overload gates", () =>
 
 test("a qualified purchase cancels stale refresh traffic and retries a busy claim in place", () => {
   const productPage = section("async function handleProductPage", "async function handleCartPage");
-  assert.match(productPage, /clearNavigationRetry\(\)[\s\S]*?claimProduct\(product\)/);
+  assert.match(productPage, /clearNavigationRetry\(\)[\s\S]*?prepareAddAction\(product, offer\)/);
   assert.match(productPage, /\["store-busy", "product-busy"\][\s\S]*?scheduleClaimRetry/);
   assert.doesNotMatch(
     productPage.match(/\["store-busy", "product-busy"\][\s\S]*?return;/)?.[0] || "",
     /scheduleRetry\(/
   );
   assert.match(source, /CART_CONFIRM_CANCEL_NAVIGATION/);
+});
+
+test("qualified Add preparation is atomic and held post-mutation blockers are surfaced", () => {
+  const productPage = section("async function handleProductPage", "async function handleCartPage");
+  const background = fs.readFileSync(path.join(__dirname, "..", "extension", "background.js"), "utf8");
+  assert.match(productPage, /void send\("automation-status"[\s\S]*?qualified this exact item[\s\S]*?prepareAddAction\(product, offer\)/);
+  assert.match(productPage, /prepared\.held[\s\S]*?releaseLane: false[\s\S]*?will not preempt it or click this item/);
+  assert.match(productPage, /authorizeAddClick\(product\)[\s\S]*?finalAutomationCheck: false/);
+  assert.match(background, /async function prepareProductAddAction[\s\S]*?AutomationState\.claim[\s\S]*?AutomationState\.saveProof[\s\S]*?AutomationState\.beginAddAction[\s\S]*?writeAutomationState\(state\)/);
+  assert.match(background, /case "CART_CONFIRM_PREPARE_ADD_ACTION"/);
+  assert.match(background, /async function authorizeProductAddClick[\s\S]*?discoverConfig\(true\)[\s\S]*?AutomationState\.authorizeAddClick/);
+  assert.match(background, /case "CART_CONFIRM_AUTHORIZE_ADD_CLICK"/);
 });
 
 test("unchanged config polling does not rescan and duplicate the same observation", () => {
@@ -94,7 +106,7 @@ test("only calendar-fired Target blitz mode uses configurable bounded persistenc
   const cartPage = section("async function handleCartPage", "async function readCheckoutReview");
   assert.match(productPage, /addAction\?\.phase[\s\S]*?Add to cart is already in flight/);
   assert.match(productPage, /recoverTargetAddError\(product, state, error\)/);
-  assert.match(productPage, /reserveTargetPersistence\(product, "add"\)[\s\S]*?clickAction\(offer\.addButton, product\)[\s\S]*?markAddAction\(product, "clicked"\)/);
+  assert.match(productPage, /reserveTargetPersistence\(product, "add"\)[\s\S]*?clickAction\(offer\.addButton, product,[\s\S]*?markAddAction\(product, "clicked"\)/);
   assert.match(productPage, /scheduleTargetPersistenceNavigation\([\s\S]*?verifying the exact TCIN in the cart[\s\S]*?"cart"/);
   assert.match(cartPage, /TARGET_CART_LINE_CONFIRMATION_WAIT_MS/);
   assert.match(cartPage, /markAddAction\(product, "failed"\)[\s\S]*?scheduleTargetPersistenceNavigation/);
@@ -107,6 +119,15 @@ test("only calendar-fired Target blitz mode uses configurable bounded persistenc
   assert.match(source, /product\?\.executionMode === "blitz"/);
   assert.match(source, /config\?\.blitzRetryDelayMs/);
   assert.match(source, /product\.retailer !== "target" \|\| !isBlitz\(product\)/);
+});
+
+test("Target waits for Add settlement, reacts to a visible cart-count increase, and accepts explicit zero-cart proof", () => {
+  const productPage = section("async function handleProductPage", "async function handleCartPage");
+  const cartPage = section("async function handleCartPage", "async function readCheckoutReview");
+  assert.match(source, /TARGET_ADD_CONFIRMATION_WAIT_MS = 3_000/);
+  assert.match(productPage, /targetCartCountBeforeAdd[\s\S]*?clickAction\(offer\.addButton, product,[\s\S]*?markAddAction\(product, "clicked"\)[\s\S]*?waitForTargetCartCountIncrease/);
+  assert.match(productPage, /cart-count-increased[\s\S]*?scheduleTargetPersistenceNavigation\([\s\S]*?"cart"[\s\S]*?0/);
+  assert.match(cartPage, /visibleCartCount === 0[\s\S]*?markAddAction\(product, "failed"\)/);
 });
 
 test("Target retries final submission only after explicit not-placed proof", () => {

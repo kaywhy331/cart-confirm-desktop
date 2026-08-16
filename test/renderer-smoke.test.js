@@ -698,6 +698,9 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
     0,
     "manual Open all must keep opening due browser pages immediately"
   );
+  doc.querySelector(".mission-card .mission-open").click();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(openProductCalls, 1, "the explicit mission Open button uses the backend's validated destination selection");
 
   openBuyListFailure = new Error("Chrome companion did not connect");
   doc.getElementById("autopilotToggle").click();
@@ -714,6 +717,9 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   assert.equal(editCard.querySelector("[data-field='title']").value, "Booster Box");
   assert.equal(editCard.querySelector("[data-field='howlUrl']"), null);
   assert.equal(editCard.querySelector("[data-field='affiliateUrl']"), null);
+  const affiliateOpenInput = editCard.querySelector("[data-field='affiliateOpenUrl']");
+  assert.ok(affiliateOpenInput, "users can edit the link used only by the explicit mission Open button");
+  assert.equal(affiliateOpenInput.value, "");
   assert.equal(editCard.querySelector(".howl-resolve"), null);
   assert.equal(typeof window.cartAssist.resolveHowlLink, "undefined");
   const settingsBeforeUnsafeCheckout = savedSettingsInputs.length;
@@ -736,16 +742,27 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   actionSelect.value = "cart";
   actionSelect.dispatchEvent(new window.Event("change", { bubbles: true }));
   assert.equal(fulfillmentSelect.validationMessage, "");
-  editCard.querySelector(".mission-cancel").click();
+  affiliateOpenInput.value = "https://www.target.com/p/-/A-95298172?afid=user";
+  affiliateOpenInput.dispatchEvent(new window.Event("input", { bubbles: true }));
+  assert.equal(affiliateOpenInput.validationMessage, "");
+  editCard.querySelector(".mission-done").click();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(
+    savedSettingsInputs.at(-1).products[0].affiliateOpenUrl,
+    "https://www.target.com/p/-/A-95298172?afid=user"
+  );
 
   // Backend-provisioned campaign links expose a one-click copy action without
   // exposing their admin source URL or resolution controls in the mission UI.
   const affiliateReady = snapshotFixture();
   affiliateReady.settings.products[0].affiliateUrl = "https://www.target.com/p/booster/-/A-95298172?nrtv_cid=test&clkid=123";
+  affiliateReady.settings.products[0].affiliateOpenUrl = "https://www.target.com/p/-/A-95298172?afid=user";
   pushUpdate(affiliateReady);
   const shareButton = doc.querySelector(".mission-copy-affiliate");
   assert.equal(shareButton.hidden, false);
   assert.match(doc.querySelector(".mission-sub").textContent, /Campaign share ready/);
+  assert.match(doc.querySelector(".mission-sub").textContent, /Custom Open link/);
+  assert.match(doc.querySelector(".mission-open").getAttribute("aria-label"), /custom affiliate product link/);
   shareButton.click();
   await new Promise((resolve) => setTimeout(resolve, 10));
   assert.equal(copiedAffiliateUrls.length, 1);

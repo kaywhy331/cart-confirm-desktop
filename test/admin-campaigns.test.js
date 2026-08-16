@@ -25,9 +25,12 @@ test("Howl provisioning is absent from the user renderer and preload boundary", 
   const main = fs.readFileSync(path.join(root, "main.js"), "utf8");
 
   assert.doesNotMatch(html, /data-field=["']howlUrl["']/i);
+  assert.match(html, /data-field=["']affiliateOpenUrl["']/i);
   assert.doesNotMatch(html, /Resolve once|Resolve again/i);
   assert.doesNotMatch(preload, /resolveHowlLink|resolve-howl-link/);
   assert.doesNotMatch(main, /ipcMain\.handle\(["']cart-assist:resolve-howl-link/);
+  assert.match(main, /async function openMissionProduct[\s\S]*?missionOpenUrl\(product\)/);
+  assert.match(main, /cart-assist:open-product["'], \(_event, productId\) => openMissionProduct\(productId\)/);
 });
 
 test("the admin workflow resolves and attaches an exact-product campaign", async () => {
