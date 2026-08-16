@@ -75,6 +75,19 @@ test("unchanged config polling does not rescan and duplicate the same observatio
   assert.match(source, /OBSERVATION_DEDUPE_MS = Number\.MAX_SAFE_INTEGER/);
 });
 
+test("inactive-tab mutation scans cannot be postponed forever", () => {
+  const scheduler = section("function scheduleScan", "async function refreshConfig");
+  const observer = section("const observer = new MutationObserver", "observer.observe");
+  assert.match(scheduler, /\{ replace = true \} = \{\}/);
+  assert.match(scheduler, /if \(scanTimer && !replace\) return/);
+  assert.match(scheduler, /scanTimer = null;[\s\S]*?void scan\(\)/);
+  assert.match(observer, /scheduleScan\(150, \{ replace: false \}\)/);
+  assert.match(
+    source,
+    /document\.addEventListener\("visibilitychange"[\s\S]*?document\.visibilityState === "visible"[\s\S]*?scheduleScan\(0\)/
+  );
+});
+
 test("blocked and retrying workflows release only their pre-submit mission locks", () => {
   const sendEvent = section("async function send", "async function requestConfig");
   assert.match(sendEvent, /\["automation-blocked", "store-error", "retry-scheduled"\]\.includes\(eventType\)/);

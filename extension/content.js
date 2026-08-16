@@ -2025,13 +2025,26 @@
     }
   }
 
-  function scheduleScan(delay = 150) {
-    clearTimeout(scanTimer);
+  function scheduleScan(delay = 150, { replace = true } = {}) {
     if (config?.monitoringPaused) {
+      clearTimeout(scanTimer);
       scanTimer = null;
       return;
     }
-    scanTimer = setTimeout(() => void scan(), delay);
+    // Target continually mutates recommendations, ads, and fulfillment UI.
+    // A trailing-edge debounce can therefore starve forever, especially when
+    // Chrome clamps timers in an inactive tab. Mutation-driven scans keep the
+    // first pending deadline; explicit workflow delays may still replace it.
+    if (scanTimer && !replace) return;
+    clearTimeout(scanTimer);
+    scanTimer = setTimeout(() => {
+      scanTimer = null;
+      if (scanning) {
+        scheduleScan(150, { replace: false });
+        return;
+      }
+      void scan();
+    }, delay);
   }
 
   async function refreshConfig(force = false) {
@@ -2072,6 +2085,10 @@
     if (config.catalogSearch) scheduleCatalogCapture(changed ? 250 : 400);
     else clearTimeout(catalogCaptureTimer);
   }
+
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") scheduleScan(0);
+  });
 
   document.addEventListener("click", (event) => {
     if (!event.isTrusted) return;
@@ -2132,7 +2149,7 @@
   });
 
   const observer = new MutationObserver(() => {
-    scheduleScan();
+    scheduleScan(150, { replace: false });
     scheduleCatalogCapture();
   });
   observer.observe(document.documentElement, {
