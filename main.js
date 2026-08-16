@@ -2585,7 +2585,7 @@ async function quietCheck(product, taskEpoch, startToken) {
     if ((storeOverloadUntil.get(retailer) || 0) > Date.now()) return;
     const currentProduct = settings.products.find((candidate) => candidate.id === product.id);
     if (!quietProductEligible(currentProduct, Date.now())) return;
-    noteQuietProductFailure(currentProduct, taskEpoch);
+    noteQuietProductFailure(currentProduct, taskEpoch, { structural: error?.code === "unreadable-product" });
     if (
       error?.name === "AbortError"
       || error?.code === "transport-response"
@@ -2659,17 +2659,27 @@ function noteQuietStoreFailure(product) {
   );
 }
 
-function noteQuietProductFailure(product, taskEpoch) {
+function noteQuietProductFailure(product, taskEpoch, options = {}) {
+  // A complete HTML page that exposes no readable stock data is structural,
+  // not transient: Target renders availability only inside a real browser
+  // session, so waiting for two more identical shell responses only delays
+  // the authenticated Chrome watcher. Quarantine on the first such response
+  // and open the browser watcher immediately; transient transport problems
+  // keep the three-attempt counter.
+  const structural = options.structural === true;
   const result = registerProductFailure(
     quietState.productFailures,
     product.id,
-    QUIET_PRODUCT_FAILURE_LIMIT
+    structural ? 1 : QUIET_PRODUCT_FAILURE_LIMIT
   );
   if (!result.quarantined) return;
   const now = Date.now();
   quietState.productQuarantineUntil.set(product.id, now + QUIET_PRODUCT_QUARANTINE_MS);
   const shouldOpenBrowserWatcher = now - (quietState.lastAutoOpenAt.get(product.id) || 0) > QUIET_AUTO_OPEN_COOLDOWN_MS;
   if (shouldOpenBrowserWatcher) quietState.lastAutoOpenAt.set(product.id, now);
+  const describeFailure = structural
+    ? `The public product page loaded without readable stock data; ${retailerLabel(product.retailer)} renders availability only inside a real browser session.`
+    : "The public product page was unreadable after three attempts.";
   recordQuietEvent({
     eventType: "store-error",
     productId: product.id,
@@ -2677,8 +2687,8 @@ function noteQuietProductFailure(product, taskEpoch) {
     sku: product.sku,
     reason: "retrying",
     message: shouldOpenBrowserWatcher
-      ? `The public product page was unreadable after three attempts. Opening the exact ${retailerLabel(product.retailer)} product in Chrome so the browser watcher can continue while quiet checks rest for 10 minutes.`
-      : `The public product page was unreadable after three attempts. Quiet checks will rest for 10 minutes; the recent Chrome fallback remains inside its five-minute cooldown.`,
+      ? `${describeFailure} Opening the exact ${retailerLabel(product.retailer)} product in Chrome so the browser watcher can continue while quiet checks rest for 10 minutes.`
+      : `${describeFailure} Quiet checks will rest for 10 minutes; the recent Chrome fallback remains inside its five-minute cooldown.`,
     page: product.productUrl,
     timestamp: new Date().toISOString()
   }, taskEpoch);
