@@ -703,7 +703,7 @@
       config = nextConfig;
       const nextState = await productAutomationState(product);
       if (!nextState.ok || nextState.completed || adapter.securityChallenge(document)) return;
-      if (destination === "product") location.assign(product.productUrl);
+      if (destination === "product") location.assign(product.openUrl || product.productUrl);
       else if (destination === "cart") location.assign(adapter.cartUrl);
       else location.reload();
     };
@@ -726,7 +726,7 @@
       retryTimer = null;
       if (!await automationStillActive(product) || adapter.securityChallenge(document)) return;
       if (!await requireStoreAction(product, kind, true)) return;
-      if (destination === "product") location.assign(product.productUrl);
+      if (destination === "product") location.assign(product.openUrl || product.productUrl);
       else if (destination === "cart") location.assign(adapter.cartUrl);
       else location.reload();
     }, navigationDelayMs);
@@ -736,7 +736,7 @@
   async function navigateOnce(product, destination, kind) {
     if (!await requireStoreAction(product, kind)) return false;
     if (!await automationStillActive(product)) return false;
-    if (destination === "product") location.assign(product.productUrl);
+    if (destination === "product") location.assign(product.openUrl || product.productUrl);
     else if (destination === "cart") location.assign(adapter.cartUrl);
     else location.reload();
     return true;

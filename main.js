@@ -1092,7 +1092,7 @@ async function openProduct(productId, options = {}) {
     ? findProduct(productId)
     : settings.products.find((candidate) => candidate.enabled);
   if (!product) throw new Error("Enable at least one product first.");
-  const requestedUrl = String(options.urlOverride || product.productUrl);
+  const requestedUrl = String(options.urlOverride || missionOpenUrl(product));
   const requested = parseRetailUrl(requestedUrl);
   const requestedSku = extractSku(requested.retailer, requested.parsed.href);
   if (requested.retailer !== product.retailer || requestedSku !== product.sku) {
@@ -1109,7 +1109,8 @@ async function openProduct(productId, options = {}) {
   } else {
     resumeMonitoring();
   }
-  const directEntry = options.productEntry !== true && requested.parsed.href !== product.productUrl;
+  const directEntry = options.productEntry !== true
+    && ![product.productUrl, missionOpenUrl(product)].includes(requested.parsed.href);
   const opened = await openExternalRetailer(requested.parsed.href, {
     ...options,
     productId: product.id,
@@ -1143,7 +1144,7 @@ async function ensureCompanionConnection(plan, prepCandidates) {
   const bootstrap = selectConnectionBootstrap(plan, prepCandidates);
   if (!bootstrap) throw new Error("Enable at least one supported retailer mission before connecting Chrome.");
   const startedAt = Date.now();
-  const opened = await openExternalRetailer(bootstrap.productUrl, {
+  const opened = await openExternalRetailer(missionOpenUrl(bootstrap), {
     productId: bootstrap.id,
     actionKind: "companion-bootstrap"
   });
@@ -1161,7 +1162,7 @@ async function ensureCompanionConnection(plan, prepCandidates) {
       // changes. Open the mission again after that reload so Chrome injects the
       // new content script into a fresh tab and can send its first heartbeat.
       await new Promise((resolve) => setTimeout(resolve, 750));
-      const retried = await openExternalRetailer(bootstrap.productUrl, {
+      const retried = await openExternalRetailer(missionOpenUrl(bootstrap), {
         productId: bootstrap.id,
         actionKind: "companion-version-reload"
       });
@@ -1212,7 +1213,7 @@ async function openBuyList(retailer = "", options = {}) {
     ? browserProducts.filter((product) => product.id !== connection.productId)
     : browserProducts;
   const results = await Promise.all(productsToOpen.map((product) => (
-    openExternalRetailer(product.productUrl, { ...openOptions, productId: product.id })
+    openExternalRetailer(missionOpenUrl(product), { ...openOptions, productId: product.id })
   )));
   return {
     count: results.filter((result) => !["already-queued", "cancelled"].includes(result.via)).length
@@ -1763,6 +1764,10 @@ function extensionConfig() {
       const context = productExecutionContext(runtimeState, product.id, settings.automationRunId);
       return {
         ...toAutomationProduct(product),
+        // Affiliate-first navigation target: affiliate open link, then the
+        // admin campaign link, then the canonical product link. All three are
+        // validated against this mission's exact store and item ID.
+        openUrl: missionOpenUrl(product),
         calendarOwned: productCalendarOwned(settings, product),
         calendarOpenAt: productCalendarTime(settings, product),
         executionMode: context ? "blitz" : "watcher",

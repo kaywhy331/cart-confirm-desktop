@@ -258,7 +258,7 @@ async function setTabProductContextFromMessage(config, message, sender) {
   const plan = TabContext.validateOpenRequest(config, {
     retailer,
     productId,
-    url: product.productUrl,
+    url: product.openUrl || product.productUrl,
     contextRequired: false,
     signalOrderLimit: message.signalOrderLimit
   }, Date.now());
@@ -630,7 +630,7 @@ async function reuseTabForOpenRequest(config, request) {
       await createContextTab();
     } catch {
       const product = (config.products || []).find((candidate) => candidate?.id === contextPlan.context?.productId);
-      if (product?.productUrl) await chrome.tabs.create({ url: product.productUrl, active });
+      if (product?.productUrl) await chrome.tabs.create({ url: product.openUrl || product.productUrl, active });
     }
   }
 }
