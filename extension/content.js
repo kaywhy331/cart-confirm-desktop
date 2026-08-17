@@ -89,7 +89,7 @@
     const now = Date.now();
     if (now - lastTabActivationRequestAt < 10_000) return;
     lastTabActivationRequestAt = now;
-    void runtimeMessage({ type: "CART_CONFIRM_ACTIVATE_TAB" });
+    void runtimeMessage({ type: "CART_CONFIRM_ACTIVATE_TAB", productId: product.id });
   }
 
   function runtimeMessage(message) {
@@ -1506,6 +1506,14 @@
       return;
     }
 
+    // A finished mission whose cart tab stays open (the operator is buying
+    // manually) must go quiet: repeating its cart alarm every minute and
+    // re-activating its tab every ten seconds both harasses the operator and
+    // permanently stands down the check rotation, starving every other
+    // mission's stock detection.
+    const addState = await productAutomationState(product);
+    if (addState.ok && addState.completed) return;
+
     if (config.automationEnabled) requestPurchaseTabActivation(product);
 
     // Alert the operator the moment the cart page is on screen for a purchase
@@ -1587,7 +1595,6 @@
       return;
     }
 
-    const addState = await productAutomationState(product);
     const clickedAddAwaitingConfirmation = addState.ok && addState.addAction?.phase === "clicked";
     if (addState.ok && addState.addAction?.phase === "reserved") {
       await send("automation-blocked", product, {

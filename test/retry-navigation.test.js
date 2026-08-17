@@ -101,7 +101,7 @@ test("a qualified purchase pulls its exact tab forward through checkout", () => 
   const checkoutPage = section("async function handleCheckoutPage", "async function scan");
   assert.match(checkoutPage, /requestPurchaseTabActivation\(product\)/);
   assert.match(backgroundSource, /async function activatePurchaseTab[\s\S]*?config\?\.automationEnabled[\s\S]*?chrome\.tabs\.update\(tabId, \{ active: true \}\)[\s\S]*?chrome\.windows\.update\(tab\.windowId, \{ drawAttention: true \}\)/);
-  assert.match(backgroundSource, /case "CART_CONFIRM_ACTIVATE_TAB":[\s\S]*?activatePurchaseTab\(sender\)/);
+  assert.match(backgroundSource, /case "CART_CONFIRM_ACTIVATE_TAB":[\s\S]*?activatePurchaseTab\(sender, String\(message\.productId \|\| ""\)\)/);
 });
 
 test("blocked and retrying workflows release only their pre-submit mission locks", () => {
@@ -342,5 +342,27 @@ test("both claim paths heal a stranded confirmed cart hold before giving up", ()
   // healing, inside the same state lock and durable write.
   assert.equal((background.match(/if \(healStrandedCartHold\(state, config, /g) || []).length, 2);
   assert.equal((background.match(/= AutomationState\.claim\(state, product, ownerId, now\);/g) || []).length, 4);
+});
+
+test("a completed mission's cart tab goes quiet instead of alarming and re-activating", () => {
+  const root = path.join(__dirname, "..");
+  const background = fs.readFileSync(path.join(root, "extension", "background.js"), "utf8");
+
+  // The cart handler checks completion BEFORE any activation or cart-reached
+  // alarm, so a finished mission parked on its cart page stops harassing the
+  // operator and stops pinning the rotation stand-down clock.
+  const cartPage = section("async function handleCartPage", "const inventory = adapter.cartInventory(document);");
+  const completedGate = cartPage.indexOf("if (addState.ok && addState.completed) return;");
+  const activation = cartPage.indexOf("requestPurchaseTabActivation(product);");
+  const cartReached = cartPage.indexOf('send("cart-reached"');
+  assert.ok(completedGate > 0, "cart handler must gate on completion");
+  assert.ok(completedGate < activation, "completion gate must precede tab activation");
+  assert.ok(completedGate < cartReached, "completion gate must precede the cart alarm");
+
+  // Activation requests carry the product id, and the worker refuses them
+  // for completed missions even if a stale content script still asks.
+  assert.match(source, /CART_CONFIRM_ACTIVATE_TAB", productId: product\.id/);
+  assert.match(background, /return activatePurchaseTab\(sender, String\(message\.productId \|\| ""\)\);/);
+  assert.match(background, /if \(state\.completed\?\.\[productId\]\) return \{ ok: false, reason: "completed" \};/);
 });
 
