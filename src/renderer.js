@@ -332,6 +332,7 @@ function eventName(type) {
   const activityNames = {
     "watch-started": "Watch Started",
     "offer-observed": "Qualified",
+    "cart-reached": "Cart Open",
     "cart-item-confirmed": "Added to Cart",
     "order-confirmed": "Ordered",
     "notification-sent": "Notified"
@@ -2369,7 +2370,7 @@ function renderSchedule() {
 
 // --- Loud alarm for alert-level "alarm" missions (throttled per mission) ---
 
-const ALARM_EVENT_TYPES = new Set(["offer-observed", "cart-item-confirmed", "order-confirmed", "notification-sent"]);
+const ALARM_EVENT_TYPES = new Set(["offer-observed", "cart-reached", "cart-item-confirmed", "order-confirmed", "notification-sent"]);
 const ALARM_THROTTLE_MS = 5 * 60_000;
 const ALARM_MAX_MS = 30_000;
 

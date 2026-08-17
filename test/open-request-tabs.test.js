@@ -2,7 +2,7 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { chooseReusableTab, shouldActivateTab, tabSku } = require("../extension/open-request-tabs");
+const { chooseReusableTab, purchaseStageTab, shouldActivateTab, tabSku } = require("../extension/open-request-tabs");
 
 function walmartQueueUrl(itemId) {
   const qpdata = encodeURIComponent(JSON.stringify({
@@ -52,13 +52,55 @@ test("an official queue tab remains attached to its mission during fan-out", () 
 });
 
 test("an active non-mission store tab is preferred before a recent inactive tab", () => {
-  const activeCart = { id: 4, active: true, lastAccessed: 10, url: "https://www.walmart.com/cart" };
+  const activeHome = { id: 4, active: true, lastAccessed: 10, url: "https://www.walmart.com/" };
   const recentSearch = { id: 5, active: false, lastAccessed: 20, url: "https://www.walmart.com/search?q=item" };
   const chosen = chooseReusableTab(config, {
     retailer: "walmart",
     url: "https://www.walmart.com/ip/item/222222222"
-  }, [recentSearch, activeCart]);
-  assert.equal(chosen, activeCart);
+  }, [recentSearch, activeHome]);
+  assert.equal(chosen, activeHome);
+});
+
+test("a cart tab is never reused, even when it is the active tab", () => {
+  const activeCart = { id: 4, active: true, lastAccessed: 30, url: "https://www.walmart.com/cart" };
+  const recentSearch = { id: 5, active: false, lastAccessed: 20, url: "https://www.walmart.com/search?q=item" };
+  assert.equal(chooseReusableTab(config, {
+    retailer: "walmart",
+    url: "https://www.walmart.com/ip/item/222222222"
+  }, [activeCart, recentSearch]), recentSearch);
+  assert.equal(chooseReusableTab(config, {
+    retailer: "walmart",
+    url: "https://www.walmart.com/ip/item/222222222"
+  }, [activeCart]), null, "only a cart tab available means a fresh tab is required");
+});
+
+test("purchase-stage pages are protected for every supported retailer", () => {
+  assert.equal(purchaseStageTab("target", "https://www.target.com/cart"), true);
+  assert.equal(purchaseStageTab("target", "https://www.target.com/co-review"), true);
+  assert.equal(purchaseStageTab("target", "https://www.target.com/checkout/payment"), true);
+  assert.equal(purchaseStageTab("target", "https://www.target.com/p/item/-/A-94336414"), false);
+  assert.equal(purchaseStageTab("walmart", "https://www.walmart.com/cart"), true);
+  assert.equal(purchaseStageTab("walmart", "https://www.walmart.com/checkout/review-order"), true);
+  assert.equal(purchaseStageTab("walmart", "https://www.walmart.com/ip/item/222222222"), false);
+  assert.equal(purchaseStageTab("amazon", "https://www.amazon.com/gp/cart/view.html"), true);
+  assert.equal(purchaseStageTab("amazon", "https://www.amazon.com/gp/buy/spc/handlers/display.html"), true);
+  assert.equal(purchaseStageTab("amazon", "https://www.amazon.com/dp/B0TEST"), false);
+  assert.equal(purchaseStageTab("target", "not a url"), false);
+});
+
+test("a target cart tab pulled forward by a purchase mission survives watcher fan-out", () => {
+  const targetConfig = {
+    products: [
+      { id: "target:1", retailer: "target", sku: "94336414", enabled: true },
+      { id: "target:2", retailer: "target", sku: "1011206804", enabled: true }
+    ]
+  };
+  const activeCart = { id: 9, active: true, lastAccessed: 99, url: "https://www.target.com/cart" };
+  const chosen = chooseReusableTab(targetConfig, {
+    retailer: "target",
+    url: "https://www.target.com/p/other/-/A-1011206804"
+  }, [activeCart]);
+  assert.equal(chosen, null, "the watcher must open its own tab instead of navigating over the cart");
 });
 
 test("a dedicated drop request reuses only its exact mission tab", () => {

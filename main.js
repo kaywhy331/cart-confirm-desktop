@@ -1319,6 +1319,8 @@ function sendEventNotification(event, product, queueFanout = null) {
       activity,
       { desktop: deliveryMode === "desktop" }
     );
+  } else if (event.eventType === "cart-reached") {
+    notifyOnce(key, `${store} cart is open`, `${product.title || product.sku} — the cart page is on screen. Be ready to complete the purchase.`, force, activity);
   } else if (event.eventType === "cart-item-confirmed") {
     notifyOnce(key, `${store} cart confirmed`, `${product.title || product.sku}, quantity ${product.quantity}, is in the cart.`, force, activity);
   } else if (event.eventType === "checkout-reached") {

@@ -1418,6 +1418,15 @@
 
     if (config.automationEnabled) requestPurchaseTabActivation(product);
 
+    // Alert the operator the moment the cart page is on screen for a purchase
+    // mission, before line and quantity verification finish, so they are
+    // ready to complete the order without waiting for full confirmation.
+    if (["cart", "review", "checkout"].includes(product.action)) {
+      void send("cart-reached", product, {
+        message: `${adapter.label}'s cart page is open for this mission. Get ready to complete the purchase.`
+      }, `cart-reached:${product.id}`, 60_000);
+    }
+
     const inventory = adapter.cartInventory(document);
     const line = adapter.findLine(document, product);
     if (!line) {
