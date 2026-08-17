@@ -261,3 +261,32 @@ test("background refreshes get a serialized foreground flash check that always y
   assert.match(source, /navigator\.locks\.request\("cart-confirm-keepalive", \{ mode: "shared" \}/);
 });
 
+test("the service worker survives a stale-manifest restart mid-update", () => {
+  const root = path.join(__dirname, "..");
+  const background = fs.readFileSync(path.join(root, "extension", "background.js"), "utf8");
+
+  // Every capitalized helper namespace dereferenced in the worker must be
+  // bound from globalThis — an unbound one (like the 3.6.4 Retailers bug)
+  // throws at first use and silently disables its feature.
+  const builtIns = new Set([
+    "Array", "Boolean", "Date", "Error", "JSON", "Math", "Number", "Object",
+    "Promise", "RegExp", "Set", "Map", "String", "URL", "URLSearchParams", "Infinity", "NaN"
+  ]);
+  const used = new Set([...background.matchAll(/\b([A-Z][A-Za-z]+)\.[a-zA-Z_$]/g)].map((match) => match[1]));
+  for (const name of used) {
+    if (builtIns.has(name)) continue;
+    assert.match(
+      background,
+      new RegExp(`const ${name} = globalThis\\.CartConfirm`),
+      `${name} is dereferenced in background.js but never bound from globalThis`
+    );
+  }
+
+  // A restarting worker can run this file under the previous cached manifest
+  // (no alarms permission) while a desktop update swaps the unpacked files.
+  // The alarm heartbeat must degrade gracefully instead of throwing at the
+  // top level and killing every listener registered after it.
+  assert.match(background, /if \(chrome\.alarms\?\.create && chrome\.alarms\?\.onAlarm\) \{/);
+  assert.doesNotMatch(background, /^chrome\.alarms\.create/m);
+});
+
