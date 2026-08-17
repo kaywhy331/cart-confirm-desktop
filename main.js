@@ -754,11 +754,35 @@ function quickAddMissionRequest(input) {
   }
   const existing = settings.products.find((candidate) => candidate.id === product.id);
   if (existing) {
+    // A repeat capture through an affiliate link still has value: attach the
+    // freshly captured link to the existing mission so its opens carry
+    // affiliate credit. The link was already validated by quickAddMission
+    // against this mission's exact store and item ID.
+    const affiliateUpdated = Boolean(product.affiliateOpenUrl)
+      && product.affiliateOpenUrl !== existing.affiliateOpenUrl;
+    if (affiliateUpdated) {
+      settings = {
+        ...settings,
+        products: settings.products.map((candidate) => (
+          candidate.id === existing.id
+            ? { ...candidate, affiliateOpenUrl: product.affiliateOpenUrl }
+            : candidate
+        ))
+      };
+      status = {
+        ...status,
+        lastMessage: `${existing.title || existing.sku} kept its mission settings; the affiliate product link from Chrome was attached.`.slice(0, 240)
+      };
+      persistSettings();
+      configVersion += 1;
+      broadcast();
+    }
     return {
       statusCode: 200,
       payload: {
         ok: true,
         duplicate: true,
+        affiliateUpdated,
         product: { id: existing.id, title: existing.title, maxPrice: existing.maxPrice }
       }
     };

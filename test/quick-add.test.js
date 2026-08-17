@@ -2,6 +2,8 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
 const { JSDOM } = require("jsdom");
 
 const Retailers = require("../extension/retailers");
@@ -87,5 +89,23 @@ test("Quick add captures the full affiliate URL alongside the canonical product 
     <button id="addToCartButtonOrTextIdFor1011209279">Add to cart</button>
   `, "https://www.target.com/p/pokemon-booster-bundle/-/A-1011209279");
   assert.equal(plain.affiliateOpenUrl, "");
+});
+
+test("a duplicate quick add attaches the captured affiliate link to the existing mission", () => {
+  const root = path.join(__dirname, "..");
+  const main = fs.readFileSync(path.join(root, "main.js"), "utf8");
+  const popup = fs.readFileSync(path.join(root, "extension", "popup.js"), "utf8");
+
+  // The duplicate branch merges a validated capture into the stored mission
+  // and re-broadcasts config so the extension picks up the new open URL.
+  const duplicateBranch = main.slice(main.indexOf("function quickAddMissionRequest"));
+  assert.match(duplicateBranch, /const affiliateUpdated = Boolean\(product\.affiliateOpenUrl\)\s*&& product\.affiliateOpenUrl !== existing\.affiliateOpenUrl;/);
+  assert.match(duplicateBranch, /\{ \.\.\.candidate, affiliateOpenUrl: product\.affiliateOpenUrl \}/);
+  assert.match(duplicateBranch, /if \(affiliateUpdated\) \{[\s\S]*?persistSettings\(\);[\s\S]*?configVersion \+= 1;[\s\S]*?broadcast\(\);[\s\S]*?\}/);
+  assert.match(duplicateBranch, /duplicate: true,\s*affiliateUpdated,/);
+
+  // The popup tells the user which of the two duplicate outcomes happened.
+  assert.match(popup, /the affiliate link from this page was attached/);
+  assert.match(popup, /Affiliate Link Attached/);
 });
 

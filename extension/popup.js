@@ -159,13 +159,17 @@ elements.addButton.addEventListener("click", async () => {
   if (result.ok) {
     setStatus(
       result.duplicate
-        ? "This item is already in Missions; its existing settings were left unchanged."
+        ? (result.affiliateUpdated
+          ? "This item is already in Missions; the affiliate link from this page was attached to it."
+          : "This item is already in Missions; its existing settings were left unchanged.")
         : result.product?.action === "checkout"
           ? "Auto-submit mission added. Live final-review verification is required; an advance preflight is optional."
           : `Mission added with the desktop default profile (${result.product?.action || "configured"}).`,
       "success"
     );
-    elements.addButton.textContent = result.duplicate ? "Already in Missions" : "Added";
+    elements.addButton.textContent = result.duplicate
+      ? (result.affiliateUpdated ? "Affiliate Link Attached" : "Already in Missions")
+      : "Added";
     return;
   }
   setStatus(result.error || "Quick add could not create the mission.", "error");
