@@ -656,11 +656,18 @@ async function sendCompanionHello(baseUrl, token, reason) {
 // its window forward keeps Add, cart verification, and checkout at full
 // interactive speed from the moment an offer qualifies. Only an armed,
 // unpaused configuration may pull focus.
-async function activatePurchaseTab(sender) {
+async function activatePurchaseTab(sender, productId = "") {
   const tabId = sender?.tab?.id;
   if (tabId === undefined) return { ok: false, reason: "no-tab" };
   const config = await discoverConfig(false);
   if (!config?.automationEnabled || config.monitoringPaused) return { ok: false, reason: "not-armed" };
+  // A completed mission never re-takes the tab strip: its repeated
+  // activations would also keep the rotation stand-down clock pinned and
+  // starve every other mission's foreground checks.
+  if (productId) {
+    const state = await readAutomationState(config);
+    if (state.completed?.[productId]) return { ok: false, reason: "completed" };
+  }
   try {
     const tab = await chrome.tabs.get(tabId);
     if (!tab.active) await chrome.tabs.update(tabId, { active: true });
@@ -1521,7 +1528,7 @@ async function handleMessage(message, sender) {
     case "CART_CONFIRM_CLEAR_TAB_PRODUCT_CONTEXT":
       return { ok: await clearTabProductContext(sender?.tab?.id) };
     case "CART_CONFIRM_ACTIVATE_TAB":
-      return activatePurchaseTab(sender);
+      return activatePurchaseTab(sender, String(message.productId || ""));
     case "CART_CONFIRM_CONSUME_DIRECT_ENTRY_CONTEXT":
       return consumeDirectEntryContext(sender, message.productId);
     case "CART_CONFIRM_EVENT":
