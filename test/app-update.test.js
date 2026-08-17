@@ -164,7 +164,7 @@ test("every release publishes bullets from WHATS-NEW.md and enforces their prese
   assert.match(workflow, /"## What's new in v\$packageVersion",/);
 
   // The current version already has its user-facing bullets written.
-  const lines = whatsNew.split("\n");
+  const lines = whatsNew.split(/\r?\n/);
   const start = lines.indexOf(`## ${version}`);
   assert.notEqual(start, -1, `WHATS-NEW.md is missing a section for ${version}`);
   const section = [];
