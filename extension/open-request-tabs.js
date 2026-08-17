@@ -12,6 +12,26 @@
     return request.background !== true;
   }
 
+  // A tab sitting on a cart, checkout, or order-confirmation page is a live
+  // purchase surface: the operator may be completing an order there right
+  // now, and cart URLs carry no SKU so mission matching cannot protect them.
+  // Open requests must never navigate over these pages.
+  const PURCHASE_STAGE_PATHS = Object.freeze({
+    target: /\/(?:cart|co-[a-z][\w-]*|checkout)(?:\/|$)|order-confirm|thank-?you|confirmation/,
+    walmart: /\/cart|\/checkout|thank-?you|order-confirm|confirmation/,
+    amazon: /\/gp\/cart|\/cart(?:\/|$)|\/gp\/buy|\/checkout|thank-?you|order-confirm/
+  });
+
+  function purchaseStageTab(retailer, url) {
+    const pattern = PURCHASE_STAGE_PATHS[String(retailer || "")];
+    if (!pattern) return false;
+    try {
+      return pattern.test(new URL(String(url || "")).pathname.toLowerCase());
+    } catch {
+      return false;
+    }
+  }
+
   function chooseReusableTab(config = {}, request = {}, tabs = []) {
     const retailer = String(request.retailer || "");
     const requestedSku = tabSku(retailer, request.url);
@@ -35,6 +55,7 @@
     if (request.dedicatedTab === true) return null;
 
     const free = tabs.filter((candidate) => {
+      if (purchaseStageTab(retailer, candidate?.url)) return false;
       const sku = tabSku(retailer, candidate?.url);
       return !sku || !otherMissionSkus.has(sku);
     });
@@ -43,7 +64,7 @@
       || null;
   }
 
-  const api = Object.freeze({ chooseReusableTab, shouldActivateTab, tabSku });
+  const api = Object.freeze({ chooseReusableTab, purchaseStageTab, shouldActivateTab, tabSku });
   globalThis.CartConfirmOpenRequestTabs = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;
 })();

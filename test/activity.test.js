@@ -51,6 +51,7 @@ test("the activity feed retains only operator-facing milestones", () => {
 
   assert.equal(activity({ eventType: "page-observed" }).eventType, "watch-started");
   assert.equal(activity({ eventType: "offer-observed", eligible: true }).eventType, "offer-observed");
+  assert.equal(activity({ eventType: "cart-reached" }).eventType, "cart-reached");
   assert.equal(activity({ eventType: "cart-item-confirmed" }).eventType, "cart-item-confirmed");
   assert.equal(activity({ eventType: "order-confirmed" }).eventType, "order-confirmed");
   assert.equal(activity({ eventType: "notification-sent" }).eventType, "notification-sent");
@@ -64,6 +65,10 @@ test("milestone entries use concise product, quantity, price, and order language
   assert.equal(
     activity({ eventType: "offer-observed", eligible: true, price: 34.99 }).message,
     "Qualified Riftbound Zed vs Shen: the exact first-party offer at $34.99 matched the mission criteria."
+  );
+  assert.equal(
+    activity({ eventType: "cart-reached" }).message,
+    "Cart page is open with Riftbound Zed vs Shen — be ready to complete the purchase."
   );
   assert.equal(
     activity({ eventType: "cart-item-confirmed", quantity: 2 }).message,
