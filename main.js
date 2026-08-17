@@ -2112,7 +2112,7 @@ function registerIpc() {
       normalized = { ...normalized, automationRunId: crypto.randomUUID(), monitoringPaused: false };
       runtimeState.queueCaptures = {};
       resetQuietMonitorSchedule(quietState.schedule);
-      quietState.lastAvailability.clear();
+      resetQuietProductState();
     } else if (wasArmed && !normalized.automationEnabled) {
       stopEpoch += 1;
       quietAbortRegistry.abortAll();
@@ -2305,6 +2305,7 @@ function registerIpc() {
     discordNextPollAt = 0;
     quietAbortRegistry.abortAll();
     resetQuietMonitorSchedule(quietState.schedule);
+    resetQuietProductState();
     storeOpenQueue.cancelPending();
     openRequests.cancelAll();
     settings = {
@@ -2488,6 +2489,19 @@ const quietState = {
   lastCadenceNoticeAt: new Map(),
   lastBudgetNoticeAt: new Map()
 };
+
+// Per-product quiet-lane residue (quarantines, failure counters, the
+// five-minute Chrome-fallback cooldown, last-seen availability) must not
+// survive Stop everything or a fresh arming: a stale lastAutoOpenAt otherwise
+// silently suppresses the unreadable-page Chrome fallback for up to five
+// minutes after a restart, which looks like missions refusing to open.
+function resetQuietProductState() {
+  quietState.lastAvailability.clear();
+  quietState.productFailures.clear();
+  quietState.productQuarantineUntil.clear();
+  quietState.storeFailureProducts.clear();
+  quietState.lastAutoOpenAt.clear();
+}
 
 function quietProductEligible(product, now = Date.now()) {
   if (
