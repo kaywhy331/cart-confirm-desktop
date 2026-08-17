@@ -1,5 +1,7 @@
 "use strict";
 
+const fs = require("node:fs");
+const path = require("node:path");
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
@@ -88,3 +90,26 @@ test("accepts exactly one checksum for the expected installer", () => {
   );
   assert.throws(() => parseChecksumManifest(`${hash}  ../${name}\n`, name), /exactly one entry/);
 });
+
+test("the updater control is always reachable with an on-demand check", () => {
+  const root = path.join(__dirname, "..");
+  const preload = fs.readFileSync(path.join(root, "preload.js"), "utf8");
+  const main = fs.readFileSync(path.join(root, "main.js"), "utf8");
+  const renderer = fs.readFileSync(path.join(root, "src", "renderer.js"), "utf8");
+  const html = fs.readFileSync(path.join(root, "src", "index.html"), "utf8");
+
+  // Renderer can request a check, and the desktop answers with a typed result.
+  assert.match(preload, /checkForUpdates: \(\) => ipcRenderer\.invoke\("cart-assist:check-for-updates"\)/);
+  assert.match(main, /ipcMain\.handle\("cart-assist:check-for-updates"/);
+  assert.match(main, /\{ status: "available", version: plan\.version \}/);
+  assert.match(main, /\{ status: "current", currentVersion: app\.getVersion\(\) \}/);
+
+  // The control hides only in unsupported builds; otherwise it always offers
+  // either the pending update or a manual check.
+  assert.match(renderer, /elements\.updateNotice\.hidden = status === "unavailable";/);
+  assert.match(renderer, /updateReady \? "Update" : "Check for updates"/);
+  assert.match(renderer, /if \(updateButtonMode === "install"\) void requestAppUpdate\(\);\s*else void requestUpdateCheck\(\);/);
+  assert.match(renderer, /Up to date/);
+  assert.match(html, /Check for updates<\/button>/);
+});
+
