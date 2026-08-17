@@ -956,6 +956,7 @@ function buildEditCard(product, options = {}) {
   field(card, "fulfillmentMode").value = product?.fulfillmentMode || initialProfile.settings.fulfillmentMode;
   field(card, "signalEntry").value = product?.signalEntry || "product";
   field(card, "signalAutoOpen").checked = product ? product.signalAutoOpen !== false : true;
+  field(card, "acceptPartial").checked = product ? product.acceptPartial !== false : true;
   itemProfileOptions(
     field(card, "itemProfileId"),
     product?.itemProfileId || currentSnapshot?.settings?.defaultItemProfileId || ItemDefaults.DEFAULT_ITEM_PROFILE_ID
@@ -1175,6 +1176,7 @@ function collectMission(card) {
     priceSource: field(card, "priceSource").value || (Number(field(card, "maxPrice").value) > 0 ? "manual" : ""),
     groupId: field(card, "groupId").value,
     signalAutoOpen: field(card, "signalAutoOpen").checked,
+    acceptPartial: field(card, "acceptPartial").checked,
     signalEntry: field(card, "signalEntry").value,
     enabled: field(card, "enabled").checked,
     checkoutPreflightApproved: existing?.checkoutPreflightApproved === true,

@@ -1322,7 +1322,7 @@ function sendEventNotification(event, product, queueFanout = null) {
   } else if (event.eventType === "cart-reached") {
     notifyOnce(key, `${store} cart is open`, `${product.title || product.sku} — the cart page is on screen. Be ready to complete the purchase.`, force, activity);
   } else if (event.eventType === "cart-item-confirmed") {
-    notifyOnce(key, `${store} cart confirmed`, `${product.title || product.sku}, quantity ${product.quantity}, is in the cart.`, force, activity);
+    notifyOnce(key, `${store} cart confirmed`, event.message || `${product.title || product.sku}, quantity ${event.quantity ?? product.quantity}, is in the cart.`, force, activity);
   } else if (event.eventType === "checkout-reached") {
     notifyOnce(key, `${store} checkout reached`, "The browser companion is validating the order review before submission.", false, activity);
   } else if (event.eventType === "order-confirmed") {

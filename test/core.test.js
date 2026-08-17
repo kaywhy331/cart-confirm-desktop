@@ -600,3 +600,57 @@ test("late delivery of an older observation cannot overwrite a newer safety stop
   assert.equal(unchanged.eligible, false);
   assert.equal(unchanged.lastMessage, "The cart could not be verified.");
 });
+
+test("accept partial quantity defaults on and survives normalization round-trips", () => {
+  const defaulted = normalizeProduct({ ...PRODUCTS[0] });
+  assert.equal(defaulted.acceptPartial, true);
+
+  const strict = normalizeProduct({ ...PRODUCTS[0], acceptPartial: false });
+  assert.equal(strict.acceptPartial, false);
+  // Re-normalizing stored settings must not flip a deliberate strict choice.
+  assert.equal(normalizeProduct(strict).acceptPartial, false);
+
+  // The extension and renderer payloads both carry the flag.
+  assert.equal(toAutomationProduct(strict).acceptPartial, false);
+  assert.equal(toRendererProduct(strict).acceptPartial, false);
+  assert.equal(toAutomationProduct(defaulted).acceptPartial, true);
+});
+
+test("partial-quantity cart events surface the companion's explanation", () => {
+  const partialConfirm = validateEvent({
+    eventType: "cart-item-confirmed",
+    retailer: "target",
+    sku: "1011960739",
+    quantity: 1,
+    message: "The exact Target product is in the cart with 1 of 2 (partial quantity accepted)."
+  });
+  assert.equal(partialConfirm.quantity, 1);
+  assert.equal(
+    eventMessage(partialConfirm),
+    "The exact Target product is in the cart with 1 of 2 (partial quantity accepted)."
+  );
+
+  const fullConfirm = validateEvent({
+    eventType: "cart-item-confirmed",
+    retailer: "target",
+    sku: "1011960739",
+    quantity: 2
+  });
+  assert.equal(eventMessage(fullConfirm), "The exact Target product was confirmed in the cart.");
+
+  const partialQuantity = validateEvent({
+    eventType: "quantity-updated",
+    retailer: "target",
+    sku: "1011960739",
+    quantity: 1,
+    message: "Target allowed only 1 of the configured 2; partial quantity accepted."
+  });
+  assert.equal(eventMessage(partialQuantity), "Target allowed only 1 of the configured 2; partial quantity accepted.");
+  const fullQuantity = validateEvent({
+    eventType: "quantity-updated",
+    retailer: "target",
+    sku: "1011960739",
+    quantity: 2
+  });
+  assert.equal(eventMessage(fullQuantity), "Target cart quantity was set to 2.");
+});
