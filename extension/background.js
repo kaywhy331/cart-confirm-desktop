@@ -546,15 +546,15 @@ if (chrome.alarms?.create && chrome.alarms?.onAlarm) {
   });
 }
 
-// Foreground flash checks: hidden pages may finish loading without fully
+// Foreground checks: hidden pages may finish loading without fully
 // rendering their stock UI, so after a background mission tab completes a
-// load it is briefly pulled forward — loaded → checking — scanned at full
-// speed by the existing visibilitychange hook, then the user's previous tab
-// is restored (waiting/ready comes from the scan's own events). Flashes are
-// serialized, spaced, and never steal focus from a cart or checkout page or
-// while a purchase activation owns the foreground.
+// load it is made the window's active tab — loaded → checking — and simply
+// stays there; the next completed refresh rotates the active tab onward.
+// Only the tab strip inside Chrome changes: window focus is never taken, so
+// a browser sitting behind other applications stays behind them. Rotations
+// are serialized, spaced, and never switch away from a cart or checkout page
+// or while a purchase activation owns the tab strip.
 const FOREGROUND_CHECK_SPACING_MS = 4_000;
-const FOREGROUND_CHECK_DWELL_MS = 2_000;
 const foregroundCheckState = {
   queue: [],
   queuedTabs: new Set(),
@@ -603,7 +603,7 @@ async function drainForegroundChecks() {
 }
 
 async function runForegroundCheck(tabId) {
-  // A purchase flow owns the foreground; watcher flashes stand down.
+  // A purchase flow owns the tab strip; watcher rotations stand down.
   if (Date.now() - foregroundCheckState.lastPurchaseActivationAt < 20_000) return;
   let tab;
   try { tab = await chrome.tabs.get(tabId); } catch { return; }
@@ -616,19 +616,11 @@ async function runForegroundCheck(tabId) {
   try { [previous] = await chrome.tabs.query({ active: true, windowId: tab.windowId }); } catch { previous = null; }
   const previousUrl = String(previous?.url || "");
   if (previous && OpenRequestTabs.purchaseStageTab(Retailers.detectRetailer(previousUrl), previousUrl)) return;
+  // Tab activation only — chrome.windows.update is deliberately never called
+  // here, so the browser window's stacking order and the user's OS focus are
+  // untouched. The activated tab stays put until the next rotation.
   try { await chrome.tabs.update(tabId, { active: true }); } catch { return; }
   foregroundCheckState.lastFlashAt = Date.now();
-  await new Promise((resolve) => setTimeout(resolve, FOREGROUND_CHECK_DWELL_MS));
-  // If a purchase activation or the user took the foreground mid-dwell,
-  // leave the tabs exactly where they are.
-  if (Date.now() - foregroundCheckState.lastPurchaseActivationAt < FOREGROUND_CHECK_DWELL_MS + 500) return;
-  if (!previous || !Number.isInteger(previous.id)) return;
-  try {
-    const [current] = await chrome.tabs.query({ active: true, windowId: tab.windowId });
-    if (current?.id === tabId) await chrome.tabs.update(previous.id, { active: true });
-  } catch {
-    // The previous tab may have closed; the flashed tab simply stays active.
-  }
 }
 let openRequestsInFlight = false;
 let openRequestDrainUntil = 0;
@@ -672,7 +664,9 @@ async function activatePurchaseTab(sender) {
   try {
     const tab = await chrome.tabs.get(tabId);
     if (!tab.active) await chrome.tabs.update(tabId, { active: true });
-    await chrome.windows.update(tab.windowId, { focused: true });
+    // Ask for attention on the taskbar without yanking the browser above
+    // whatever the user is working in; the desktop alarm already alerts them.
+    await chrome.windows.update(tab.windowId, { drawAttention: true });
     foregroundCheckState.lastPurchaseActivationAt = Date.now();
     return { ok: true, activated: !tab.active };
   } catch {
@@ -735,7 +729,9 @@ async function reuseTabForOpenRequest(config, request) {
     if (tab) {
       if (contextPlan.context) await saveTabProductContext(tab.id, contextPlan.context);
       await chrome.tabs.update(tab.id, { url, active });
-      if (active) await chrome.windows.update(tab.windowId, { focused: true }).catch(() => {});
+      // Attention on the taskbar only — reused open-request tabs must not
+      // yank the browser above whatever the user is working in.
+      if (active) await chrome.windows.update(tab.windowId, { drawAttention: true }).catch(() => {});
     } else {
       // Every existing tab belongs to another enabled mission. Claim the
       // request and create a tab immediately instead of making the desktop

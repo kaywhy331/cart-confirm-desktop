@@ -100,7 +100,7 @@ test("a qualified purchase pulls its exact tab forward through checkout", () => 
   assert.match(cartPage, /requestPurchaseTabActivation\(product\)/);
   const checkoutPage = section("async function handleCheckoutPage", "async function scan");
   assert.match(checkoutPage, /requestPurchaseTabActivation\(product\)/);
-  assert.match(backgroundSource, /async function activatePurchaseTab[\s\S]*?config\?\.automationEnabled[\s\S]*?chrome\.tabs\.update\(tabId, \{ active: true \}\)[\s\S]*?chrome\.windows\.update\(tab\.windowId, \{ focused: true \}\)/);
+  assert.match(backgroundSource, /async function activatePurchaseTab[\s\S]*?config\?\.automationEnabled[\s\S]*?chrome\.tabs\.update\(tabId, \{ active: true \}\)[\s\S]*?chrome\.windows\.update\(tab\.windowId, \{ drawAttention: true \}\)/);
   assert.match(backgroundSource, /case "CART_CONFIRM_ACTIVATE_TAB":[\s\S]*?activatePurchaseTab\(sender\)/);
 });
 
@@ -234,26 +234,34 @@ test("hidden tabs get an alarm-driven heartbeat that beats Chrome timer throttli
   assert.match(tick, /if \(!navigated && !claimed\) scheduleScan\(0\);/);
 });
 
-test("background refreshes get a serialized foreground flash check that always yields back", () => {
+test("foreground checks stay on the rotated tab and never take OS focus", () => {
   const root = path.join(__dirname, "..");
   const background = fs.readFileSync(path.join(root, "extension", "background.js"), "utf8");
 
-  // A completed load in a hidden mission tab queues a flash; unrelated tabs,
-  // purchase-stage pages, and paused monitoring never qualify.
+  // A completed load in a hidden mission tab queues a rotation; unrelated
+  // tabs, purchase-stage pages, and paused monitoring never qualify.
   assert.match(background, /changeInfo\.status === "complete"\) void queueForegroundCheck\(tab\)/);
   assert.match(background, /if \(!retailer \|\| OpenRequestTabs\.purchaseStageTab\(retailer, url\)\) return;/);
   assert.match(background, /candidate\?\.enabled && candidate\.retailer === retailer && candidate\.sku === sku/);
   assert.match(background, /if \(!config \|\| config\.monitoringPaused\) return;/);
 
-  // Flashes are serialized and spaced, skip minimized windows, stand down for
-  // purchase activations, and restore the user's previous tab only when the
-  // flashed tab is still the active one.
+  // Rotations are serialized and spaced, skip minimized windows, stand down
+  // around purchase activations, and never switch away from a cart/checkout
+  // page — but once activated, the tab stays (no restore step).
   assert.match(background, /FOREGROUND_CHECK_SPACING_MS = 4_000/);
-  assert.match(background, /FOREGROUND_CHECK_DWELL_MS = 2_000/);
   assert.match(background, /tabWindow\.state === "minimized"\) return;/);
   assert.match(background, /lastPurchaseActivationAt < 20_000\) return;/);
   assert.match(background, /purchaseStageTab\(Retailers\.detectRetailer\(previousUrl\), previousUrl\)\) return;/);
-  assert.match(background, /if \(current\?\.id === tabId\) await chrome\.tabs\.update\(previous\.id, \{ active: true \}\)/);
+  const rotation = background.slice(background.indexOf("async function runForegroundCheck"));
+  const rotationBody = rotation.slice(0, rotation.indexOf("\n}"));
+  assert.doesNotMatch(rotationBody, /chrome\.windows\.update\(/, "rotation must never change window focus or stacking");
+  assert.doesNotMatch(rotationBody, /FOREGROUND_CHECK_DWELL_MS|previous\.id, \{ active: true \}/, "no dwell/restore step");
+
+  // The purchase flow activates its tab and asks for taskbar attention, but
+  // never steals OS focus from whatever the user is working in.
+  assert.match(background, /chrome\.windows\.update\(tab\.windowId, \{ drawAttention: true \}\)/);
+  assert.doesNotMatch(background, /focused: true/);
+
   // The purchase-flow activation stamps the shared stand-down clock.
   assert.match(background, /foregroundCheckState\.lastPurchaseActivationAt = Date\.now\(\);\s*\n\s*return \{ ok: true, activated: !tab\.active \};/);
 
