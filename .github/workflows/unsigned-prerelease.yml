@@ -51,6 +51,19 @@ jobs:
           if ($packageVersion -notmatch '^\d+\.\d+\.\d+$') {
             throw "package.json must contain a three-part numeric version."
           }
+          $whatsNew = Get-Content WHATS-NEW.md
+          $sectionStart = [array]::IndexOf($whatsNew, "## $packageVersion")
+          if ($sectionStart -lt 0) {
+            throw "WHATS-NEW.md has no '## $packageVersion' section; write user-facing bullets before publishing."
+          }
+          $sectionBullets = @()
+          foreach ($line in $whatsNew[($sectionStart + 1)..($whatsNew.Count - 1)]) {
+            if ($line -match '^## ') { break }
+            if ($line -match '^- ') { $sectionBullets += $line }
+          }
+          if ($sectionBullets.Count -eq 0) {
+            throw "WHATS-NEW.md section '## $packageVersion' contains no '- ' bullets."
+          }
           $tag = "unsigned-v$packageVersion"
           $matchingRefs = gh api "repos/$env:GITHUB_REPOSITORY/git/matching-refs/tags/$tag"
           if ($LASTEXITCODE -ne 0) {
@@ -106,7 +119,24 @@ jobs:
           $packageVersion = (Get-Content package.json -Raw | ConvertFrom-Json).version
           $tag = "unsigned-v$packageVersion"
           $checksums = Get-Content dist/SHA256SUMS.txt
+          $whatsNew = Get-Content WHATS-NEW.md
+          $sectionStart = [array]::IndexOf($whatsNew, "## $packageVersion")
+          if ($sectionStart -lt 0) {
+            throw "WHATS-NEW.md has no '## $packageVersion' section."
+          }
+          $sectionBullets = @()
+          foreach ($line in $whatsNew[($sectionStart + 1)..($whatsNew.Count - 1)]) {
+            if ($line -match '^## ') { break }
+            if ($line -match '^- ') { $sectionBullets += $line }
+          }
+          if ($sectionBullets.Count -eq 0) {
+            throw "WHATS-NEW.md section '## $packageVersion' contains no '- ' bullets."
+          }
           $notes = @(
+            "## What's new in v$packageVersion",
+            ""
+          ) + $sectionBullets + @(
+            "",
             "## Unsigned prerelease",
             "",
             "These Windows executables are intentionally **unsigned**. Windows will show **Unknown publisher** and may display a Microsoft Defender SmartScreen warning. This is not the signed stable release.",
