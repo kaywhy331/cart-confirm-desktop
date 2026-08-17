@@ -536,6 +536,91 @@ chrome.alarms.create(BACKGROUND_TICK_ALARM, { periodInMinutes: 0.5 });
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === BACKGROUND_TICK_ALARM) void broadcastBackgroundTick();
 });
+
+// Foreground flash checks: hidden pages may finish loading without fully
+// rendering their stock UI, so after a background mission tab completes a
+// load it is briefly pulled forward — loaded → checking — scanned at full
+// speed by the existing visibilitychange hook, then the user's previous tab
+// is restored (waiting/ready comes from the scan's own events). Flashes are
+// serialized, spaced, and never steal focus from a cart or checkout page or
+// while a purchase activation owns the foreground.
+const FOREGROUND_CHECK_SPACING_MS = 4_000;
+const FOREGROUND_CHECK_DWELL_MS = 2_000;
+const foregroundCheckState = {
+  queue: [],
+  queuedTabs: new Set(),
+  running: false,
+  lastFlashAt: 0,
+  lastPurchaseActivationAt: 0
+};
+
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (changeInfo.status === "complete") void queueForegroundCheck(tab);
+});
+
+async function queueForegroundCheck(tab) {
+  if (!tab || tab.active || !Number.isInteger(tab.id)) return;
+  if (foregroundCheckState.queuedTabs.has(tab.id)) return;
+  const url = String(tab.url || tab.pendingUrl || "");
+  const retailer = Retailers.detectRetailer(url);
+  if (!retailer || OpenRequestTabs.purchaseStageTab(retailer, url)) return;
+  const sku = Retailers.extractSkuFromUrl(retailer, url);
+  if (!sku) return;
+  const config = await discoverConfig(false);
+  if (!config || config.monitoringPaused) return;
+  const product = (config.products || []).find((candidate) => (
+    candidate?.enabled && candidate.retailer === retailer && candidate.sku === sku
+  ));
+  if (!product) return;
+  foregroundCheckState.queuedTabs.add(tab.id);
+  foregroundCheckState.queue.push(tab.id);
+  void drainForegroundChecks();
+}
+
+async function drainForegroundChecks() {
+  if (foregroundCheckState.running) return;
+  foregroundCheckState.running = true;
+  try {
+    while (foregroundCheckState.queue.length) {
+      const wait = FOREGROUND_CHECK_SPACING_MS - (Date.now() - foregroundCheckState.lastFlashAt);
+      if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
+      const tabId = foregroundCheckState.queue.shift();
+      foregroundCheckState.queuedTabs.delete(tabId);
+      await runForegroundCheck(tabId).catch(() => {});
+    }
+  } finally {
+    foregroundCheckState.running = false;
+  }
+}
+
+async function runForegroundCheck(tabId) {
+  // A purchase flow owns the foreground; watcher flashes stand down.
+  if (Date.now() - foregroundCheckState.lastPurchaseActivationAt < 20_000) return;
+  let tab;
+  try { tab = await chrome.tabs.get(tabId); } catch { return; }
+  if (tab.active) return;
+  let tabWindow;
+  try { tabWindow = await chrome.windows.get(tab.windowId); } catch { return; }
+  // Activating inside a minimized window still renders nothing.
+  if (tabWindow.state === "minimized") return;
+  let previous = null;
+  try { [previous] = await chrome.tabs.query({ active: true, windowId: tab.windowId }); } catch { previous = null; }
+  const previousUrl = String(previous?.url || "");
+  if (previous && OpenRequestTabs.purchaseStageTab(Retailers.detectRetailer(previousUrl), previousUrl)) return;
+  try { await chrome.tabs.update(tabId, { active: true }); } catch { return; }
+  foregroundCheckState.lastFlashAt = Date.now();
+  await new Promise((resolve) => setTimeout(resolve, FOREGROUND_CHECK_DWELL_MS));
+  // If a purchase activation or the user took the foreground mid-dwell,
+  // leave the tabs exactly where they are.
+  if (Date.now() - foregroundCheckState.lastPurchaseActivationAt < FOREGROUND_CHECK_DWELL_MS + 500) return;
+  if (!previous || !Number.isInteger(previous.id)) return;
+  try {
+    const [current] = await chrome.tabs.query({ active: true, windowId: tab.windowId });
+    if (current?.id === tabId) await chrome.tabs.update(previous.id, { active: true });
+  } catch {
+    // The previous tab may have closed; the flashed tab simply stays active.
+  }
+}
 let openRequestsInFlight = false;
 let openRequestDrainUntil = 0;
 let openRequestDrainTask = null;
@@ -579,6 +664,7 @@ async function activatePurchaseTab(sender) {
     const tab = await chrome.tabs.get(tabId);
     if (!tab.active) await chrome.tabs.update(tabId, { active: true });
     await chrome.windows.update(tab.windowId, { focused: true });
+    foregroundCheckState.lastPurchaseActivationAt = Date.now();
     return { ok: true, activated: !tab.active };
   } catch {
     return { ok: false, reason: "tab-activation-failed" };

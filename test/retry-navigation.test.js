@@ -234,3 +234,30 @@ test("hidden tabs get an alarm-driven heartbeat that beats Chrome timer throttli
   assert.match(tick, /if \(!navigated\) scheduleScan\(0\);/);
 });
 
+test("background refreshes get a serialized foreground flash check that always yields back", () => {
+  const root = path.join(__dirname, "..");
+  const background = fs.readFileSync(path.join(root, "extension", "background.js"), "utf8");
+
+  // A completed load in a hidden mission tab queues a flash; unrelated tabs,
+  // purchase-stage pages, and paused monitoring never qualify.
+  assert.match(background, /changeInfo\.status === "complete"\) void queueForegroundCheck\(tab\)/);
+  assert.match(background, /if \(!retailer \|\| OpenRequestTabs\.purchaseStageTab\(retailer, url\)\) return;/);
+  assert.match(background, /candidate\?\.enabled && candidate\.retailer === retailer && candidate\.sku === sku/);
+  assert.match(background, /if \(!config \|\| config\.monitoringPaused\) return;/);
+
+  // Flashes are serialized and spaced, skip minimized windows, stand down for
+  // purchase activations, and restore the user's previous tab only when the
+  // flashed tab is still the active one.
+  assert.match(background, /FOREGROUND_CHECK_SPACING_MS = 4_000/);
+  assert.match(background, /FOREGROUND_CHECK_DWELL_MS = 2_000/);
+  assert.match(background, /tabWindow\.state === "minimized"\) return;/);
+  assert.match(background, /lastPurchaseActivationAt < 20_000\) return;/);
+  assert.match(background, /purchaseStageTab\(Retailers\.detectRetailer\(previousUrl\), previousUrl\)\) return;/);
+  assert.match(background, /if \(current\?\.id === tabId\) await chrome\.tabs\.update\(previous\.id, \{ active: true \}\)/);
+  // The purchase-flow activation stamps the shared stand-down clock.
+  assert.match(background, /foregroundCheckState\.lastPurchaseActivationAt = Date\.now\(\);\s*\n\s*return \{ ok: true, activated: !tab\.active \};/);
+
+  // Hidden tabs also hold a shared web lock to escape intensive throttling.
+  assert.match(source, /navigator\.locks\.request\("cart-confirm-keepalive", \{ mode: "shared" \}/);
+});
+

@@ -2289,6 +2289,18 @@
     attributeFilter: ["disabled", "aria-disabled", "aria-hidden", "aria-label", "hidden", "href", "style", "value"]
   });
 
+  // Holding a shared web lock exempts this tab from Chrome's intensive timer
+  // throttling, so hidden-tab timers keep about one-second granularity
+  // instead of one firing per minute. The alarm heartbeat remains the
+  // backstop for browsers that ignore the exemption.
+  try {
+    if (navigator.locks?.request) {
+      void navigator.locks.request("cart-confirm-keepalive", { mode: "shared" }, () => new Promise(() => {}));
+    }
+  } catch {
+    // Best-effort accelerant only.
+  }
+
   void (async () => {
     await refreshConfig(true);
     if (!config) return;
