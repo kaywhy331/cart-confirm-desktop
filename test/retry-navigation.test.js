@@ -206,3 +206,31 @@ test("unknown high-demand pages freeze without refresh or queue-token handling",
   assert.match(scan, /will not refresh, replay, or manipulate a queue token/);
   assert.doesNotMatch(scan.match(/if \(highDemandUnknown\)[\s\S]*?\} else if \(kind === "product"\)/)?.[0] || "", /location\.(?:assign|replace|reload)/);
 });
+
+test("hidden tabs get an alarm-driven heartbeat that beats Chrome timer throttling", () => {
+  const root = path.join(__dirname, "..");
+  const background = fs.readFileSync(path.join(root, "extension", "background.js"), "utf8");
+  const manifest = JSON.parse(fs.readFileSync(path.join(root, "extension", "manifest.json"), "utf8"));
+
+  // The service worker owns the cadence: alarms fire regardless of tab
+  // visibility and ping every store tab twice a minute.
+  assert.ok(manifest.permissions.includes("alarms"), "manifest must grant the alarms permission");
+  assert.match(background, /chrome\.alarms\.create\(BACKGROUND_TICK_ALARM, \{ periodInMinutes: 0\.5 \}\)/);
+  assert.match(background, /chrome\.tabs\.sendMessage\(tab\.id, \{ type: "CART_CONFIRM_BACKGROUND_TICK" \}\)/);
+
+  // Every navigation retry is armed through the tracked helper so the
+  // heartbeat can fire it once overdue; no site may bypass the bookkeeping.
+  assert.doesNotMatch(source.replace(/function armNavigationRetry[\s\S]*?\n  \}/, ""), /retryTimer = setTimeout/);
+  assert.match(source, /function armNavigationRetry\(run, delayMs\)/);
+  assert.match(source, /function fireOverdueNavigationRetry\(graceMs = 1_000\)/);
+  const cleared = section("function clearNavigationRetry", "function clearClaimRetry");
+  assert.match(cleared, /retryDue = null;/);
+
+  // The tick only intervenes in hidden tabs: overdue navigation first,
+  // otherwise an immediate scan; visible tabs are already unthrottled.
+  const tick = section('if (message?.type === "CART_CONFIRM_BACKGROUND_TICK")', 'if (message?.type === "CART_CONFIRM_QUEUE_CAPTURE_CHANGED")');
+  assert.match(tick, /document\.visibilityState !== "visible"/);
+  assert.match(tick, /const navigated = fireOverdueNavigationRetry\(\);/);
+  assert.match(tick, /if \(!navigated\) scheduleScan\(0\);/);
+});
+
