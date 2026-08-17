@@ -6,6 +6,9 @@ update dialog shows exactly these bullets. Keep every entry short, plain, and
 about what the user will notice — one bullet per change, no internals.
 Publishing fails if the version being released has no section here.
 
+## 3.6.9
+- Fixed: after one item was secured in the cart, the next restocked item could stay stuck at "Waiting" and never get added
+
 ## 3.6.8
 - The Update button now shows short, plain-language bullet points about what changed
 - No more wall of technical text when deciding whether to update

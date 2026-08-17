@@ -513,3 +513,38 @@ test("different retailer lanes can proceed while one retailer is held", () => {
   assert.equal(State.claim(state, target, "tab:1", 1_000).ok, true);
   assert.equal(State.claim(state, amazon, "tab:2", 1_001).ok, true);
 });
+
+test("a stranded confirmed cart mission can be finalized to free the store lane", () => {
+  const cartA = { id: "target:1111111111", retailer: "target", action: "cart" };
+  const cartB = { id: "target:2222222222", retailer: "target", action: "cart" };
+  const state = State.createState("run", 1_000);
+  State.claim(state, cartA, "tab:A", 1_000);
+  State.beginAddAction(state, cartA, "tab:A", 1_100);
+  State.markAddAction(state, cartA, "tab:A", "clicked", 1_200);
+  State.markAddAction(state, cartA, "tab:A", "confirmed", 1_300);
+
+  // Without completion bookkeeping the held lane blocks B indefinitely, even
+  // after a state reload half an hour later.
+  const blocked = State.claim(state, cartB, "tab:B", 1_000 + 30 * 60_000);
+  assert.equal(blocked.reason, "store-busy");
+  assert.equal(blocked.held, true);
+  assert.equal(blocked.blockingPhase, "cart-confirmed");
+  assert.equal(blocked.activeProductId, cartA.id);
+
+  // The heal is exactly the interrupted flow's own completion call: for a
+  // cart-action mission, addAction "confirmed" IS the achieved deliverable.
+  assert.equal(State.complete(state, cartA, 1_000 + 30 * 60_000 + 1).ok, true);
+  assert.equal(State.claim(state, cartB, "tab:B", 1_000 + 30 * 60_000 + 2).ok, true);
+
+  // A held checkout/review mission is NOT completable this way — complete()
+  // itself refuses without a submission or manual-outcome intent.
+  const checkoutA = { id: "walmart:333333333", retailer: "walmart", action: "checkout" };
+  const other = State.createState("run", 1_000);
+  State.claim(other, checkoutA, "tab:A", 1_000);
+  State.beginAddAction(other, checkoutA, "tab:A", 1_100);
+  State.markAddAction(other, checkoutA, "tab:A", "clicked", 1_200);
+  State.markAddAction(other, checkoutA, "tab:A", "confirmed", 1_300);
+  assert.equal(State.complete(other, checkoutA, 1_400).ok, false);
+  assert.equal(State.complete(other, checkoutA, 1_400).reason, "submission-intent-missing");
+});
+
