@@ -65,3 +65,27 @@ test("the admin workflow rejects a campaign for another product", async () => {
     })
   }), /does not match this mission's item ID/);
 });
+
+test("every automation open path prefers the mission's affiliate link", () => {
+  const root = path.join(__dirname, "..");
+  const main = fs.readFileSync(path.join(root, "main.js"), "utf8");
+  const background = fs.readFileSync(path.join(root, "extension", "background.js"), "utf8");
+  const content = fs.readFileSync(path.join(root, "extension", "content.js"), "utf8");
+  const html = fs.readFileSync(path.join(root, "src", "index.html"), "utf8");
+
+  // The companion config hands the extension a validated affiliate-first URL.
+  assert.match(main, /openUrl: missionOpenUrl\(product\)/);
+  // Desktop-driven opens (default, plan fan-out, companion bootstrap) are
+  // affiliate-first, and an affiliate open still counts as product entry.
+  assert.match(main, /options\.urlOverride \|\| missionOpenUrl\(product\)/);
+  assert.match(main, /openExternalRetailer\(missionOpenUrl\(product\), \{ \.\.\.openOptions/);
+  assert.equal((main.match(/openExternalRetailer\(missionOpenUrl\(bootstrap\)/g) || []).length, 2);
+  assert.match(main, /!\[product\.productUrl, missionOpenUrl\(product\)\]\.includes\(requested\.parsed\.href\)/);
+  // The extension navigates product pages with the same priority.
+  assert.equal((content.match(/location\.assign\(product\.openUrl \|\| product\.productUrl\)/g) || []).length, 3);
+  assert.doesNotMatch(content, /location\.assign\(product\.productUrl\)/);
+  assert.match(background, /url: product\.openUrl \|\| product\.productUrl/);
+  assert.match(background, /tabs\.create\(\{ url: product\.openUrl \|\| product\.productUrl, active \}\)/);
+  // The mission form documents the affiliate-first behavior.
+  assert.match(html, /Preferred whenever Cart Confirm opens this product/);
+});

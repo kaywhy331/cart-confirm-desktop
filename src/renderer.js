@@ -1028,6 +1028,17 @@ function buildEditCard(product, options = {}) {
       updateMissionOrderTotal(card);
       const detectedSku = extractSku(detected, url);
       if (detectedSku) field(card, "sku").value = detectedSku;
+      // A pasted link that carries tracking parameters is a full affiliate
+      // link. Saving strips the product link down to its canonical form, so
+      // preserve the full link as the mission's affiliate open link.
+      try {
+        const parsed = new URL(url.trim());
+        if (parsed.search && detectedSku && !field(card, "affiliateOpenUrl").value.trim()) {
+          field(card, "affiliateOpenUrl").value = parsed.href;
+        }
+      } catch {
+        // Invalid URLs are surfaced by the product link field's own validation.
+      }
     }
     if (!field(card, "title").value.trim()) {
       field(card, "title").value = deriveTitleFromUrl(url);

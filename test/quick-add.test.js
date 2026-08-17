@@ -70,3 +70,22 @@ test("Quick add accepts only present, finite, positive prices", () => {
     assert.equal(hasUsablePrice(value), false);
   }
 });
+
+test("Quick add captures the full affiliate URL alongside the canonical product link", () => {
+  const affiliate = "https://www.target.com/p/pokemon-booster-bundle/-/A-1011209279?nrtv_cid=8k7bjebavog09&clkid=63477bc3&afid=Howl%20Technologies%2C%20Inc.";
+  const decorated = inspect(`
+    <h1 data-test="product-title">Pokémon Booster Bundle</h1>
+    <div data-test="product-price">$34.99</div>
+    <button id="addToCartButtonOrTextIdFor1011209279">Add to cart</button>
+  `, affiliate);
+  assert.equal(decorated.productUrl, "https://www.target.com/p/pokemon-booster-bundle/-/A-1011209279");
+  assert.equal(decorated.affiliateOpenUrl, affiliate);
+
+  const plain = inspect(`
+    <h1 data-test="product-title">Pokémon Booster Bundle</h1>
+    <div data-test="product-price">$34.99</div>
+    <button id="addToCartButtonOrTextIdFor1011209279">Add to cart</button>
+  `, "https://www.target.com/p/pokemon-booster-bundle/-/A-1011209279");
+  assert.equal(plain.affiliateOpenUrl, "");
+});
+

@@ -32,6 +32,19 @@
     return cleanTitle(meta?.getAttribute("content") || doc.title);
   }
 
+  function affiliateCaptureUrl(value) {
+    // A product page opened through an affiliate link carries its tracking
+    // parameters in the query string. Capture the full HTTPS URL so the
+    // mission keeps affiliate credit; the canonical query-free URL remains
+    // the mission's base product link.
+    try {
+      const url = new URL(String(value || ""));
+      return url.protocol === "https:" && url.search ? url.href : "";
+    } catch {
+      return "";
+    }
+  }
+
   function canonicalProductUrl(retailer, sku, value) {
     if (retailer === "walmart") return `https://www.walmart.com/ip/${sku}`;
     if (retailer === "amazon") return `https://www.amazon.com/dp/${sku}`;
@@ -55,6 +68,7 @@
       sku,
       title: pageTitle(doc, retailer, Retailers) || `${adapter.label} ${sku}`,
       productUrl: canonicalProductUrl(retailer, sku, value),
+      affiliateOpenUrl: affiliateCaptureUrl(value),
       price: hasUsablePrice(offer?.price) ? Math.round(price * 100) / 100 : null,
       seller: String(offer?.seller || "").replace(/\s+/g, " ").trim().slice(0, 160),
       firstParty: offer?.firstParty === true,
@@ -63,7 +77,7 @@
     };
   }
 
-  const api = Object.freeze({ canonicalProductUrl, cleanTitle, hasUsablePrice, inspectProductPage, pageTitle });
+  const api = Object.freeze({ affiliateCaptureUrl, canonicalProductUrl, cleanTitle, hasUsablePrice, inspectProductPage, pageTitle });
   globalThis.CartConfirmQuickAdd = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;
 })();
