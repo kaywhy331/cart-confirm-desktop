@@ -21,6 +21,8 @@
   const quantityRechecks = new Map();
   const missingCartLineSince = new Map();
   const QUANTITY_RECHECK_LIMIT = 8;
+  const PARTIAL_RAISE_ATTEMPT_LIMIT = 4;
+  const partialRaiseAttempts = new Map();
   const CART_LINE_CONFIRMATION_WAIT_MS = 10_000;
   const ADD_SETTLE_MS = 5_000;
   const TARGET_CART_LINE_CONFIRMATION_WAIT_MS = 2_500;
@@ -361,9 +363,22 @@
     return Math.min(...limits);
   }
 
+  function acceptsPartialQuantity(product) {
+    return product?.acceptPartial !== false;
+  }
+
   async function requireQuantityWithinLimits(product) {
     const effectiveLimit = configuredQuantityLimit(product);
     if (product.quantity <= effectiveLimit) return true;
+    if (acceptsPartialQuantity(product) && effectiveLimit >= 1) {
+      void send("automation-status", product, {
+        eligible: true,
+        reason: "quantity-limit",
+        quantity: effectiveLimit,
+        message: `${adapter.label} limits this item to ${effectiveLimit}, below configured quantity ${product.quantity}. Partial quantity is accepted, so Cart Confirm will secure ${effectiveLimit}.`
+      }, `quantity-partial-pre:${product.id}:${product.quantity}:${effectiveLimit}`, Number.MAX_SAFE_INTEGER);
+      return true;
+    }
     await send("automation-blocked", product, {
       reason: "quantity-limit",
       quantity: product.quantity,
@@ -506,6 +521,7 @@
   async function completeProduct(product) {
     clearRetry();
     quantityRechecks.delete(product.id);
+    partialRaiseAttempts.delete(product.id);
     missingCartLineSince.delete(product.id);
     return runtimeMessage({ type: "CART_CONFIRM_COMPLETE_PRODUCT", productId: product.id });
   }
@@ -808,15 +824,48 @@
   }
 
   async function ensureQuantity(product, line) {
-    const desired = product.quantity;
-    if (desired > configuredQuantityLimit(product)) {
+    const acceptPartial = acceptsPartialQuantity(product);
+    const limit = configuredQuantityLimit(product);
+    if (!acceptPartial && product.quantity > limit) {
       return { ok: false, blocked: true, reason: "quantity-limit" };
     }
-    if (line.quantity === desired) return { ok: true };
+    const desired = acceptPartial ? Math.max(1, Math.min(product.quantity, limit)) : product.quantity;
+    if (line.quantity === desired) {
+      partialRaiseAttempts.delete(product.id);
+      return { ok: true, quantity: desired, partial: desired < product.quantity };
+    }
+    // Partial settling only ever accepts a smaller quantity that is already
+    // visibly secured on the cart line after raising it has been attempted;
+    // it never invents a quantity and never settles above the desired count.
+    const settled = () => {
+      if (!acceptPartial || !Number.isInteger(line.quantity) || line.quantity < 1 || line.quantity >= desired) return null;
+      partialRaiseAttempts.delete(product.id);
+      return { ok: true, quantity: line.quantity, partial: true };
+    };
+    const pendingOrSettle = () => {
+      const attempts = (partialRaiseAttempts.get(product.id) || 0) + 1;
+      partialRaiseAttempts.set(product.id, attempts);
+      if (attempts > PARTIAL_RAISE_ATTEMPT_LIMIT) {
+        const settle = settled();
+        if (settle) return settle;
+      }
+      return { ok: false, pending: true, reason: "quantity-unavailable" };
+    };
     const { select, input, increase, decrease } = line.controls || {};
 
     if (select) {
-      const option = [...select.options].find((candidate) => Number.parseInt(candidate.value || candidate.textContent, 10) === desired);
+      const optionValue = (candidate) => Number.parseInt(candidate.value || candidate.textContent, 10);
+      let option = [...select.options].find((candidate) => optionValue(candidate) === desired);
+      if (!option && acceptPartial) {
+        const currentQuantity = Number.isInteger(line.quantity) ? line.quantity : 0;
+        option = [...select.options]
+          .filter((candidate) => {
+            const value = optionValue(candidate);
+            return Number.isInteger(value) && value >= 1 && value < desired && value > currentQuantity;
+          })
+          .sort((a, b) => optionValue(b) - optionValue(a))[0];
+        if (!option) return settled() || { ok: false, reason: "quantity-unavailable" };
+      }
       if (!option) return { ok: false, reason: "quantity-unavailable" };
       if (!await authorizeQuantityAction(product, "quantity-change")) return { ok: false, blocked: true };
       if (!await automationStillActive(product)) return { ok: false, blocked: true };
@@ -824,7 +873,7 @@
       select.dispatchEvent(new Event("input", { bubbles: true }));
       select.dispatchEvent(new Event("change", { bubbles: true }));
       await sleep(900);
-      return { ok: false, pending: true, reason: "quantity-unavailable" };
+      return pendingOrSettle();
     }
 
     if (input) {
@@ -833,20 +882,20 @@
       setNativeValue(input, String(desired));
       input.blur?.();
       await sleep(900);
-      return { ok: false, pending: true, reason: "quantity-unavailable" };
+      return pendingOrSettle();
     }
 
     if (Number.isInteger(line.quantity) && line.quantity < desired && increase) {
       if (!await authorizeQuantityAction(product, "quantity-increase")) return { ok: false, blocked: true };
       await clickAction(increase, product);
-      return { ok: false, pending: true, reason: "quantity-unavailable" };
+      return pendingOrSettle();
     }
     if (Number.isInteger(line.quantity) && line.quantity > desired && decrease) {
       if (!await authorizeQuantityAction(product, "quantity-decrease")) return { ok: false, blocked: true };
       await clickAction(decrease, product);
       return { ok: false, pending: true, reason: "quantity-unavailable" };
     }
-    return { ok: false, reason: "quantity-unavailable" };
+    return settled() || { ok: false, reason: "quantity-unavailable" };
   }
 
   async function handleChallenge(product) {
@@ -1566,28 +1615,44 @@
       }
     }
 
+    const securedQuantity = Number.isInteger(quantity.quantity) ? quantity.quantity : product.quantity;
+    const partialQuantity = quantity.partial === true && securedQuantity < product.quantity;
     await send("quantity-updated", product, {
-      quantity: product.quantity,
+      quantity: securedQuantity,
       price: safeLine.price,
       seller: safeLine.seller,
       firstParty: true,
       eligible: true,
-      reason: "eligible"
-    }, `quantity-confirmed:${product.id}:${product.quantity}`, 10_000);
+      reason: "eligible",
+      ...(partialQuantity ? { message: `${adapter.label} allowed only ${securedQuantity} of the configured ${product.quantity}; partial quantity accepted.` } : {})
+    }, `quantity-confirmed:${product.id}:${securedQuantity}`, 10_000);
     const cartReported = await send("cart-item-confirmed", product, {
-      quantity: product.quantity,
+      quantity: securedQuantity,
       price: safeLine.price,
       seller: safeLine.seller,
       firstParty: true,
       eligible: true,
-      reason: "eligible"
-    }, `cart-confirmed:${product.id}:${product.quantity}`, 10_000);
+      reason: "eligible",
+      ...(partialQuantity ? { message: `The exact ${adapter.label} product is in the cart with ${securedQuantity} of ${product.quantity} (partial quantity accepted).` } : {})
+    }, `cart-confirmed:${product.id}:${securedQuantity}`, 10_000);
 
     if (!config.automationEnabled) return;
     if (product.action === "cart") {
       if (!cartReported.ok) return;
       const completed = await completeProduct(product);
       if (completed.ok) clearActiveProduct(product);
+      return;
+    }
+
+    // Checkout automation verifies the exact configured quantity end to end,
+    // so a partially filled line is handed to the operator instead of being
+    // pushed through checkout where the safety chain would block it opaquely.
+    if (partialQuantity) {
+      await send("automation-blocked", product, {
+        reason: "manual-action-required",
+        quantity: securedQuantity,
+        message: `Only ${securedQuantity} of ${product.quantity} could be secured in the cart. The cart is ready — complete the purchase manually.`
+      }, `partial-quantity-hold:${product.id}:${securedQuantity}`, Number.MAX_SAFE_INTEGER);
       return;
     }
 
