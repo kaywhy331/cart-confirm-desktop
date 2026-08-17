@@ -11,6 +11,7 @@ importScripts(
 );
 
 const Traffic = globalThis.CartConfirmTraffic;
+const Retailers = globalThis.CartConfirmRetailers;
 const ScheduleGate = globalThis.CartConfirmScheduleGate;
 const AutomationState = globalThis.CartConfirmAutomationState;
 const TabContext = globalThis.CartConfirmTabContext;
@@ -532,10 +533,18 @@ async function broadcastBackgroundTick() {
   )));
 }
 
-chrome.alarms.create(BACKGROUND_TICK_ALARM, { periodInMinutes: 0.5 });
-chrome.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name === BACKGROUND_TICK_ALARM) void broadcastBackgroundTick();
-});
+// Guarded: while a desktop update is replacing the unpacked extension on
+// disk, a restarting service worker can execute this new file under the old
+// cached manifest, where the alarms permission does not exist yet. A bare
+// chrome.alarms call would throw at the top level and kill the entire worker
+// — no hellos, no open-request claims — until the extension reloads. The
+// heartbeat is an enhancement, so it degrades instead of destroying startup.
+if (chrome.alarms?.create && chrome.alarms?.onAlarm) {
+  chrome.alarms.create(BACKGROUND_TICK_ALARM, { periodInMinutes: 0.5 });
+  chrome.alarms.onAlarm.addListener((alarm) => {
+    if (alarm.name === BACKGROUND_TICK_ALARM) void broadcastBackgroundTick();
+  });
+}
 
 // Foreground flash checks: hidden pages may finish loading without fully
 // rendering their stock UI, so after a background mission tab completes a
