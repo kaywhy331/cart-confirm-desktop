@@ -15,7 +15,7 @@ const http = require("node:http");
 const path = require("node:path");
 const crypto = require("node:crypto");
 const { spawn } = require("node:child_process");
-const { checkForUpdate, downloadUpdate } = require("./lib/app-update");
+const { checkForUpdate, downloadUpdate, userFacingReleaseNotes } = require("./lib/app-update");
 
 const {
   DEFAULT_SETTINGS,
@@ -617,7 +617,8 @@ function pauseAutomationForUpdate() {
 
 function updateApprovalDetail(plan) {
   const unsigned = plan.prerelease || plan.tagName.startsWith("unsigned-");
-  const releaseNotes = plan.releaseNotes || "No patch notes were provided.";
+  const releaseNotes = userFacingReleaseNotes(plan.releaseNotes)
+    || "A newer Cart Confirm version is ready. No change summary was provided for this release.";
   const installDetail = unsigned
     ? "This release is intentionally unsigned. Windows may show Unknown publisher or a Microsoft Defender SmartScreen warning. If you continue, Cart Confirm will download the official GitHub Setup asset, verify its exact SHA-256 checksum, install it, close this version, and relaunch."
     : "Cart Confirm will download the official GitHub Setup asset, verify its exact SHA-256 checksum, install it, close this version, and relaunch.";
