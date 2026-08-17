@@ -510,6 +510,32 @@ const RETAILER_TAB_PATTERNS = Object.freeze({
   walmart: ["https://walmart.com/*", "https://*.walmart.com/*"],
   amazon: ["https://amazon.com/*", "https://*.amazon.com/*"]
 });
+
+// Chrome throttles content-script timers in hidden tabs, which starves the
+// watcher scans and stock-refresh navigations of background missions. Alarms
+// fire in the service worker regardless of tab visibility, so a 30-second
+// heartbeat pings every store tab; hidden tabs run their overdue navigation
+// or an immediate scan, and visible tabs ignore the tick.
+const BACKGROUND_TICK_ALARM = "cart-confirm-background-tick";
+
+async function broadcastBackgroundTick() {
+  let tabs = [];
+  try {
+    tabs = await chrome.tabs.query({ url: Object.values(RETAILER_TAB_PATTERNS).flat() });
+  } catch {
+    return;
+  }
+  await Promise.allSettled(tabs.map((tab) => (
+    Number.isInteger(tab?.id)
+      ? chrome.tabs.sendMessage(tab.id, { type: "CART_CONFIRM_BACKGROUND_TICK" })
+      : Promise.resolve()
+  )));
+}
+
+chrome.alarms.create(BACKGROUND_TICK_ALARM, { periodInMinutes: 0.5 });
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === BACKGROUND_TICK_ALARM) void broadcastBackgroundTick();
+});
 let openRequestsInFlight = false;
 let openRequestDrainUntil = 0;
 let openRequestDrainTask = null;

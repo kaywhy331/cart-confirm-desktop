@@ -37,6 +37,12 @@
   let catalogCaptureTimer = null;
   let catalogCaptureFingerprint = "";
   let retryTimer = null;
+  // Chrome clamps content-script timers in hidden tabs (down to one firing a
+  // minute after five throttled minutes), which starves both scans and the
+  // watcher's stock-refresh navigations until the tab is clicked. The pending
+  // navigation's deadline and callback are tracked so the service worker's
+  // alarm heartbeat can fire overdue work immediately in background tabs.
+  let retryDue = null;
   let retryReservationId = "";
   let retryReservationProductId = "";
   let claimRetryTimer = null;
@@ -447,9 +453,28 @@
     return false;
   }
 
+  function armNavigationRetry(run, delayMs) {
+    retryDue = { at: Date.now() + delayMs, run };
+    retryTimer = setTimeout(() => {
+      retryDue = null;
+      void run();
+    }, delayMs);
+  }
+
+  function fireOverdueNavigationRetry(graceMs = 1_000) {
+    if (!retryTimer || !retryDue || Date.now() < retryDue.at + graceMs) return false;
+    clearTimeout(retryTimer);
+    retryTimer = null;
+    const { run } = retryDue;
+    retryDue = null;
+    void run();
+    return true;
+  }
+
   function clearNavigationRetry() {
     clearTimeout(retryTimer);
     retryTimer = null;
+    retryDue = null;
     const reservationId = retryReservationId;
     const productId = retryReservationProductId;
     retryReservationId = "";
@@ -662,7 +687,7 @@
         if (traffic.reason === "not-ready" && traffic.waitMs > 0) {
           retryReservationId = reservationId;
           retryReservationProductId = product.id;
-          retryTimer = setTimeout(navigateWhenAllowed, traffic.waitMs);
+          armNavigationRetry(navigateWhenAllowed, traffic.waitMs);
         } else if (traffic.reason === "reservation-missing") {
           await scheduleRetry(product, "A throttled browser timer expired its traffic slot; reserving a fresh one.", destination, errorBackoff, cadence);
         } else if (["traffic-budget-exhausted", "traffic-overload"].includes(traffic.reason)) {
@@ -678,7 +703,7 @@
               Number(traffic.waitMs || 0),
               Number(traffic.retryAt || 0) - Date.now()
             );
-            retryTimer = setTimeout(() => {
+            armNavigationRetry(() => {
               retryTimer = null;
               void scheduleRetry(product, message, destination, errorBackoff, cadence);
             }, retryDelayMs);
@@ -707,7 +732,7 @@
       else if (destination === "cart") location.assign(adapter.cartUrl);
       else location.reload();
     };
-    retryTimer = setTimeout(navigateWhenAllowed, reservation.waitMs);
+    armNavigationRetry(navigateWhenAllowed, reservation.waitMs);
   }
 
   async function scheduleTargetPersistenceNavigation(product, message, destination, kind, delayMs = null) {
@@ -722,7 +747,7 @@
     const navigationDelayMs = delayMs === null
       ? targetPersistenceRetryMs()
       : Math.max(0, Number(delayMs) || 0);
-    retryTimer = setTimeout(async () => {
+    armNavigationRetry(async () => {
       retryTimer = null;
       if (!await automationStillActive(product) || adapter.securityChallenge(document)) return;
       if (!await requireStoreAction(product, kind, true)) return;
@@ -2220,6 +2245,15 @@
   }, true);
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+    if (message?.type === "CART_CONFIRM_BACKGROUND_TICK") {
+      // Active tabs are never timer-throttled; only hidden tabs need help.
+      if (document.visibilityState !== "visible") {
+        const navigated = fireOverdueNavigationRetry();
+        if (!navigated) scheduleScan(0);
+      }
+      sendResponse({ ok: true, hidden: document.visibilityState !== "visible" });
+      return false;
+    }
     if (message?.type === "CART_CONFIRM_QUEUE_CAPTURE_CHANGED") {
       void refreshConfig(true);
       sendResponse({ ok: true });
