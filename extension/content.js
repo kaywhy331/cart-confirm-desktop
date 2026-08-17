@@ -67,6 +67,22 @@
     return Math.max(250, Number(config?.blitzRetryDelayMs || DEFAULT_TARGET_PERSISTENCE_RETRY_MS));
   }
 
+  // Chrome throttles timers and rendering in inactive tabs, which can stall a
+  // time-critical purchase between Add, cart verification, and checkout. When
+  // this tab's mission qualifies for a real cart action, ask the browser to
+  // switch back to this exact tab and keep it forward. Throttled so a blocked
+  // workflow cannot fight the operator for focus more than once every ten
+  // seconds, and never used for Watch & alert only or Test observation.
+  let lastTabActivationRequestAt = 0;
+  function requestPurchaseTabActivation(product) {
+    if (!config?.automationEnabled || config.monitoringPaused) return;
+    if (!product?.enabled || !["cart", "review", "checkout"].includes(product.action)) return;
+    const now = Date.now();
+    if (now - lastTabActivationRequestAt < 10_000) return;
+    lastTabActivationRequestAt = now;
+    void runtimeMessage({ type: "CART_CONFIRM_ACTIVATE_TAB" });
+  }
+
   function runtimeMessage(message) {
     return new Promise((resolve) => {
       try {
@@ -1021,6 +1037,7 @@
     if (config.automationEnabled && product.enabled) {
       state = await productAutomationState(product);
       const addPhase = state.ok ? String(state.addAction?.phase || "idle") : "idle";
+      if (addPhase !== "idle") requestPurchaseTabActivation(product);
       if (addPhase === "clicked" && product.retailer === "target") {
         if (await recoverTargetAddError(product, state, error)) return;
         const settleRemaining = Math.max(
@@ -1186,6 +1203,7 @@
       reason: "retrying",
       message: `${adapter.label} qualified this exact item and is preparing the authorized Add to cart action now.`
     }, `qualified-processing:${product.id}:${offer.price}`, Number.MAX_SAFE_INTEGER);
+    requestPurchaseTabActivation(product);
 
     // A qualified purchase mission no longer needs its pending stock-refresh
     // navigation. Cancel both the tab timer and its durable traffic slot before
@@ -1397,6 +1415,8 @@
       }
       return;
     }
+
+    if (config.automationEnabled) requestPurchaseTabActivation(product);
 
     const inventory = adapter.cartInventory(document);
     const line = adapter.findLine(document, product);
@@ -1748,6 +1768,7 @@
     if (!config.automationEnabled || !["review", "checkout"].includes(product.action)) return;
     const state = await productAutomationState(product);
     if (!state.ok || state.completed) return;
+    requestPurchaseTabActivation(product);
     if (Number.isInteger(state.attempts)) attemptCache.set(product.id, state.attempts);
 
     const error = adapter.storeError(document);

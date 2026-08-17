@@ -88,6 +88,22 @@ test("inactive-tab mutation scans cannot be postponed forever", () => {
   );
 });
 
+test("a qualified purchase pulls its exact tab forward through checkout", () => {
+  const backgroundSource = fs.readFileSync(path.join(__dirname, "..", "extension", "background.js"), "utf8");
+  const activation = section("function requestPurchaseTabActivation", "function runtimeMessage");
+  assert.match(activation, /\["cart", "review", "checkout"\]\.includes\(product\.action\)/);
+  assert.match(activation, /lastTabActivationRequestAt < 10_000/);
+  assert.match(activation, /CART_CONFIRM_ACTIVATE_TAB/);
+  const qualified = section("qualified this exact item", "const prepared = await prepareAddAction");
+  assert.match(qualified, /requestPurchaseTabActivation\(product\)/);
+  const cartPage = section("async function handleCartPage", "async function handleCheckoutPage");
+  assert.match(cartPage, /requestPurchaseTabActivation\(product\)/);
+  const checkoutPage = section("async function handleCheckoutPage", "async function scan");
+  assert.match(checkoutPage, /requestPurchaseTabActivation\(product\)/);
+  assert.match(backgroundSource, /async function activatePurchaseTab[\s\S]*?config\?\.automationEnabled[\s\S]*?chrome\.tabs\.update\(tabId, \{ active: true \}\)[\s\S]*?chrome\.windows\.update\(tab\.windowId, \{ focused: true \}\)/);
+  assert.match(backgroundSource, /case "CART_CONFIRM_ACTIVATE_TAB":[\s\S]*?activatePurchaseTab\(sender\)/);
+});
+
 test("blocked and retrying workflows release only their pre-submit mission locks", () => {
   const sendEvent = section("async function send", "async function requestConfig");
   assert.match(sendEvent, /\["automation-blocked", "store-error", "retry-scheduled"\]\.includes\(eventType\)/);

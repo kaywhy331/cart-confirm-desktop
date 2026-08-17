@@ -539,6 +539,26 @@ async function sendCompanionHello(baseUrl, token, reason) {
   }
 }
 
+// A qualified purchase workflow runs inside its own tab, and Chrome throttles
+// timers and rendering in inactive tabs. Bringing the exact mission tab and
+// its window forward keeps Add, cart verification, and checkout at full
+// interactive speed from the moment an offer qualifies. Only an armed,
+// unpaused configuration may pull focus.
+async function activatePurchaseTab(sender) {
+  const tabId = sender?.tab?.id;
+  if (tabId === undefined) return { ok: false, reason: "no-tab" };
+  const config = await discoverConfig(false);
+  if (!config?.automationEnabled || config.monitoringPaused) return { ok: false, reason: "not-armed" };
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    if (!tab.active) await chrome.tabs.update(tabId, { active: true });
+    await chrome.windows.update(tab.windowId, { focused: true });
+    return { ok: true, activated: !tab.active };
+  } catch {
+    return { ok: false, reason: "tab-activation-failed" };
+  }
+}
+
 async function claimOpenRequest(config, id) {
   try {
     const response = await fetchWithTimeout(`${config.baseUrl}/open-requests/claim`, {
@@ -1353,6 +1373,8 @@ async function handleMessage(message, sender) {
     }
     case "CART_CONFIRM_CLEAR_TAB_PRODUCT_CONTEXT":
       return { ok: await clearTabProductContext(sender?.tab?.id) };
+    case "CART_CONFIRM_ACTIVATE_TAB":
+      return activatePurchaseTab(sender);
     case "CART_CONFIRM_CONSUME_DIRECT_ENTRY_CONTEXT":
       return consumeDirectEntryContext(sender, message.productId);
     case "CART_CONFIRM_EVENT":
