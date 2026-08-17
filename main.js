@@ -2054,6 +2054,19 @@ function createWindow() {
 function registerIpc() {
   ipcMain.handle("cart-assist:snapshot", () => snapshot());
   ipcMain.handle("cart-assist:install-update", () => installAvailableUpdate());
+  ipcMain.handle("cart-assist:check-for-updates", async () => {
+    if (!automaticUpdatesSupported()) {
+      return { status: "unavailable", currentVersion: app.getVersion() };
+    }
+    try {
+      const plan = await refreshUpdateAvailability();
+      return plan
+        ? { status: "available", version: plan.version }
+        : { status: "current", currentVersion: app.getVersion() };
+    } catch (error) {
+      return { status: "error", message: error.message || "The update check failed." };
+    }
+  });
 
   ipcMain.handle("cart-assist:save-settings", (_event, nextSettings) => {
     const wasArmed = settings.automationEnabled;

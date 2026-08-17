@@ -336,8 +336,11 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
     "Test lives in the header next to Autopilot"
   );
   assert.match(doc.getElementById("testButton").textContent, /Test all/);
-  assert.equal(doc.getElementById("updateNotice").hidden, true);
-  assert.equal(window.getComputedStyle(doc.getElementById("updateNotice")).display, "none");
+  // The updater control is always visible; without a pending update it
+  // offers a manual check instead of hiding.
+  assert.equal(doc.getElementById("updateNotice").hidden, false);
+  assert.equal(doc.getElementById("updateButton").textContent, "Check for updates");
+  assert.equal(doc.getElementById("updateAvailableText").textContent, "");
   pushUpdaterState({ status: "available", version: "3.6.0", revision: 2 });
   assert.equal(doc.getElementById("updateNotice").hidden, false);
   assert.equal(doc.getElementById("updateAvailableText").textContent, "v3.6.0 available");
@@ -362,7 +365,9 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   pushUpdate(updateSnapshot);
   assert.equal(doc.getElementById("updateAvailableText").textContent, "v3.7.0 available");
   pushUpdaterState({ status: "current", currentVersion: "3.7.0", revision: 6 });
-  assert.equal(doc.getElementById("updateNotice").hidden, true);
+  assert.equal(doc.getElementById("updateNotice").hidden, false);
+  assert.equal(doc.getElementById("updateAvailableText").textContent, "Up to date (v3.7.0)");
+  assert.equal(doc.getElementById("updateButton").textContent, "Check for updates");
   assert.equal(doc.getElementById("eligibilityRefreshIntervalSeconds").value, "2");
   assert.equal(doc.getElementById("watcherIntervalSeconds").value, "60");
   assert.equal(doc.getElementById("walmartQueueCaptureReloads").value, "0");

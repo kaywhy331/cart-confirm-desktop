@@ -196,6 +196,7 @@ let currentSnapshot = null;
 let messageTimer = null;
 let openRunInFlight = false;
 let updateOperationInFlight = false;
+let updateButtonMode = "check";
 let availableUpdateVersion = "";
 let lastUpdaterRevision = -1;
 let editingId = null; // null | product id | "new"
@@ -243,7 +244,7 @@ function renderUpdaterState(state = {}) {
   }
   const status = String(state.status || "idle");
   availableUpdateVersion = state.version ? String(state.version) : "";
-  const visible = Boolean(availableUpdateVersion) && [
+  const updateReady = Boolean(availableUpdateVersion) && [
     "checking",
     "available",
     "checksum",
@@ -254,8 +255,15 @@ function renderUpdaterState(state = {}) {
     "error"
   ].includes(status);
   updateOperationInFlight = ["checking", "checksum", "downloading", "verifying", "installing"].includes(status);
-  elements.updateNotice.hidden = !visible;
-  elements.updateAvailableText.textContent = visible ? `v${availableUpdateVersion} available` : "";
+  updateButtonMode = updateReady ? "install" : "check";
+  // The updater control stays visible so a newer build can always be pulled
+  // on demand instead of waiting for the six-hour background check.
+  elements.updateNotice.hidden = status === "unavailable";
+  elements.updateAvailableText.textContent = updateReady
+    ? `v${availableUpdateVersion} available`
+    : status === "current"
+      ? `Up to date${state.currentVersion ? ` (v${state.currentVersion})` : ""}`
+      : "";
   elements.updateButton.disabled = updateOperationInFlight;
 
   if (status === "checking") elements.updateButton.textContent = "Checking…";
@@ -263,12 +271,41 @@ function renderUpdaterState(state = {}) {
   else if (status === "downloading") elements.updateButton.textContent = `Downloading ${state.percent || 0}%`;
   else if (status === "verifying") elements.updateButton.textContent = "Verifying…";
   else if (status === "installing") elements.updateButton.textContent = "Installing…";
-  else elements.updateButton.textContent = "Update";
+  else elements.updateButton.textContent = updateReady ? "Update" : "Check for updates";
 
-  const label = visible && !updateOperationInFlight
+  const label = updateReady && !updateOperationInFlight
     ? `Update Cart Confirm to v${availableUpdateVersion}`
     : elements.updateButton.textContent;
   elements.updateButton.setAttribute("aria-label", label);
+}
+
+async function requestUpdateCheck() {
+  if (updateOperationInFlight) return;
+  renderUpdaterState({ status: "checking" });
+  try {
+    const result = await window.cartAssist.checkForUpdates();
+    if (result?.status === "available") {
+      renderUpdaterState({ status: "available", version: result.version });
+      setMessage(`Cart Confirm v${result.version} is ready to install.`, "success");
+    } else if (result?.status === "unavailable") {
+      renderUpdaterState({ status: "unavailable" });
+      setMessage("Automatic updates are available in the packaged 64-bit Windows app.", "warn");
+    } else if (result?.status === "error") {
+      renderUpdaterState({ status: "idle" });
+      setMessage(result.message || "The update check failed.", "error");
+    } else {
+      renderUpdaterState({ status: "current", currentVersion: result?.currentVersion || "" });
+      setMessage(
+        result?.currentVersion
+          ? `Cart Confirm v${result.currentVersion} is the newest published version.`
+          : "Cart Confirm is up to date.",
+        "success"
+      );
+    }
+  } catch (error) {
+    renderUpdaterState({ status: "idle" });
+    setMessage(error.message || "The update check failed.", "error");
+  }
 }
 
 async function requestAppUpdate() {
@@ -3523,7 +3560,10 @@ window.addEventListener("focus", () => {
 });
 
 elements.silenceAlarmButton.addEventListener("click", silenceAlarm);
-elements.updateButton.addEventListener("click", () => void requestAppUpdate());
+elements.updateButton.addEventListener("click", () => {
+  if (updateButtonMode === "install") void requestAppUpdate();
+  else void requestUpdateCheck();
+});
 elements.eventFilterButton.addEventListener("click", () => {
   eventFilterProductId = null;
   renderEvents(currentSnapshot?.events || []);
