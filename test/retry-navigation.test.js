@@ -60,7 +60,7 @@ test("qualified Add preparation is atomic and held post-mutation blockers are su
   const productPage = section("async function handleProductPage", "async function handleCartPage");
   const background = fs.readFileSync(path.join(__dirname, "..", "extension", "background.js"), "utf8");
   assert.match(productPage, /void send\("automation-status"[\s\S]*?qualified this exact item[\s\S]*?prepareAddAction\(product, offer\)/);
-  assert.match(productPage, /prepared\.held[\s\S]*?releaseLane: false[\s\S]*?will not preempt it or click this item/);
+  assert.match(productPage, /prepared\.held[\s\S]*?releaseLane: false[\s\S]*?will not preempt it/);
   assert.match(productPage, /authorizeAddClick\(product\)[\s\S]*?finalAutomationCheck: false/);
   assert.match(background, /async function prepareProductAddAction[\s\S]*?AutomationState\.claim[\s\S]*?AutomationState\.saveProof[\s\S]*?AutomationState\.beginAddAction[\s\S]*?writeAutomationState\(state\)/);
   assert.match(background, /case "CART_CONFIRM_PREPARE_ADD_ACTION"/);
@@ -231,7 +231,7 @@ test("hidden tabs get an alarm-driven heartbeat that beats Chrome timer throttli
   const tick = section('if (message?.type === "CART_CONFIRM_BACKGROUND_TICK")', 'if (message?.type === "CART_CONFIRM_QUEUE_CAPTURE_CHANGED")');
   assert.match(tick, /document\.visibilityState !== "visible"/);
   assert.match(tick, /const navigated = fireOverdueNavigationRetry\(\);/);
-  assert.match(tick, /if \(!navigated\) scheduleScan\(0\);/);
+  assert.match(tick, /if \(!navigated && !claimed\) scheduleScan\(0\);/);
 });
 
 test("background refreshes get a serialized foreground flash check that always yields back", () => {
@@ -288,5 +288,29 @@ test("the service worker survives a stale-manifest restart mid-update", () => {
   // top level and killing every listener registered after it.
   assert.match(background, /if \(chrome\.alarms\?\.create && chrome\.alarms\?\.onAlarm\) \{/);
   assert.doesNotMatch(background, /^chrome\.alarms\.create/m);
+});
+
+test("Stop everything and re-arming clear quiet-lane residue and held lanes retry", () => {
+  const root = path.join(__dirname, "..");
+  const main = fs.readFileSync(path.join(root, "main.js"), "utf8");
+
+  // Stale lastAutoOpenAt / quarantines otherwise suppress the Chrome fallback
+  // for minutes after Stop → re-arm, which reads as missions refusing to open.
+  assert.match(main, /function resetQuietProductState\(\) \{[\s\S]*?lastAvailability\.clear\(\);[\s\S]*?productFailures\.clear\(\);[\s\S]*?productQuarantineUntil\.clear\(\);[\s\S]*?storeFailureProducts\.clear\(\);[\s\S]*?lastAutoOpenAt\.clear\(\);[\s\S]*?\}/);
+  const stopAll = main.slice(main.indexOf('ipcMain.handle("cart-assist:stop-all"'));
+  assert.match(stopAll.slice(0, 800), /resetQuietProductState\(\);/);
+  const armBranch = main.slice(main.indexOf("if (normalized.automationEnabled && !wasArmed) {"));
+  assert.match(armBranch.slice(0, 400), /resetQuietProductState\(\);/);
+
+  // A verified offer facing a held purchase lane keeps re-checking instead of
+  // standing down forever, and the heartbeat fires overdue claim retries in
+  // hidden tabs so back-to-back ready products recover automatically.
+  const heldBranch = section('&& prepared.held) {', '} else if (["store-busy", "product-busy"].includes(prepared.reason)) {');
+  assert.match(heldBranch, /scheduleClaimRetry\(product, /);
+  assert.match(source, /function fireOverdueClaimRetry\(graceMs = 1_000\)/);
+  const tick = section('if (message?.type === "CART_CONFIRM_BACKGROUND_TICK")', 'if (message?.type === "CART_CONFIRM_QUEUE_CAPTURE_CHANGED")');
+  assert.match(tick, /fireOverdueClaimRetry\(\)/);
+  const clearClaim = section("function clearClaimRetry", "function fireOverdueClaimRetry");
+  assert.match(clearClaim, /claimRetryDue = null;/);
 });
 

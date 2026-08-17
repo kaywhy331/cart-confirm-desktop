@@ -46,6 +46,7 @@
   let retryReservationId = "";
   let retryReservationProductId = "";
   let claimRetryTimer = null;
+  let claimRetryDue = null;
   let claimRetryCount = 0;
   let queueCaptureTimer = null;
   let queueCaptureInFlight = false;
@@ -492,7 +493,18 @@
   function clearClaimRetry() {
     clearTimeout(claimRetryTimer);
     claimRetryTimer = null;
+    claimRetryDue = null;
     claimRetryCount = 0;
+  }
+
+  function fireOverdueClaimRetry(graceMs = 1_000) {
+    if (!claimRetryTimer || !claimRetryDue || Date.now() < claimRetryDue.at + graceMs) return false;
+    clearTimeout(claimRetryTimer);
+    claimRetryTimer = null;
+    const { run } = claimRetryDue;
+    claimRetryDue = null;
+    void run();
+    return true;
   }
 
   function clearRetry() {
@@ -590,8 +602,9 @@
       reason: "retrying",
       message: `${message} The verified offer is staying on this page and will retry its purchase claim in ${Math.ceil(delayMs / 1000)} second${delayMs >= 1_500 ? "s" : ""}; no stock-refresh slot is required.`
     }, `eligible-claim-wait:${product.id}`, Number.MAX_SAFE_INTEGER);
-    claimRetryTimer = setTimeout(async () => {
+    const run = async () => {
       claimRetryTimer = null;
+      claimRetryDue = null;
       if (!await automationStillActive(product)) {
         claimRetryCount = 0;
         return;
@@ -601,7 +614,9 @@
         return;
       }
       void scan();
-    }, delayMs);
+    };
+    claimRetryDue = { at: Date.now() + delayMs, run };
+    claimRetryTimer = setTimeout(run, delayMs);
   }
 
   async function scheduleRetry(product, message, destination = "reload", errorBackoff = false, cadence = "normal") {
@@ -1312,8 +1327,9 @@
           eligible: true,
           reason: "manual-action-required",
           releaseLane: false,
-          message: `${adapter.label}'s purchase lane is held by ${prepared.activeProductId || "another configured item"} after a possible cart mutation (${prepared.blockingPhase || "held state"}). Review that workflow manually; Autopilot will not preempt it or click this item.`
+          message: `${adapter.label}'s purchase lane is held by ${prepared.activeProductId || "another configured item"} after a possible cart mutation (${prepared.blockingPhase || "held state"}). Autopilot will not preempt it; this verified offer stays on the page and re-checks the lane automatically.`
         }, `claim-held:${product.id}:${prepared.activeProductId}:${prepared.blockingPhase}`, Number.MAX_SAFE_INTEGER);
+        await scheduleClaimRetry(product, `${adapter.label}'s purchase lane is finishing ${prepared.activeProductId || "another configured item"} first.`);
       } else if (["store-busy", "product-busy"].includes(prepared.reason)) {
         await offerReport;
         await scheduleClaimRetry(product, prepared.reason === "store-busy"
@@ -2249,7 +2265,8 @@
       // Active tabs are never timer-throttled; only hidden tabs need help.
       if (document.visibilityState !== "visible") {
         const navigated = fireOverdueNavigationRetry();
-        if (!navigated) scheduleScan(0);
+        const claimed = !navigated && fireOverdueClaimRetry();
+        if (!navigated && !claimed) scheduleScan(0);
       }
       sendResponse({ ok: true, hidden: document.visibilityState !== "visible" });
       return false;
