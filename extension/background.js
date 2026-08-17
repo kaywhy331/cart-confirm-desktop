@@ -1108,6 +1108,29 @@ function queueCaptureForConfiguredProduct(config, product) {
   return capture?.retailer === "walmart" ? capture : null;
 }
 
+// A cart-action mission whose add reached "confirmed" has already achieved
+// its deliverable — the exact item and quantity were verified in the cart.
+// If its completion bookkeeping was interrupted (Autopilot switched off at
+// the alert, one dropped message, a closed tab), the store lane it still
+// holds strands every later mission on that retailer forever. Finalizing the
+// blocker here is the same completeProduct call the interrupted flow would
+// have made; held lanes for review/checkout missions are never touched.
+function healStrandedCartHold(state, config, claimResult, now) {
+  if (
+    claimResult.ok
+    || !["store-busy", "product-busy"].includes(claimResult.reason)
+    || claimResult.held !== true
+    || claimResult.blockingPhase !== "cart-confirmed"
+  ) return false;
+  const blockerId = String(claimResult.activeProductId || "");
+  if (!blockerId) return false;
+  const blocker = (config.products || []).find((candidate) => candidate?.id === blockerId);
+  // A deleted mission cannot need its lane any more; a configured one may be
+  // finalized only when adding to the cart was the whole mission.
+  if (blocker && blocker.action !== "cart") return false;
+  return AutomationState.complete(state, blocker || { id: blockerId, action: "cart" }, now).ok === true;
+}
+
 async function claimProduct(productId, ownerId) {
   const config = await discoverConfig(true);
   if (!automationActive(config)) return { ok: false, reason: "disarmed" };
@@ -1115,7 +1138,11 @@ async function claimProduct(productId, ownerId) {
   if (!product) return { ok: false, reason: "product-disabled" };
   return withAutomationStateLock(async () => {
     const state = await readAutomationState(config);
-    const result = AutomationState.claim(state, product, ownerId, Date.now());
+    const now = Date.now();
+    let result = AutomationState.claim(state, product, ownerId, now);
+    if (healStrandedCartHold(state, config, result, now)) {
+      result = AutomationState.claim(state, product, ownerId, now);
+    }
     await writeAutomationState(state);
     return { ...result, product: result.ok ? product : undefined };
   });
@@ -1129,7 +1156,10 @@ async function prepareProductAddAction(productId, ownerId, proof) {
   return withAutomationStateLock(async () => {
     const state = await readAutomationState(config);
     const now = Date.now();
-    const claimed = AutomationState.claim(state, product, ownerId, now);
+    let claimed = AutomationState.claim(state, product, ownerId, now);
+    if (healStrandedCartHold(state, config, claimed, now)) {
+      claimed = AutomationState.claim(state, product, ownerId, now);
+    }
     if (!claimed.ok) {
       await writeAutomationState(state);
       return claimed;

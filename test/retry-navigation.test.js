@@ -322,3 +322,25 @@ test("Stop everything and re-arming clear quiet-lane residue and held lanes retr
   assert.match(clearClaim, /claimRetryDue = null;/);
 });
 
+test("both claim paths heal a stranded confirmed cart hold before giving up", () => {
+  const root = path.join(__dirname, "..");
+  const background = fs.readFileSync(path.join(root, "extension", "background.js"), "utf8");
+
+  const heal = background.slice(
+    background.indexOf("function healStrandedCartHold"),
+    background.indexOf("async function claimProduct")
+  );
+  // Only a held store/product lane whose blocker sits at the cart-confirmed
+  // phase qualifies, and a configured blocker must be a cart-action mission —
+  // review/checkout holds are never finalized from here.
+  assert.match(heal, /claimResult\.held !== true/);
+  assert.match(heal, /claimResult\.blockingPhase !== "cart-confirmed"/);
+  assert.match(heal, /if \(blocker && blocker\.action !== "cart"\) return false;/);
+  assert.match(heal, /AutomationState\.complete\(state, blocker \|\| \{ id: blockerId, action: "cart" \}, now\)/);
+
+  // Both the claim wrapper and the add-preparation wrapper retry once after
+  // healing, inside the same state lock and durable write.
+  assert.equal((background.match(/if \(healStrandedCartHold\(state, config, /g) || []).length, 2);
+  assert.equal((background.match(/= AutomationState\.claim\(state, product, ownerId, now\);/g) || []).length, 4);
+});
+
