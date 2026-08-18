@@ -2244,7 +2244,18 @@
         // incidental and the page is handled normally. When it is not, the
         // configured method toggle is clicked (a choice between options the
         // account already holds) — never a store, zip, or location share.
-        if (adapter.fulfillmentMode(document) === product.fulfillmentMode) {
+        const readFulfillmentMode = adapter.fulfillmentMode(document);
+        if (readFulfillmentMode === product.fulfillmentMode) {
+          interactiveState = "";
+        } else if (
+          readFulfillmentMode === ""
+          && adapter.pageKind(location.href, document, product) === "cart"
+        ) {
+          // Target's redesigned cart exposes no readable method toggle, so an
+          // unreadable mode is not a contradiction. Proceeding to checkout is
+          // safe: the final review still hard-verifies the mission's
+          // fulfillment mode and the locked destination or pickup-store
+          // fingerprint before any submission, and fails closed on mismatch.
           interactiveState = "";
         } else if (await selectConfiguredFulfillment(product)) {
           return;
