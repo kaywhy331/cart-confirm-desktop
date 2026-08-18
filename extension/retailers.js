@@ -1050,7 +1050,32 @@
       "button[data-test*='addToCart' i]",
       "button[aria-label*='add to cart' i]"
     ]);
-    return candidates.find((candidate) => targetAddControlMatchesProduct(doc, candidate, product)) || null;
+    const known = candidates.find((candidate) => targetAddControlMatchesProduct(doc, candidate, product));
+    if (known) return known;
+    // Layout-variant fallback: some Target product pages render the buy-box
+    // CTA without any of the data-test/id hooks above (e.g. redesigned
+    // fulfillment layouts whose CTA is a plain "Ship it" / "Add to cart"
+    // button). Match by the control's own visible label only after every
+    // known selector missed, so pages using the established format keep the
+    // exact behavior above. Fulfillment CELLS ("Shipping\nArrives by …") are
+    // not CTAs and are excluded by requiring the label to BE the action text.
+    const ctaPattern = /^\s*(?:add to cart|ship it)\s*$/i;
+    for (const candidate of queryAll(doc, ["button"]).slice(0, 400)) {
+      const ownLabel = `${candidate.getAttribute?.("aria-label") || ""} ${textOf(candidate)}`.replace(/\s+/g, " ").trim();
+      if (!ctaPattern.test(textOf(candidate).replace(/\s+/g, " ").trim()) && !ctaPattern.test(ownLabel)) continue;
+      if (candidate.closest?.("[data-test*='fulfillment' i]")) continue;
+      if (targetAddControlMatchesProduct(doc, candidate, product)) return candidate;
+      // Variant layouts can also omit the ProductDetailPage container marker.
+      // A bare exact-label CTA still qualifies when the page URL is this exact
+      // TCIN, the control is outside every excluded surface (recommendations,
+      // carousels, product cards), and it is not scoped to a DIFFERENT TCIN.
+      if (targetAddControlExcluded(candidate)) continue;
+      if (extractSkuFromUrl("target", doc?.location?.href) !== String(product?.sku || "")) continue;
+      const scopedTcin = candidate.closest?.("[data-tcin]")?.getAttribute?.("data-tcin");
+      if (scopedTcin && normalizedEmbeddedSku("target", scopedTcin) !== String(product.sku)) continue;
+      return candidate;
+    }
+    return null;
   }
 
   function targetCartItemCount(doc) {

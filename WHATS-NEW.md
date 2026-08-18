@@ -6,6 +6,12 @@ update dialog shows exactly these bullets. Keep every entry short, plain, and
 about what the user will notice — one bullet per change, no internals.
 Publishing fails if the version being released has no section here.
 
+## 3.7.1
+- Fixed: after the first item was added to the cart, the remaining missions could stop with "could not prepare this mission's add-to-cart boundary (disarmed)" even though Autopilot was still on — a momentary communication hiccup with the desktop was being mistaken for a Stop
+- A pre-click check that cannot reach the desktop now keeps the verified offer on the page and simply retries in a few seconds instead of ending the mission
+- If Autopilot really is off when an offer qualifies, the mission now shows a plain "Autopilot is switched off" status instead of a safety-check error
+- Fixed: on Target pages using the redesigned buy box, the eligible mission could sit at "Ready" because the Add button (a plain "Ship it" / "Add to cart" label with no product hooks) was never recognized — these layouts are now matched safely, still excluding recommendations, carousels, and other items
+
 ## 3.7.0
 - New: "Combined order per store" setting (off by default). When on, each store's auto-buy missions first all validate, every in-stock item is added to the cart and held, and once the full list has a status one checkout submits every line together as a single order
 - The combined total is capped at the sum of the included missions' order caps; each line still verifies its exact item, quantity, first-party seller, and unit-price cap, and any mismatch stops for your manual review

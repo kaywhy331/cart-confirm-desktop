@@ -1332,6 +1332,18 @@
 
     if (!result.eligible) {
       clearClaimRetry();
+      // Layout-variant recovery: some Target product layouts render no
+      // recognizable Add control until the configured fulfillment method
+      // (e.g. Shipping) is selected, which reads here as "out-of-stock".
+      // Attempt the bounded method toggle before settling into the
+      // eligibility wait; pages using the established format either never
+      // reach this branch or expose no method control and fall through
+      // unchanged. Store, zip, and location choices are never automated.
+      if (
+        result.reason === "out-of-stock"
+        && product.action !== "watch"
+        && await selectConfiguredFulfillment(product)
+      ) return;
       if (result.reason !== "out-of-stock") {
         await send("automation-blocked", product, {
           price: offer.price === null ? undefined : offer.price,
@@ -1378,6 +1390,18 @@
     // claiming the cart lane so an obsolete reload cannot interrupt Add or
     // delay the remaining products.
     clearNavigationRetry();
+    // On layouts where a DIFFERENT fulfillment method (e.g. Pickup) is
+    // preselected, the visible CTA would add the wrong method even though the
+    // offer qualified. Toggle to the mission's configured method first — a
+    // bounded choice between options the account already holds, never a
+    // store, zip, or location. Pages already showing the configured mode or
+    // an unreadable mode proceed exactly as before.
+    const pageFulfillmentMode = adapter.fulfillmentMode(document);
+    if (
+      pageFulfillmentMode
+      && pageFulfillmentMode !== product.fulfillmentMode
+      && await selectConfiguredFulfillment(product)
+    ) return;
     if (!await requireQuantityWithinLimits(product)) return;
 
     const prepared = await prepareAddAction(product, offer);
@@ -1414,6 +1438,24 @@
         await scheduleClaimRetry(product, prepared.reason === "store-busy"
           ? `${adapter.label} is processing another configured product in this store.`
           : "Another tab is already processing this configured product.");
+      } else if (["disarmed", "product-disabled"].includes(prepared.reason)) {
+        // An operator Stop or mission removal between qualification and the
+        // pre-click boundary is a state the desktop already displays. Every
+        // other pre-click call site treats it as quiet; ending the mission
+        // with a terminal block here released the lane and stranded the item.
+        // A low-key status line keeps a breadcrumb without a dead-end.
+        await send("automation-status", product, {
+          message: prepared.reason === "disarmed"
+            ? `A qualified ${adapter.label} offer was not added because Autopilot is switched off. Arm Autopilot to let this mission continue.`
+            : `A qualified ${adapter.label} offer was not added because this mission is no longer enabled.`
+        }, `add-preparation-idle:${product.id}:${prepared.reason}`, 60_000);
+        return;
+      } else if (["desktop-unreachable", "extension-error"].includes(prepared.reason)) {
+        // A reachability hiccup at the pre-click boundary is transient. The
+        // verified offer stays on this page and re-claims shortly instead of
+        // dead-ending the mission with a manual-review block.
+        await offerReport;
+        await scheduleClaimRetry(product, `${adapter.label}'s pre-click safety check could not reach the Cart Confirm desktop, so no Add click was made.`);
       } else {
         await send("automation-blocked", product, {
           reason: "manual-action-required",
@@ -1457,6 +1499,10 @@
       if (["disarmed", "product-disabled"].includes(addAuthorizationReason)) return;
       if (addAuthorizationReason === "add-reservation-expired") {
         await scheduleClaimRetry(product, "The pre-click reservation expired before any Target action, so Autopilot safely reopened the lane.");
+        return;
+      }
+      if (["desktop-unreachable", "extension-error"].includes(addAuthorizationReason)) {
+        await scheduleClaimRetry(product, "The final pre-click authorization could not reach the Cart Confirm desktop, so no Add click was made.");
         return;
       }
       if (addAuthorizationReason) {

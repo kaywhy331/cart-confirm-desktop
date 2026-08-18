@@ -1154,6 +1154,9 @@ function healStrandedCartHold(state, config, claimResult, now) {
 
 async function claimProduct(productId, ownerId) {
   const config = await discoverConfig(true);
+  // A desktop that cannot be reached is not the same as an operator Stop:
+  // reachability failures must stay retryable instead of reading as disarmed.
+  if (!config) return { ok: false, reason: "desktop-unreachable" };
   if (!automationActive(config)) return { ok: false, reason: "disarmed" };
   const product = configuredProduct(config, productId);
   if (!product) return { ok: false, reason: "product-disabled" };
@@ -1172,6 +1175,7 @@ async function claimProduct(productId, ownerId) {
 
 async function prepareProductAddAction(productId, ownerId, proof) {
   const config = await discoverConfig(true);
+  if (!config) return { ok: false, reason: "desktop-unreachable" };
   if (!automationActive(config)) return { ok: false, reason: "disarmed" };
   const product = configuredProduct(config, productId);
   if (!product) return { ok: false, reason: "product-disabled" };
@@ -1209,6 +1213,7 @@ async function authorizeProductAddClick(productId, ownerId) {
   // adjacent to the content-script click. It also records the purchase attempt
   // in the same durable write instead of adding another serialized round trip.
   const config = await discoverConfig(true);
+  if (!config) return { ok: false, reason: "desktop-unreachable" };
   if (!automationActive(config)) return { ok: false, reason: "disarmed" };
   const product = configuredProduct(config, productId);
   if (!product) return { ok: false, reason: "product-disabled" };
