@@ -471,7 +471,7 @@ test("an already-selected configured method returns no control and Shipt-flavore
 
 test("the content script resolves location prompts through the configured method before blocking", () => {
   const source = fs.readFileSync(path.join(__dirname, "..", "extension", "content.js"), "utf8");
-  assert.match(source, /adapter\.fulfillmentMode\(document\) === product\.fulfillmentMode/);
+  assert.match(source, /readFulfillmentMode === product\.fulfillmentMode/);
   assert.match(source, /await selectConfiguredFulfillment\(product\)/);
   assert.match(source, /fulfillmentOptionControl\?\.\(document, product\.fulfillmentMode\)/);
   // The manual-safety promise stays intact: no automatic store/zip/location choice.

@@ -6,6 +6,11 @@ update dialog shows exactly these bullets. Keep every entry short, plain, and
 about what the user will notice — one bullet per change, no internals.
 Publishing fails if the version being released has no section here.
 
+## 3.6.22
+- Fixed: on Target's redesigned cart, the mission clicked "Update shipping location" (mistaking it for the Shipping method toggle) instead of Check out, opening the location widget in a loop
+- Controls whose own label names a location or address are now never treated as a delivery-method toggle — store, zip, and location choices remain strictly yours
+- A cart that shows no readable Shipping/Pickup toggle no longer stalls the mission: checkout proceeds, and the final review still strictly verifies your mission's fulfillment mode and locked destination before any order is placed
+
 ## 3.6.21
 - Fixed: the one-time checkout preflight lock could not be approved on Target's redesigned review page — it stopped with "did not prove an eligible first-party offer" because the new page shows no per-item price or seller
 - The lock now verifies the unit price from the order summary's own item count and subtotal (exact-cents arithmetic only) and first-party status the same way the product page does; a unit price over your cap still refuses to lock

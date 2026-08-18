@@ -774,7 +774,10 @@
   // only switches between options the account already holds. Choosing WHICH
   // store, entering a zip, or sharing a location stays strictly manual, so any
   // control whose own label is a store/location chooser is never returned.
-  const STORE_CHOICE_PATTERN = /\b(?:select|choose|change|find|set|pick) (?:a |your |my )?store\b|\bzip(?: ?code)?\b|\bpostal code\b|use my location|store locator/i;
+  // Any control whose OWN label names a location or address is a chooser
+  // (e.g. Target's cart "Update shipping location"), never a method toggle:
+  // genuine method toggles are labeled "Shipping", "Ship it", "Pickup".
+  const STORE_CHOICE_PATTERN = /\b(?:select|choose|change|find|set|pick|update|edit|enter|add) (?:a |your |my )?store\b|\bzip(?: ?code)?\b|\bpostal code\b|use my location|store locator|\blocation\b|\baddress\b/i;
   // Trailing \b is deliberately omitted where nested markup can glue words
   // together ("Shipping<br>Arrives" reads as "ShippingArrives").
   const PICKUP_METHOD_PATTERN = /\bpick ?up|\bcurbside/i;
