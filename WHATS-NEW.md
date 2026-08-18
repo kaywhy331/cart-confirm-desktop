@@ -6,6 +6,11 @@ update dialog shows exactly these bullets. Keep every entry short, plain, and
 about what the user will notice — one bullet per change, no internals.
 Publishing fails if the version being released has no section here.
 
+## 3.6.16
+- Fixed: the "complete cart inventory could not be verified" stop was still happening on real Target carts — the cart's Remove button sits inside several layers of styling wrappers and the double-check was reading the wrong layer
+- The double-check now walks up to the actual item row before counting, so a verified single-item cart proceeds to checkout and your approved payment profile
+- If this check ever stops again, the alert now includes exact counts so the cause is visible immediately
+
 ## 3.6.15
 - Fixed: auto-checkout could give up at the final review while the order summary was still updating (for example right after free shipping applied to the new quantity)
 - The final review now waits and rechecks for about 15 seconds while totals, shipping, or delivery details settle before it ever stops for manual review

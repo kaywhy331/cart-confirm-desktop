@@ -1765,7 +1765,7 @@
       await send("automation-blocked", product, {
         reason: cartSafety.reason,
         message: cartSafety.reason === "cart-unverified"
-          ? "Checkout stopped because the complete cart inventory could not be verified."
+          ? `Checkout stopped because the complete cart inventory could not be verified (lines ${inventory.items?.length ?? 0}, independent ${inventory.independentLineCount ?? 0}, removal ${inventory.removalLineCount ?? 0}, skus ${(inventory.ids || []).join("+") || "none"}).`
           : "Checkout stopped because this store cart contains another product or duplicate line. Remove or purchase it manually first."
       }, `cart-scope:${product.id}:${cartSafety.reason}`, 30_000);
       return;
