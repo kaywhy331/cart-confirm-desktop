@@ -6,6 +6,11 @@ update dialog shows exactly these bullets. Keep every entry short, plain, and
 about what the user will notice — one bullet per change, no internals.
 Publishing fails if the version being released has no section here.
 
+## 3.6.20
+- Fixed: auto-buy stopped at Target's final review with "did not prove the required shipping fulfillment mode" — Target's redesigned checkout shows shipping, payment, items, and totals as plain text with no product ID anywhere, which the old verifier could not read
+- The final review is now verified on the new page: shipping address section, payment card on file, order total, the single item card with its quantity badge, and the order summary's own item count all have to agree with what was verified in the cart minutes earlier — any mismatch still stops for your manual review
+- After updating, re-approve the checkout preflight once (Autopilot off, open a final review, lock it) — the saved profile from the old page no longer matches
+
 ## 3.6.19
 - Fixed: a brief sign-in or verification flash during the cart-to-checkout handoff no longer raises a false "requires a manual sign-in" alarm — the block now only posts when the prompt is still there moments later
 - Checkout no longer goes silent: if the mission is waiting for the store lane or the Place Order button never appears, the mission status now says so while it keeps rechecking

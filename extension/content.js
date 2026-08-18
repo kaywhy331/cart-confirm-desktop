@@ -1825,7 +1825,9 @@
   }
 
   async function readCheckoutReview(product) {
-    const inventory = adapter.cartInventory(document);
+    // The mission context lets Target's NDS review (which exposes no SKU)
+    // attribute its single bound item card; other adapters ignore it.
+    const inventory = adapter.cartInventory(document, product);
     const line = adapter.findLine(document, product);
     const proof = await proofFor(product);
     const orderTotal = adapter.orderTotal(document);
@@ -1889,7 +1891,7 @@
       return { ok: false, reason: "manual-action-required", error: "Complete the store security challenge manually first." };
     }
 
-    const inventory = adapter.cartInventory(document);
+    const inventory = adapter.cartInventory(document, product);
     const line = adapter.findLine(document, product);
     const cart = Safety.verifySingleProductCart(product, inventory);
     if (!cart.ok || !line || line.quantity !== product.quantity) {
