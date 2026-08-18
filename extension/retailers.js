@@ -748,6 +748,45 @@
     return modes.size === 1 ? [...modes][0] : "";
   }
 
+  // The mission's configured fulfillment METHOD (shipping vs pickup) may be
+  // selected automatically when the retailer shows a method toggle, because it
+  // only switches between options the account already holds. Choosing WHICH
+  // store, entering a zip, or sharing a location stays strictly manual, so any
+  // control whose own label is a store/location chooser is never returned.
+  const STORE_CHOICE_PATTERN = /\b(?:select|choose|change|find|set|pick) (?:a |your |my )?store\b|\bzip(?: ?code)?\b|\bpostal code\b|use my location|store locator/i;
+  // Trailing \b is deliberately omitted where nested markup can glue words
+  // together ("Shipping<br>Arrives" reads as "ShippingArrives").
+  const PICKUP_METHOD_PATTERN = /\bpick ?up|\bcurbside/i;
+  const SHIPPING_METHOD_PATTERN = /\bshipping|\bship (?:it|to|this)\b/i;
+  // "Delivery" (Target Shipt, same-day services) is never clicked for either
+  // mode: it can carry memberships and fees the operator did not configure.
+  const PICKUP_VETO_PATTERN = /\bshipping|\bship (?:it|to|this)\b|\bshipt\b|deliver/i;
+  const SHIPPING_VETO_PATTERN = /\bpick ?up|\bcurbside|\bcollect\b|\bshipt\b|deliver/i;
+
+  function fulfillmentOptionControl(doc, desiredMode) {
+    if (!["shipping", "pickup"].includes(desiredMode)) return null;
+    const desiredPattern = desiredMode === "pickup" ? PICKUP_METHOD_PATTERN : SHIPPING_METHOD_PATTERN;
+    const otherPattern = desiredMode === "pickup" ? PICKUP_VETO_PATTERN : SHIPPING_VETO_PATTERN;
+    for (const control of queryAll(doc, [
+      "input[type='radio']",
+      "[role='radio']",
+      "[role='tab']",
+      "button"
+    ]).slice(0, 300)) {
+      if (!isActionable(control)) continue;
+      if (control.matches?.("input:checked, [aria-checked='true'], [aria-selected='true'], [data-selected='true'], [aria-pressed='true']")) continue;
+      const ownText = `${control.getAttribute?.("aria-label") || ""} ${control.getAttribute?.("value") || ""} ${textOf(control)}`.replace(/\s+/g, " ").slice(0, 500);
+      const region = control.closest?.("label, fieldset, [role='radio'], [data-testid], [data-automation-id], [data-test]") || control.parentElement || control;
+      const regionText = `${control.getAttribute?.("name") || ""} ${textOf(region)}`.replace(/\s+/g, " ").slice(0, 500);
+      const text = desiredPattern.test(ownText) ? ownText : desiredPattern.test(regionText) ? regionText : "";
+      if (!text) continue;
+      if (otherPattern.test(text)) continue;
+      if (STORE_CHOICE_PATTERN.test(ownText) || (text === regionText && STORE_CHOICE_PATTERN.test(regionText))) continue;
+      return control;
+    }
+    return null;
+  }
+
   function visibleSelectedRegions(doc, selectors) {
     return unique(queryAll(doc, selectors).filter((element) => (
       isVisibleEvidence(element)
@@ -1143,6 +1182,7 @@
     adapter.submissionFailure = submissionFailure;
     adapter.unsafeOrderChoices = unsafeOrderChoices;
     adapter.fulfillmentMode = fulfillmentMode;
+    adapter.fulfillmentOptionControl = fulfillmentOptionControl;
     adapter.destinationEvidence = destinationEvidence;
     adapter.paymentInstrumentEvidence = paymentInstrumentEvidence;
     adapter.substitutionState = substitutionState;

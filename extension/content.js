@@ -782,6 +782,28 @@
     return true;
   }
 
+  // Bounded selection of the mission's configured fulfillment METHOD
+  // (shipping vs pickup) when the page stalls on a method/location prompt.
+  // This only toggles between options the account already holds; choosing a
+  // store, entering a zip, or sharing a location remains strictly manual.
+  const FULFILLMENT_SELECT_LIMIT = 3;
+  const fulfillmentSelectAttempts = new Map();
+
+  async function selectConfiguredFulfillment(product) {
+    if (!["shipping", "pickup"].includes(product.fulfillmentMode)) return false;
+    const attemptKey = `${config?.automationRunId || "run"}:${product.id}:${pageAddress()}`;
+    if ((fulfillmentSelectAttempts.get(attemptKey) || 0) >= FULFILLMENT_SELECT_LIMIT) return false;
+    const control = adapter.fulfillmentOptionControl?.(document, product.fulfillmentMode);
+    if (!control) return false;
+    fulfillmentSelectAttempts.set(attemptKey, (fulfillmentSelectAttempts.get(attemptKey) || 0) + 1);
+    if (!await clickAction(control, product)) return false;
+    await send("automation-status", product, {
+      message: `Selected this mission's configured ${product.fulfillmentMode} option; store, zip, and location choices are never made automatically.`
+    }, `fulfillment-select:${attemptKey}:${fulfillmentSelectAttempts.get(attemptKey)}`, 0);
+    scheduleScan(1_500);
+    return true;
+  }
+
   async function dismissTargetStoreError(product) {
     if (product.retailer !== "target") return false;
     const button = adapter.storeErrorDismissButton?.(document);
@@ -2113,7 +2135,20 @@
       }
       if (await handleChallenge(product)) return;
 
-      const interactiveState = adapter.interactivePageState?.(document) || "";
+      let interactiveState = adapter.interactivePageState?.(document) || "";
+      if (interactiveState === "location") {
+        // A store/location prompt is often just the OTHER method's widget
+        // ("choose a store" beside an already-selected Shipping line). When
+        // the mission's configured method is already active, the prompt is
+        // incidental and the page is handled normally. When it is not, the
+        // configured method toggle is clicked (a choice between options the
+        // account already holds) — never a store, zip, or location share.
+        if (adapter.fulfillmentMode(document) === product.fulfillmentMode) {
+          interactiveState = "";
+        } else if (await selectConfiguredFulfillment(product)) {
+          return;
+        }
+      }
       if (["auth", "mfa", "location", "membership"].includes(interactiveState)) {
         clearRetry();
         const state = await productAutomationState(product);
