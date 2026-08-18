@@ -2484,7 +2484,7 @@ const QUIET_PRODUCT_QUARANTINE_MS = 10 * 60_000;
 const QUIET_STORE_FAILURE_WINDOW_MS = 60_000;
 const QUIET_STORE_FAILURE_PRODUCT_LIMIT = 4;
 const QUIET_AUTO_OPEN_COOLDOWN_MS = 5 * 60_000;
-const QUIET_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36";
+const { quietFetch, quietNavigationHeaders } = require("./lib/quiet-headers");
 const WALMART_PREP_MIN_SPACING_MS = 30_000;
 const walmartPrepState = { lastCheckAt: 0, rotation: 0, inFlight: false };
 const quietState = {
@@ -2562,16 +2562,9 @@ async function quietCheck(product, taskEpoch, startToken) {
   quietState.storeControllers.set(retailer, storeControllers);
   const timer = setTimeout(() => controller.abort(), QUIET_FETCH_TIMEOUT_MS);
   try {
-    const response = await fetch(product.productUrl, {
-      method: "GET",
+    const response = await quietFetch(product.productUrl, {
       signal: controller.signal,
-      redirect: "follow",
-      credentials: "omit",
-      referrerPolicy: "no-referrer",
-      headers: {
-        "User-Agent": QUIET_USER_AGENT,
-        Accept: "text/html,application/xhtml+xml"
-      }
+      headers: quietNavigationHeaders()
     });
     if (!monitoringOperationActive(settings, taskEpoch, stopEpoch)) return;
     if (isOverloadStatus(response.status)) {
@@ -2888,12 +2881,10 @@ async function walmartPrepCheck(candidate, taskEpoch) {
   const timer = setTimeout(() => controller.abort(), QUIET_FETCH_TIMEOUT_MS);
   try {
     const previous = runtimeState.walmartPrepObservations?.[candidate.id] || null;
-    const response = await fetch(candidate.productUrl, {
+    const response = await quietFetch(candidate.productUrl, {
       signal: controller.signal,
-      redirect: "follow",
       headers: {
-        "User-Agent": QUIET_USER_AGENT,
-        Accept: "text/html,application/xhtml+xml",
+        ...quietNavigationHeaders(),
         ...conditionalHeaders(previous)
       }
     });

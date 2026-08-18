@@ -6,6 +6,11 @@ update dialog shows exactly these bullets. Keep every entry short, plain, and
 about what the user will notice — one bullet per change, no internals.
 Publishing fails if the version being released has no section here.
 
+## 3.6.17
+- Background stock checks now send the complete set of headers a real desktop Chrome sends when opening a page (client hints, fetch metadata, language, and compression), instead of a year-old browser signature with none of them
+- This lowers the chance of Walmart rate-limiting or blocking quiet monitoring during busy drops
+- One version constant now keeps the browser signature's parts in lockstep so they can never disagree
+
 ## 3.6.16
 - Fixed: the "complete cart inventory could not be verified" stop was still happening on real Target carts — the cart's Remove button sits inside several layers of styling wrappers and the double-check was reading the wrong layer
 - The double-check now walks up to the actual item row before counting, so a verified single-item cart proceeds to checkout and your approved payment profile
