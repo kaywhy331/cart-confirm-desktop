@@ -6,6 +6,10 @@ update dialog shows exactly these bullets. Keep every entry short, plain, and
 about what the user will notice — one bullet per change, no internals.
 Publishing fails if the version being released has no section here.
 
+## 3.6.19
+- Fixed: a brief sign-in or verification flash during the cart-to-checkout handoff no longer raises a false "requires a manual sign-in" alarm — the block now only posts when the prompt is still there moments later
+- Checkout no longer goes silent: if the mission is waiting for the store lane or the Place Order button never appears, the mission status now says so while it keeps rechecking
+- The "checkout reached" notification now says what actually happens next for your mission — automatic submission, your manual submit, or cart-only
 ## 3.6.18
 - Fixed: background stock checks were silently failing to read every product page since 3.6.17, so Autopilot took minutes to open each Target/Walmart mission in Chrome instead of seconds
 - Tabless missions now read the public page correctly again: readable pages report stock quietly, and pages that hide stock data (like Target's) open their Chrome watcher on the first check

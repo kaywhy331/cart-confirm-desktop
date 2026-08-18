@@ -27,6 +27,16 @@
   const REVIEW_SETTLE_REASONS = Object.freeze(["total-unavailable", "over-total", "checkout-evidence-unverified", "fulfillment-unverified"]);
   const REVIEW_SETTLE_RECHECK_LIMIT = 10;
   const reviewSettleRechecks = new Map();
+  // A cart-to-checkout SPA transition can flash a sign-in, code, or store
+  // widget for a moment before the real page hydrates. A manual-action block
+  // is only posted after the interactive state survives a short recheck, so a
+  // single transient frame no longer raises a false "sign in required" alarm.
+  const INTERACTIVE_CONFIRM_MS = 1_500;
+  const interactiveSightings = new Map();
+  // Purchase pages must never go quiet: when the final submit control stays
+  // missing this long, the stall is reported while rechecks continue.
+  const SUBMIT_CONTROL_MISSING_REPORT_MS = 20_000;
+  const missingSubmitSince = new Map();
   const missingCartLineSince = new Map();
   const QUANTITY_RECHECK_LIMIT = 8;
   const PARTIAL_RAISE_ATTEMPT_LIMIT = 4;
@@ -1776,6 +1786,14 @@
 
     const claim = await claimProduct(product);
     if (!claim.ok) {
+      // A cart page that cannot claim its store lane must not go silent: the
+      // blocking reason is surfaced and the page keeps being rechecked, so a
+      // transient hold (another mission's tab, an expiring lock) resolves
+      // visibly instead of stalling the mission forever.
+      await send("automation-status", product, {
+        message: `The cart page is waiting for the ${adapter.label} store lane (${claim.reason || "unavailable"}${claim.blockingPhase ? `: ${claim.blockingPhase}` : ""}). It rechecks automatically.`
+      }, `cart-claim-wait:${product.id}:${claim.reason || ""}`, 30_000);
+      scheduleScan(2_000, { replace: false });
       return;
     }
     const checkoutButton = adapter.checkoutButton(document);
@@ -2031,6 +2049,14 @@
 
     const claim = await claimProduct(product);
     if (!claim.ok) {
+      // A checkout page that cannot claim its store lane must not go silent: the
+      // blocking reason is surfaced and the page keeps being rechecked, so a
+      // transient hold (another mission's tab, an expiring lock) resolves
+      // visibly instead of stalling the mission forever.
+      await send("automation-status", product, {
+        message: `The checkout page is waiting for the ${adapter.label} store lane (${claim.reason || "unavailable"}${claim.blockingPhase ? `: ${claim.blockingPhase}` : ""}). It rechecks automatically.`
+      }, `checkout-claim-wait:${product.id}:${claim.reason || ""}`, 30_000);
+      scheduleScan(2_000, { replace: false });
       return;
     }
 
@@ -2098,9 +2124,18 @@
 
     const submitButton = adapter.submitButton(document);
     if (!submitButton) {
+      const since = missingSubmitSince.get(product.id) || Date.now();
+      missingSubmitSince.set(product.id, since);
+      if (Date.now() - since >= SUBMIT_CONTROL_MISSING_REPORT_MS) {
+        await send("automation-blocked", product, {
+          reason: "manual-action-required",
+          message: `${adapter.label}'s final Place Order control has not appeared on this checkout page after ${Math.round(SUBMIT_CONTROL_MISSING_REPORT_MS / 1000)} seconds. Complete the order manually, or leave the page open — the companion keeps watching for the control.`
+        }, `submit-control-missing:${product.id}:${pageAddress()}`, 120_000);
+      }
       scheduleScan(1_500);
       return;
     }
+    missingSubmitSince.delete(product.id);
 
     const expectedHash = await reviewEvidenceHash(product, review);
     let intentCreated = false;
@@ -2196,6 +2231,13 @@
         }
       }
       if (["auth", "mfa", "location", "membership"].includes(interactiveState)) {
+        const sightingKey = `${product.id}:${interactiveState}:${pageAddress()}`;
+        const firstSeenAt = interactiveSightings.get(sightingKey) || 0;
+        if (!firstSeenAt || Date.now() - firstSeenAt < INTERACTIVE_CONFIRM_MS) {
+          if (!firstSeenAt) interactiveSightings.set(sightingKey, Date.now());
+          scheduleScan(INTERACTIVE_CONFIRM_MS + 100, { replace: false });
+          return;
+        }
         clearRetry();
         const state = await productAutomationState(product);
         const postMutation = state.ok && (
@@ -2216,6 +2258,8 @@
         }, `interactive-page:${product.id}:${interactiveState}:${pageAddress()}`, 60_000);
         return;
       }
+
+      interactiveSightings.clear();
 
       void send("page-observed", product, {}, `page:${product.id}:${pageAddress()}`, OBSERVATION_DEDUPE_MS);
       const kind = adapter.pageKind(location.href, document, product);
