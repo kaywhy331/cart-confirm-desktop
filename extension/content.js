@@ -1604,7 +1604,12 @@
     }
     missingCartLineSince.delete(product.id);
 
-    const safeLine = Safety.effectiveLineOffer(product, line);
+    // Cart lines often omit the seller for first-party items and show a
+    // quantity-multiplied subtotal instead of the unit price. The durable
+    // product-page proof (same run, same product, bounded age) backfills the
+    // verified seller and unit price exactly as the checkout review does; a
+    // visible third-party seller on the line still blocks unconditionally.
+    const safeLine = Safety.effectiveLineOffer(product, line, await proofFor(product));
     if (!safeLine.ok) {
       await send("automation-blocked", product, {
         price: safeLine.price,
@@ -1612,7 +1617,13 @@
         firstParty: safeLine.firstParty,
         eligible: false,
         reason: safeLine.reason,
-        message: "The cart line failed the first-party seller or unit-price safety check. Manual review is required."
+        message: safeLine.reason === "over-price"
+          ? `The cart line's unit price is above the $${product.maxPrice.toFixed(2)} cap. Manual review is required.`
+          : safeLine.reason === "price-unavailable"
+            ? "The cart line does not show a readable unit price and no recent product-page price proof exists. Manual review is required."
+          : safeLine.reason === "third-party"
+            ? "The cart line shows a third-party seller. Manual review is required."
+            : "The cart line's first-party seller could not be verified here or on the recent product page. Manual review is required."
       }, `unsafe-cart-line:${product.id}:${safeLine.reason}`, 30_000);
       return;
     }

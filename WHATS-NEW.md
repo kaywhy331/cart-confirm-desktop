@@ -6,6 +6,11 @@ update dialog shows exactly these bullets. Keep every entry short, plain, and
 about what the user will notice — one bullet per change, no internals.
 Publishing fails if the version being released has no section here.
 
+## 3.6.13
+- Fixed: a mission could stop at the cart with "failed the first-party seller or unit-price safety check" even when the product page had already verified the seller and price
+- The cart check now reuses the recent product-page verification for seller and unit price, the same way checkout already does
+- Cart safety alerts now say exactly what failed (seller, third-party, price cap, or unreadable price)
+
 ## 3.6.12
 - Fixed: a mission could get stuck at the cart with "requires a manual store or location choice" even though its delivery method was already set
 - Cart Confirm now selects your mission's configured method (Shipping or Pickup) when the store asks, instead of stopping

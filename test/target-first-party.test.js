@@ -207,3 +207,31 @@ test("walmart still requires an explicit first-party seller label", () => {
   const offer = getAdapter("walmart").offer(doc);
   assert.equal(offer.firstParty, false);
 });
+
+test("the product-page proof backfills a cart line's missing seller and unit price", () => {
+  const proof = { firstParty: true, seller: "Sold by Target", price: 39.99 };
+  // Hydrating cart line: no seller text, no readable price yet.
+  const bare = { seller: "", firstParty: false, price: Number.NaN, quantity: 1 };
+  const backed = effectiveLineOffer(PRODUCT, bare, proof);
+  assert.equal(backed.ok, true);
+  assert.equal(backed.price, 39.99);
+  assert.equal(backed.firstParty, true);
+  // Quantity-multiplied subtotal above the unit cap resolves to the proof unit price.
+  const subtotal = { seller: "", firstParty: true, price: 79.98, quantity: 2 };
+  const resolved = effectiveLineOffer({ ...PRODUCT, quantity: 2 }, subtotal, proof);
+  assert.equal(resolved.ok, true);
+  assert.equal(resolved.price, 39.99);
+  // A visibly third-party line stays blocked no matter what the proof says.
+  const marketplace = { seller: "Sold and shipped by Acme Ltd", firstParty: false, price: 39.99, quantity: 1 };
+  assert.equal(effectiveLineOffer(PRODUCT, marketplace, proof).reason, "third-party");
+  // Without any proof, the hydrating line still fails closed.
+  assert.equal(effectiveLineOffer(PRODUCT, bare).ok, false);
+});
+
+test("the cart-stage line check consumes the durable product-page proof", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const source = fs.readFileSync(path.join(__dirname, "..", "extension", "content.js"), "utf8");
+  assert.match(source, /Safety\.effectiveLineOffer\(product, line, await proofFor\(product\)\)/);
+  assert.match(source, /first-party seller could not be verified here or on the recent product page/);
+});
