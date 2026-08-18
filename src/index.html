@@ -318,6 +318,14 @@
           </section>
           <div class="automation-grid">
             <label class="control-card">
+              <span class="control-title">Combined order per store</span>
+              <span class="toggle-row">
+                <input id="combinedOrder" type="checkbox">
+                <span>Auto-buy missions check out together</span>
+              </span>
+              <small>On: each store's auto-submit missions first all validate, in-stock items are carted and held, then one checkout submits every line as a single order (capped at the sum of the included missions' caps). Off: each mission checks out on its own as before.</small>
+            </label>
+            <label class="control-card">
               <span class="control-title">Load less page media</span>
               <span class="toggle-row">
                 <input id="fastMode" type="checkbox">

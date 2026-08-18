@@ -6,6 +6,12 @@ update dialog shows exactly these bullets. Keep every entry short, plain, and
 about what the user will notice — one bullet per change, no internals.
 Publishing fails if the version being released has no section here.
 
+## 3.7.0
+- New: "Combined order per store" setting (off by default). When on, each store's auto-buy missions first all validate, every in-stock item is added to the cart and held, and once the full list has a status one checkout submits every line together as a single order
+- The combined total is capped at the sum of the included missions' order caps; each line still verifies its exact item, quantity, first-party seller, and unit-price cap, and any mismatch stops for your manual review
+- Missions that were out of stock during the pass keep watching and simply form the next combined order when they restock; switching the setting off returns every mission to individual checkout
+- New: missions without an attached affiliate link now show a warning icon in front of the store name
+
 ## 3.6.22
 - Fixed: on Target's redesigned cart, the mission clicked "Update shipping location" (mistaking it for the Shipping method toggle) instead of Check out, opening the location widget in a loop
 - Controls whose own label names a location or address are now never treated as a delivery-method toggle — store, zip, and location choices remain strictly yours

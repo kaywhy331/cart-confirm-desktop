@@ -108,6 +108,7 @@ const elements = {
   saveConfigurationProfileButton: document.getElementById("saveConfigurationProfileButton"),
   deleteConfigurationProfileButton: document.getElementById("deleteConfigurationProfileButton"),
   fastMode: document.getElementById("fastMode"),
+  combinedOrder: document.getElementById("combinedOrder"),
   watcherIntervalSeconds: document.getElementById("watcherIntervalSeconds"),
   retryIntervalSeconds: document.getElementById("retryIntervalSeconds"),
   eligibilityRefreshIntervalSeconds: document.getElementById("eligibilityRefreshIntervalSeconds"),
@@ -629,6 +630,7 @@ function globalSettings(products, overrides = {}) {
     missionGroups: overrides.missionGroups ?? savedMissionGroups(),
     automationEnabled: isArmed(),
     fastMode: elements.fastMode.checked,
+    combinedOrderEnabled: elements.combinedOrder.checked,
     watcherIntervalSeconds: Number(elements.watcherIntervalSeconds.value),
     retryIntervalSeconds: Number(elements.retryIntervalSeconds.value),
     eligibilityRefreshIntervalSeconds: Number(elements.eligibilityRefreshIntervalSeconds.value),
@@ -836,7 +838,14 @@ function buildViewCard(product, status) {
   card.setAttribute("aria-label", card.title);
 
   view(card, "enabled").checked = product.enabled !== false;
-  view(card, "store").textContent = STORE_LABELS[product.retailer];
+  const storeView = view(card, "store");
+  const missingAffiliate = !product.affiliateOpenUrl && !product.affiliateUrl;
+  storeView.textContent = missingAffiliate
+    ? `\u26A0\uFE0F ${STORE_LABELS[product.retailer]}`
+    : STORE_LABELS[product.retailer];
+  storeView.title = missingAffiliate
+    ? "No affiliate link is attached to this mission; it opens the plain product page."
+    : "";
   view(card, "title").textContent = productLabel(product);
 
   const subParts = [];
@@ -2770,6 +2779,7 @@ function populateSettingsInputs(settings) {
     if (document.activeElement !== input) input.value = value;
   }
   if (document.activeElement !== elements.fastMode) elements.fastMode.checked = settings.fastMode;
+  if (document.activeElement !== elements.combinedOrder) elements.combinedOrder.checked = settings.combinedOrderEnabled === true;
 }
 
 function render(snapshot) {
@@ -3400,6 +3410,7 @@ function scheduleSettingsSave() {
 }
 
 elements.fastMode.addEventListener("change", scheduleSettingsSave);
+elements.combinedOrder.addEventListener("change", scheduleSettingsSave);
 elements.watcherIntervalSeconds.addEventListener("change", scheduleSettingsSave);
 elements.retryIntervalSeconds.addEventListener("change", scheduleSettingsSave);
 elements.eligibilityRefreshIntervalSeconds.addEventListener("change", scheduleSettingsSave);

@@ -140,8 +140,42 @@
     };
   }
 
-  function ensureHeldLock(state, key, productId, ownerId) {
+  // With combined ordering active, the universal store lane is held by the
+  // BATCH rather than one mission: every batch member's post-mutation hold
+  // merges into one combined lock listing its members, and short exclusive
+  // sub-claims inside it keep retailer mutations serialized. A non-member
+  // still sees the lane as busy, and a hold for a non-member still escalates
+  // to the manual-resolution conflict exactly as before.
+  function combinedLockKeyRetailer(key) {
+    return key.startsWith("store:") ? key.slice("store:".length) : "";
+  }
+
+  function ensureHeldLock(state, key, productId, ownerId, combinedMemberIds = null) {
+    const retailer = combinedLockKeyRetailer(key);
+    const combinedIds = Array.isArray(combinedMemberIds) ? combinedMemberIds : null;
     const current = state.locks[key];
+    if (retailer && combinedIds && combinedIds.includes(productId)) {
+      if (current?.hold && current.combined !== true && !combinedIds.includes(current.productId)) {
+        // A non-member already holds this lane post-mutation; fall through to
+        // the existing conflict escalation.
+      } else {
+        const memberProductIds = [...new Set([
+          ...(current?.combined === true ? current.memberProductIds || [] : []),
+          ...(current?.hold && current.combined !== true ? [current.productId] : []),
+          productId
+        ].filter(Boolean))].slice(0, 40);
+        state.locks[key] = {
+          productId: `combined:${retailer}`,
+          ownerId: "combined-batch",
+          expiresAt: Number.MAX_SAFE_INTEGER,
+          hold: true,
+          combined: true,
+          memberProductIds,
+          claim: current?.combined === true ? current.claim || null : null
+        };
+        return;
+      }
+    }
     if (current?.hold) {
       if (current.productId !== productId) {
         state.locks[key] = {
@@ -166,7 +200,7 @@
     };
   }
 
-  function normalizeState(input, runId, now = Date.now()) {
+  function normalizeState(input, runId, now = Date.now(), combinedMembersByStore = null) {
     const expectedRunId = String(runId || "");
     // The storage key intentionally remains cartConfirmAutomationStateV3.
     // Accept older same-run objects and migrate them additively so a schema
@@ -225,8 +259,18 @@
         ensureHeldLock(state, `product:${productId}`, productId, ownerId);
         const retailer = String(productId).split(":", 1)[0];
         if (["target", "walmart", "amazon"].includes(retailer)) {
-          ensureHeldLock(state, `store:${retailer}`, productId, ownerId);
+          ensureHeldLock(state, `store:${retailer}`, productId, ownerId, combinedMembersByStore?.[retailer] || null);
         }
+      }
+    }
+    for (const [key, lock] of Object.entries(state.locks)) {
+      if (
+        lock?.combined === true
+        && Array.isArray(lock.memberProductIds)
+        && lock.memberProductIds.length
+        && lock.memberProductIds.every((memberId) => state.completed[memberId])
+      ) {
+        delete state.locks[key];
       }
     }
     return state;
@@ -266,7 +310,7 @@
     return "";
   }
 
-  function claim(state, product, ownerId, now = Date.now()) {
+  function claim(state, product, ownerId, now = Date.now(), options = {}) {
     if (state.completed[product.id]) return { ok: false, reason: "completed" };
     const budget = budgetReason(state, product, now);
     if (budget) return { ok: false, reason: budget };
@@ -287,8 +331,21 @@
       return { ok: false, reason: "cart-confirmed" };
     }
     const keys = lockKeys(product);
+    const combinedIds = Array.isArray(options.combinedMemberIds) ? options.combinedMemberIds : [];
     for (const key of keys) {
       const lock = state.locks[key];
+      if (lock?.combined === true) {
+        if (!combinedIds.includes(product.id)) {
+          return { ok: false, reason: "store-busy", activeProductId: lock.productId, held: true, blockingPhase: "combined-batch" };
+        }
+        // The batch owns the lane; a short exclusive sub-claim keeps retailer
+        // mutations serialized between members.
+        const sub = lock.claim;
+        if (sub && Number(sub.expiresAt || 0) > now && (sub.ownerId !== ownerId || sub.productId !== product.id)) {
+          return { ok: false, reason: "store-busy", activeProductId: sub.productId, held: true, blockingPhase: "combined-member-active" };
+        }
+        continue;
+      }
       const orphanedHeldLock = lock?.hold === true
         && record.addAction.phase === "idle"
         && record.workflow.phase === "active";
@@ -310,6 +367,11 @@
       }
     }
     for (const key of keys) {
+      const existing = state.locks[key];
+      if (existing?.combined === true) {
+        existing.claim = { productId: product.id, ownerId, expiresAt: now + CLAIM_LOCK_MS };
+        continue;
+      }
       state.locks[key] = {
         productId: product.id,
         ownerId,
@@ -783,6 +845,31 @@
     return { ok: true };
   }
 
+  // A combined-order member is completed by the captain's confirmed
+  // submission: the member proved its own cart line (add confirmed) and the
+  // captain — whose single submission covered every member line — must have a
+  // durable confirmed submission and completion of its own first.
+  function completeCombinedMember(state, product, captain, now = Date.now()) {
+    if (state.completed[product.id]) return { ok: true, alreadyCompleted: true };
+    const captainRecord = state.products[String(captain?.id || "")];
+    if (
+      !state.completed[String(captain?.id || "")]
+      || !["intent", "uncertain", "confirmed"].includes(captainRecord?.submission?.phase)
+    ) {
+      return { ok: false, reason: "captain-confirmation-missing" };
+    }
+    const record = recordFor(state, product.id);
+    if (record.addAction.phase !== "confirmed") return { ok: false, reason: "cart-confirmation-missing" };
+    state.completed[product.id] = new Date(now).toISOString();
+    record.submission = { ...record.submission, phase: "confirmed", updatedAt: now };
+    record.workflow = { ...record.workflow, phase: "confirmed", updatedAt: now };
+    record.addAction = { phase: "idle", ownerId: "", updatedAt: now };
+    for (const [key, lock] of Object.entries(state.locks)) {
+      if (lock?.productId === product.id) delete state.locks[key];
+    }
+    return { ok: true };
+  }
+
   function productState(state, product, now = Date.now()) {
     const record = recordFor(state, product.id);
     return {
@@ -814,6 +901,7 @@
     beginSubmission,
     abandon,
     claim,
+    completeCombinedMember,
     complete,
     createState,
     markAddAction,
