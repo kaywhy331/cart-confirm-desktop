@@ -622,3 +622,63 @@ test("the content script recovers variant layouts by selecting the configured me
   // Wrong-method-preselected layouts: toggle before any add click is prepared.
   assert.match(source, /pageFulfillmentMode\s*&&\s*pageFulfillmentMode !== product\.fulfillmentMode[\s\S]{0,120}selectConfiguredFulfillment\(product\)/);
 });
+
+test("a bare Add to cart CTA is refused while the variant method cells select the wrong mode", () => {
+  const adapter = getAdapter("target");
+  const product = { ...productFor(CASES[0]), sku: "83601718", id: "target:83601718", fulfillmentMode: "shipping" };
+  const doc = new JSDOM(`
+    <main>
+      <div data-test="fulfillment-section">
+        <button aria-pressed="true">Pickup<br>Ready within 2 hours</button>
+        <button>Delivery<br>As soon as 6pm with Shipt</button>
+        <button>Shipping<br>Arrives by Sat, Aug 23</button>
+      </div>
+      <div><button>Add to cart</button></div>
+    </main>
+  `, { url: "https://www.target.com/p/aquafresh-extreme-clean-toothpaste-3pk/-/A-83601718" }).window.document;
+  // Pickup is the selected cell: a bare Add to cart would add the wrong method.
+  assert.equal(adapter.offer(doc, product).addButton, null);
+  // The variant reader exposes the wrong selection so the content script's
+  // bounded configured-method toggle engages instead.
+  assert.equal(adapter.fulfillmentMode(doc), "pickup");
+});
+
+test("a bare Add to cart CTA qualifies once the configured method cell is the selected one", () => {
+  const adapter = getAdapter("target");
+  const product = { ...productFor(CASES[0]), sku: "83601718", id: "target:83601718", fulfillmentMode: "shipping" };
+  const doc = new JSDOM(`
+    <main>
+      <div data-test="fulfillment-section">
+        <button>Pickup<br>Ready within 2 hours</button>
+        <button class="cell selected">Shipping<br>Arrives by Sat, Aug 23</button>
+      </div>
+      <div><button>Add to cart</button></div>
+    </main>
+  `, { url: "https://www.target.com/p/aquafresh-extreme-clean-toothpaste-3pk/-/A-83601718" }).window.document;
+  assert.equal(adapter.fulfillmentMode(doc), "shipping");
+  const offer = adapter.offer(doc, product);
+  assert.ok(offer.addButton, "shipping-selected layout must expose the CTA");
+  assert.equal(offer.addButton.textContent.trim(), "Add to cart");
+});
+
+test("a Pick it up CTA never satisfies a shipping mission and Ship it never satisfies pickup", () => {
+  const adapter = getAdapter("target");
+  const shippingProduct = { ...productFor(CASES[0]), sku: "83601718", id: "target:83601718", fulfillmentMode: "shipping" };
+  const pickupDoc = new JSDOM(
+    "<main><button>Pick it up</button></main>",
+    { url: "https://www.target.com/p/aquafresh-extreme-clean-toothpaste-3pk/-/A-83601718" }
+  ).window.document;
+  assert.equal(adapter.offer(pickupDoc, shippingProduct).addButton, null);
+  const pickupProduct = { ...shippingProduct, fulfillmentMode: "pickup" };
+  const shipDoc = new JSDOM(
+    "<main><button>Ship it</button></main>",
+    { url: "https://www.target.com/p/aquafresh-extreme-clean-toothpaste-3pk/-/A-83601718" }
+  ).window.document;
+  assert.equal(adapter.offer(shipDoc, pickupProduct).addButton, null);
+  assert.ok(adapter.offer(pickupDoc, pickupProduct).addButton, "pickup mission accepts Pick it up");
+});
+
+test("click actions scroll only when the control is outside the viewport", () => {
+  const source = fs.readFileSync(path.join(__dirname, "..", "extension", "content.js"), "utf8");
+  assert.match(source, /if \(!elementInViewport\(element\)\) element\.scrollIntoView\?\./);
+});
