@@ -6,6 +6,12 @@ update dialog shows exactly these bullets. Keep every entry short, plain, and
 about what the user will notice — one bullet per change, no internals.
 Publishing fails if the version being released has no section here.
 
+## 3.6.14
+- Fixed: auto-checkout could stop with "the complete cart inventory could not be verified" even though the right item was confirmed in the cart
+- Cart Confirm now recognizes Target's current cart Remove button when double-checking that your cart holds only the mission's item
+- An unexpected extra cart line still stops checkout for your manual review, as before
+- Fixed: a cart with quantity 2 or more could stop with "unit price is above the cap" after sitting a few minutes, because the line shows the combined total; the verified per-item price is now used no matter how long the cart waited
+
 ## 3.6.13
 - Fixed: a mission could stop at the cart with "failed the first-party seller or unit-price safety check" even when the product page had already verified the seller and price
 - The cart check now reuses the recent product-page verification for seller and unit price, the same way checkout already does

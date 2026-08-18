@@ -3,7 +3,7 @@
 (() => {
   const CART_PROOF_MAX_AGE_MS = 5 * 60_000;
 
-  function effectiveLineOffer(product, line, proof = null) {
+  function effectiveLineOffer(product, line, proof = null, priceAnchor = null) {
     if (!line) return { ok: false, reason: "unmatched-product" };
     if (line.seller && line.firstParty !== true) {
       return { ok: false, reason: "third-party", seller: line.seller, firstParty: false };
@@ -14,9 +14,18 @@
     if (!firstParty) return { ok: false, reason: seller ? "third-party" : "seller-unverified", seller, firstParty };
 
     let price = Number.isFinite(line.price) ? line.price : null;
-    if (line.quantity > 1 && Number.isFinite(proof?.price) && price > product.maxPrice) {
-      const expectedTotal = Math.round(proof.price * line.quantity * 100) / 100;
-      if (Math.abs(price - expectedTotal) <= 0.02) price = proof.price;
+    // The quantity-subtotal correction may use an aged price anchor: proving
+    // the visible number equals a previously VERIFIED unit price times the
+    // quantity (within 2¢) is pure arithmetic corroboration, so a price that
+    // changed since verification breaks the match and still fails closed.
+    // Seller/first-party backfill and the missing-price fallback stay bound
+    // to the fresh proof above.
+    const anchorUnitPrice = Number.isFinite(proof?.price)
+      ? proof.price
+      : Number.isFinite(priceAnchor?.price) ? priceAnchor.price : null;
+    if (line.quantity > 1 && Number.isFinite(anchorUnitPrice) && price > product.maxPrice) {
+      const expectedTotal = Math.round(anchorUnitPrice * line.quantity * 100) / 100;
+      if (Math.abs(price - expectedTotal) <= 0.02) price = anchorUnitPrice;
     }
     if (price === null && Number.isFinite(proof?.price)) price = proof.price;
     if (!Number.isFinite(price)) return { ok: false, reason: "price-unavailable", seller, firstParty };
