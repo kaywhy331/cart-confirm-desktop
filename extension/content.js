@@ -19,6 +19,14 @@
   const seen = new Map();
   const attemptCache = new Map();
   const quantityRechecks = new Map();
+  // Checkout summaries recompute totals, shipping, and fulfillment for a few
+  // seconds after a quantity change (e.g. free shipping applying). These
+  // review-block reasons can be that transient hydration, so they get bounded
+  // rechecks before a manual-review block is posted. Genuine mismatches
+  // (trust, preflight evidence, unsafe choices) always block immediately.
+  const REVIEW_SETTLE_REASONS = Object.freeze(["total-unavailable", "over-total", "checkout-evidence-unverified", "fulfillment-unverified"]);
+  const REVIEW_SETTLE_RECHECK_LIMIT = 10;
+  const reviewSettleRechecks = new Map();
   const missingCartLineSince = new Map();
   const QUANTITY_RECHECK_LIMIT = 8;
   const PARTIAL_RAISE_ATTEMPT_LIMIT = 4;
@@ -2029,6 +2037,17 @@
     const review = await readCheckoutReview(product);
     if (!review.ok || (product.action === "checkout" && !review.evidence.ok)) {
       const blockReason = !review.ok ? review.reason : review.evidence.reason;
+      if (REVIEW_SETTLE_REASONS.includes(blockReason)) {
+        const settleCount = (reviewSettleRechecks.get(product.id) || 0) + 1;
+        if (settleCount <= REVIEW_SETTLE_RECHECK_LIMIT) {
+          reviewSettleRechecks.set(product.id, settleCount);
+          await send("automation-status", product, {
+            message: "The final order summary is still updating (totals, shipping, or fulfillment can lag a quantity change). Rechecking before any decision."
+          }, `review-settle:${product.id}`, 30_000);
+          scheduleScan(1_500);
+          return;
+        }
+      }
       await send("automation-blocked", product, {
         price: review.price,
         orderTotal: review.orderTotal === null ? undefined : review.orderTotal,
@@ -2052,6 +2071,7 @@
       }, `review-blocked:${product.id}:${blockReason}`, 20_000);
       return;
     }
+    reviewSettleRechecks.delete(product.id);
 
     if (product.action === "review") {
       const evidenceHash = await reviewEvidenceHash(product, review);

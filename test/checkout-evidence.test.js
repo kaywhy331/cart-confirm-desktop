@@ -275,3 +275,22 @@ test("checkout trust is stored on preflight approval and enforced by the content
   assert.match(content, /checkout-trust-required/);
   assert.match(content, /checkout-trust-changed/);
 });
+
+test("transient checkout-review reasons get bounded settle rechecks before blocking", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const source = fs.readFileSync(path.join(__dirname, "..", "extension", "content.js"), "utf8");
+  // The settle list covers exactly the hydration-transient reasons.
+  assert.match(source, /REVIEW_SETTLE_REASONS = Object\.freeze\(\["total-unavailable", "over-total", "checkout-evidence-unverified", "fulfillment-unverified"\]\)/);
+  // Bounded: recheck path increments a counter against a limit and rescans
+  // instead of posting the manual-review block.
+  assert.match(source, /REVIEW_SETTLE_REASONS\.includes\(blockReason\)/);
+  assert.match(source, /settleCount <= REVIEW_SETTLE_RECHECK_LIMIT/);
+  assert.match(source, /review-settle:\$\{product\.id\}/);
+  // A passing review resets the counter so a later hydration burst gets a
+  // fresh allowance.
+  assert.match(source, /reviewSettleRechecks\.delete\(product\.id\)/);
+  // Trust and preflight-evidence mismatches never enter the settle list.
+  assert.doesNotMatch(source, /REVIEW_SETTLE_REASONS[^\n]*checkout-trust/);
+  assert.doesNotMatch(source, /REVIEW_SETTLE_REASONS[^\n]*checkout-evidence-changed/);
+});
