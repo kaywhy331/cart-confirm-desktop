@@ -318,6 +318,21 @@
     return proof;
   }
 
+  // Same-run proof with the freshness bound relaxed. Only usable as an
+  // arithmetic price anchor (subtotal = unit × quantity corroboration in
+  // effectiveLineOffer) — never for seller or first-party backfill, which
+  // requires the age-bounded proofFor above.
+  async function staleProofFor(product) {
+    const state = await productAutomationState(product);
+    const proof = state.ok ? state.proof : null;
+    if (
+      !proof
+      || proof.productId !== product.id
+      || proof.runId !== config?.automationRunId
+    ) return null;
+    return proof;
+  }
+
   function proofInput(offer, source = "product", quantityConfirmed = false, inventory = null) {
     return {
       price: Number.isFinite(offer?.price) ? offer.price : null,
@@ -1609,7 +1624,7 @@
     // product-page proof (same run, same product, bounded age) backfills the
     // verified seller and unit price exactly as the checkout review does; a
     // visible third-party seller on the line still blocks unconditionally.
-    const safeLine = Safety.effectiveLineOffer(product, line, await proofFor(product));
+    const safeLine = Safety.effectiveLineOffer(product, line, await proofFor(product), await staleProofFor(product));
     if (!safeLine.ok) {
       await send("automation-blocked", product, {
         price: safeLine.price,

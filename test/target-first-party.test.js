@@ -232,6 +232,27 @@ test("the cart-stage line check consumes the durable product-page proof", () => 
   const fs = require("node:fs");
   const path = require("node:path");
   const source = fs.readFileSync(path.join(__dirname, "..", "extension", "content.js"), "utf8");
-  assert.match(source, /Safety\.effectiveLineOffer\(product, line, await proofFor\(product\)\)/);
+  assert.match(source, /Safety\.effectiveLineOffer\(product, line, await proofFor\(product\), await staleProofFor\(product\)\)/);
   assert.match(source, /first-party seller could not be verified here or on the recent product page/);
+});
+
+test("an aged price anchor corrects a quantity subtotal but never backfills seller or a missing price", () => {
+  const stale = { firstParty: true, seller: "Sold by Target", price: 34.99 };
+  const twoUp = { ...PRODUCT, maxPrice: 35, quantity: 2 };
+  // Subtotal $69.98 over the $35 unit cap resolves via arithmetic even when
+  // the fresh proof is gone (cart older than the proof freshness window).
+  const subtotal = { seller: "", firstParty: true, price: 69.98, quantity: 2 };
+  const resolved = effectiveLineOffer(twoUp, subtotal, null, stale);
+  assert.equal(resolved.ok, true);
+  assert.equal(resolved.price, 34.99);
+  // A changed price breaks the arithmetic match and still fails closed.
+  const drifted = effectiveLineOffer(twoUp, { ...subtotal, price: 89.98 }, null, stale);
+  assert.equal(drifted.ok, false);
+  assert.equal(drifted.reason, "over-price");
+  // The stale anchor must not stand in for fresh seller/first-party proof...
+  const unlabeled = { seller: "", firstParty: false, price: 69.98, quantity: 2 };
+  assert.equal(effectiveLineOffer(twoUp, unlabeled, null, stale).reason, "seller-unverified");
+  // ...nor for a missing price.
+  const blank = { seller: "", firstParty: true, price: Number.NaN, quantity: 2 };
+  assert.equal(effectiveLineOffer(twoUp, blank, null, stale).reason, "price-unavailable");
 });
