@@ -87,3 +87,44 @@ test("both quiet retailer fetch sites in main.js use the shared fingerprint", ()
   // The old hand-rolled UA constant is fully retired.
   assert.doesNotMatch(source, /QUIET_USER_AGENT/);
 });
+
+test("quietFetch responses feed readBoundedHtml: gzip HTML decodes through the reader interface", async () => {
+  const zlib = require("node:zlib");
+  const { readBoundedHtml } = require("../lib/quiet-monitor");
+  const html = `<!doctype html><html><body>${"stock ".repeat(50_000)}</body></html>`;
+  const server = http.createServer((req, res) => {
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Content-Encoding": "gzip" });
+    res.end(zlib.gzipSync(html));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = server.address().port;
+  try {
+    const response = await quietFetch(`http://127.0.0.1:${port}/p/item/-/A-123`, { headers: quietNavigationHeaders() });
+    // The 3.6.17 regression: quietCheck reads the page through
+    // readBoundedHtml, which consumes response.body.getReader(). A response
+    // without that reader made every quiet check throw "unreadable-body",
+    // so tabless missions only reached Chrome minutes later via the
+    // three-failure quarantine fallback.
+    assert.equal(typeof response.body?.getReader, "function");
+    const body = await readBoundedHtml(response);
+    assert.equal(body, html);
+  } finally {
+    server.close();
+  }
+});
+
+test("readBoundedHtml still enforces its size cap on quietFetch responses", async () => {
+  const { readBoundedHtml } = require("../lib/quiet-monitor");
+  const server = http.createServer((req, res) => {
+    res.writeHead(200, { "Content-Type": "text/html" });
+    res.end(`<html>${"x".repeat(200_000)}</html>`);
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = server.address().port;
+  try {
+    const response = await quietFetch(`http://127.0.0.1:${port}/p/item/-/A-123`, { headers: quietNavigationHeaders() });
+    await assert.rejects(readBoundedHtml(response, { maximumBytes: 4_096 }), (error) => error.code === "body-too-large");
+  } finally {
+    server.close();
+  }
+});
