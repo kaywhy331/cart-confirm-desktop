@@ -6,6 +6,11 @@ update dialog shows exactly these bullets. Keep every entry short, plain, and
 about what the user will notice — one bullet per change, no internals.
 Publishing fails if the version being released has no section here.
 
+## 3.6.15
+- Fixed: auto-checkout could give up at the final review while the order summary was still updating (for example right after free shipping applied to the new quantity)
+- The final review now waits and rechecks for about 15 seconds while totals, shipping, or delivery details settle before it ever stops for manual review
+- Real mismatches with your approved checkout profile still stop immediately
+
 ## 3.6.14
 - Fixed: auto-checkout could stop with "the complete cart inventory could not be verified" even though the right item was confirmed in the cart
 - Cart Confirm now recognizes Target's current cart Remove button when double-checking that your cart holds only the mission's item
