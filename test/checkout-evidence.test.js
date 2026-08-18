@@ -153,14 +153,39 @@ test("capture and matches bind visible checkout fields and survive only the same
   const preflightMatch = await Evidence.matches(expected, unchanged, entry);
   assert.equal(preflightMatch.ok, true);
   assert.equal(preflightMatch.verification, "preflight");
-  const liveMatch = await Evidence.matches(null, unchanged, entry);
-  assert.equal(liveMatch.ok, true);
-  assert.equal(liveMatch.verification, "live");
+  const untrusted = await Evidence.matches(null, unchanged, entry);
+  assert.equal(untrusted.ok, false);
+  assert.equal(untrusted.reason, "checkout-trust-required");
+  const trust = {
+    target: {
+      shipping: {
+        destinationFingerprint: unchanged.fulfillment.destinationFingerprint,
+        pickupStoreFingerprint: "",
+        instrumentSetFingerprint: unchanged.payment.instrumentSetFingerprint,
+        instrumentCount: unchanged.payment.instrumentCount
+      }
+    }
+  };
+  const trustMatch = await Evidence.matches(null, unchanged, entry, trust);
+  assert.equal(trustMatch.ok, true);
+  assert.equal(trustMatch.verification, "account-trust");
+  for (const drift of [
+    { destinationFingerprint: "d".repeat(64) },
+    { instrumentSetFingerprint: "e".repeat(64) },
+    { instrumentCount: unchanged.payment.instrumentCount + 1 }
+  ]) {
+    const driftedTrust = { target: { shipping: { ...trust.target.shipping, ...drift } } };
+    assert.equal((await Evidence.matches(null, unchanged, entry, driftedTrust)).reason, "checkout-trust-changed");
+  }
+  assert.equal(
+    (await Evidence.matches(null, unchanged, entry, { walmart: trust.target })).reason,
+    "checkout-trust-required"
+  );
   const unsafeLive = await Evidence.capture(entry, {
     ...observed,
     substitutionState: "enabled"
   }, signer("1".repeat(64)));
-  assert.equal((await Evidence.matches(null, unsafeLive, entry)).reason, "checkout-evidence-unverified");
+  assert.equal((await Evidence.matches(null, unsafeLive, entry, trust)).reason, "checkout-evidence-unverified");
 
   for (const change of [
     { destinationTexts: ["Deliver to 987 Other Avenue"] },
@@ -196,4 +221,57 @@ test("readable checkout labels stay inside the content-script hashing boundary",
   assert.doesNotMatch(content, /CART_CONFIRM_FINGERPRINT_CHECKOUT_EVIDENCE/);
   assert.doesNotMatch(background, /CART_CONFIRM_FINGERPRINT_CHECKOUT_EVIDENCE|message\.values/);
   assert.doesNotMatch(`${background}\n${main}\n${renderer}`, /destinationTexts|paymentInstrumentTexts|pickupStoreTexts/);
+});
+
+test("account checkout trust normalizes per store and mode and is written on preflight approval", () => {
+  const { normalizeCheckoutTrust, checkoutTrustWithEvidence } = require("../lib/core");
+  const entry = product("target");
+  const evidence = contract(entry);
+  const trust = checkoutTrustWithEvidence({}, entry, evidence);
+  assert.deepEqual(trust.target.shipping, {
+    destinationFingerprint: "a".repeat(64),
+    pickupStoreFingerprint: "",
+    instrumentSetFingerprint: "c".repeat(64),
+    instrumentCount: 2,
+    capturedAt: evidence.capturedAt,
+    sourceProductId: entry.id
+  });
+  // Round-trips through settings normalization unchanged.
+  assert.deepEqual(normalizeCheckoutTrust(trust), trust);
+  // Re-approval overwrites the same store+mode slot instead of accumulating.
+  const other = { ...entry, id: "target:1099999999", sku: "1099999999" };
+  const replaced = checkoutTrustWithEvidence(trust, other, {
+    ...contract(other),
+    payment: { instrumentSetFingerprint: "f".repeat(64), instrumentCount: 1 }
+  });
+  assert.equal(replaced.target.shipping.instrumentSetFingerprint, "f".repeat(64));
+  assert.equal(replaced.target.shipping.sourceProductId, other.id);
+  // A pickup approval lands beside shipping without clobbering it.
+  const pickupEntry = product("walmart", { fulfillmentMode: "pickup" });
+  const both = checkoutTrustWithEvidence(replaced, pickupEntry, contract(pickupEntry));
+  assert.equal(both.target.shipping.instrumentSetFingerprint, "f".repeat(64));
+  assert.equal(both.walmart.pickup.pickupStoreFingerprint, "b".repeat(64));
+  assert.equal(both.walmart.pickup.destinationFingerprint, "");
+  // Malformed entries are dropped, not preserved.
+  for (const bad of [
+    { instrumentSetFingerprint: "short", instrumentCount: 2, destinationFingerprint: "a".repeat(64), capturedAt: evidence.capturedAt },
+    { instrumentSetFingerprint: "c".repeat(64), instrumentCount: 0, destinationFingerprint: "a".repeat(64), capturedAt: evidence.capturedAt },
+    { instrumentSetFingerprint: "c".repeat(64), instrumentCount: 2, destinationFingerprint: "a".repeat(64), capturedAt: "not-a-date" },
+    { instrumentSetFingerprint: "c".repeat(64), instrumentCount: 2, destinationFingerprint: "a".repeat(64), pickupStoreFingerprint: "b".repeat(64), capturedAt: evidence.capturedAt }
+  ]) {
+    assert.deepEqual(normalizeCheckoutTrust({ target: { shipping: bad } }), {});
+  }
+});
+
+test("checkout trust is stored on preflight approval and enforced by the content script", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const root = path.join(__dirname, "..");
+  const main = fs.readFileSync(path.join(root, "main.js"), "utf8");
+  const content = fs.readFileSync(path.join(root, "extension", "content.js"), "utf8");
+  assert.match(main, /checkoutTrust: checkoutTrustWithEvidence\(settings\.checkoutTrust/);
+  assert.match(main, /checkoutTrust: settings\.checkoutTrust/);
+  assert.match(content, /Evidence\.matches\(expectedEvidence, checkoutEvidence, product, config\?\.checkoutTrust\)/);
+  assert.match(content, /checkout-trust-required/);
+  assert.match(content, /checkout-trust-changed/);
 });

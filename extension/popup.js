@@ -163,7 +163,7 @@ elements.addButton.addEventListener("click", async () => {
           ? "This item is already in Missions; the affiliate link from this page was attached to it."
           : "This item is already in Missions; its existing settings were left unchanged.")
         : result.product?.action === "checkout"
-          ? "Auto-submit mission added. Live final-review verification is required; an advance preflight is optional."
+          ? "Auto-submit mission added. Live final-review verification is required; one locked preflight per store approves its checkout profile."
           : `Mission added with the desktop default profile (${result.product?.action || "configured"}).`,
       "success"
     );
