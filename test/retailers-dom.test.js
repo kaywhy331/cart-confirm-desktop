@@ -418,3 +418,62 @@ for (const entry of CASES) {
     assert.equal(adapter.visibleQuantityLimit(doc, product), 2);
   });
 }
+
+test("fulfillment method controls are selectable per mode but store choices and Shipt delivery never are", () => {
+  const adapter = getAdapter("target");
+  const doc = new JSDOM(`
+    <main>
+      <fieldset data-test="fulfillment-cell">
+        <button aria-selected="false">Pickup<br>Ready within 2 hours</button>
+        <button aria-selected="false">Delivery<br>As soon as 6pm with Shipt</button>
+        <button aria-selected="false">Shipping<br>Arrives Thu, Aug 20</button>
+      </fieldset>
+      <button data-test="store-picker">Select a store</button>
+      <button data-test="pickup-store-picker">Pick up: select a store</button>
+    </main>
+  `, { url: "https://www.target.com/cart" }).window.document;
+  const shipping = adapter.fulfillmentOptionControl(doc, "shipping");
+  assert.match(shipping.textContent, /Shipping/);
+  const pickup = adapter.fulfillmentOptionControl(doc, "pickup");
+  assert.match(pickup.textContent, /Ready within 2 hours/);
+  assert.doesNotMatch(pickup.textContent, /select a store/i);
+  assert.equal(adapter.fulfillmentOptionControl(doc, ""), null);
+  assert.equal(adapter.fulfillmentOptionControl(doc, "delivery"), null);
+});
+
+test("an already-selected configured method returns no control and Shipt-flavored shipping is vetoed", () => {
+  const adapter = getAdapter("target");
+  const selectedDoc = new JSDOM(`
+    <main>
+      <fieldset>
+        <button aria-selected="true">Shipping<br>Arrives Thu</button>
+        <button aria-selected="false">Pickup</button>
+      </fieldset>
+    </main>
+  `, { url: "https://www.target.com/cart" }).window.document;
+  assert.equal(adapter.fulfillmentOptionControl(selectedDoc, "shipping"), null);
+  const shiptDoc = new JSDOM(`
+    <main>
+      <button>Shipping with Shipt same-day delivery</button>
+    </main>
+  `, { url: "https://www.target.com/cart" }).window.document;
+  assert.equal(adapter.fulfillmentOptionControl(shiptDoc, "shipping"), null);
+  const radioDoc = new JSDOM(`
+    <main>
+      <label>Ship it<input type="radio" name="fulfillment"></label>
+      <label>Pick up<input type="radio" name="fulfillment" checked></label>
+    </main>
+  `, { url: "https://www.walmart.com/cart" }).window.document;
+  const walmart = getAdapter("walmart");
+  assert.equal(walmart.fulfillmentOptionControl(radioDoc, "shipping").closest("label").textContent.trim(), "Ship it");
+  assert.equal(walmart.fulfillmentOptionControl(radioDoc, "pickup"), null);
+});
+
+test("the content script resolves location prompts through the configured method before blocking", () => {
+  const source = fs.readFileSync(path.join(__dirname, "..", "extension", "content.js"), "utf8");
+  assert.match(source, /adapter\.fulfillmentMode\(document\) === product\.fulfillmentMode/);
+  assert.match(source, /await selectConfiguredFulfillment\(product\)/);
+  assert.match(source, /fulfillmentOptionControl\?\.\(document, product\.fulfillmentMode\)/);
+  // The manual-safety promise stays intact: no automatic store/zip/location choice.
+  assert.match(source, /store, zip, and location choices are never made automatically/);
+});
