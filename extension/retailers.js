@@ -332,7 +332,7 @@
     let best = null;
     for (let depth = 0; depth < 10 && current; depth += 1) {
       const hasControls = Boolean(current.querySelector?.(
-        "select, input[aria-label*='quantity' i], button[aria-label*='quantity' i], button[aria-label*='remove' i], [data-action*='delete' i], [data-testid*='remove' i]"
+        "select, input[aria-label*='quantity' i], button[aria-label*='quantity' i], button[aria-label*='remove' i], [data-action*='delete' i], [data-testid*='remove' i], [data-test*='delete' i], [data-testid*='delete' i]"
       ));
       const text = textOf(current);
       if (/\$\s*\d/.test(text) && text.length < 12_000) best = current;
@@ -459,7 +459,7 @@
     for (const link of queryAll(doc, selectors)) {
       const container = closestLineContainer(link);
       const hasLineControl = Boolean(container?.querySelector?.(
-        "select, input[aria-label*='quantity' i], button[aria-label*='quantity' i], button[aria-label*='remove' i], [data-action*='delete' i], [data-testid*='remove' i]"
+        "select, input[aria-label*='quantity' i], button[aria-label*='quantity' i], button[aria-label*='remove' i], [data-action*='delete' i], [data-testid*='remove' i], [data-test*='delete' i], [data-testid*='delete' i]"
       ));
       if (hasLineControl) ids.push(extractSkuFromUrl(retailer, link.href));
     }
@@ -494,7 +494,7 @@
 
   function hasLineControls(container) {
     return Boolean(container?.querySelector?.(
-      "select, input[aria-label*='quantity' i], button[aria-label*='quantity' i], button[aria-label*='remove' i], [data-action*='delete' i], [data-testid*='remove' i]"
+      "select, input[aria-label*='quantity' i], button[aria-label*='quantity' i], button[aria-label*='remove' i], [data-action*='delete' i], [data-testid*='remove' i], [data-test*='delete' i], [data-testid*='delete' i]"
     ));
   }
 
@@ -505,7 +505,13 @@
       "input[name*='delete' i]",
       "[data-testid*='remove-item' i]",
       "[data-automation-id*='remove-item' i]",
-      "[data-action*='delete-item' i]"
+      "[data-action*='delete-item' i]",
+      // Target's live cart line ships its remove control as
+      // <button data-test="cartItem-deleteBtn"> with no remove-item label.
+      "button[data-test*='deleteBtn' i]",
+      "button[data-test*='delete-btn' i]",
+      "[data-test*='remove-item' i]",
+      "[data-testid*='delete-item' i]"
     ]).map((control) => closestLineContainer(control)).filter(Boolean));
   }
 

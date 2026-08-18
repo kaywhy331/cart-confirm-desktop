@@ -477,3 +477,43 @@ test("the content script resolves location prompts through the configured method
   // The manual-safety promise stays intact: no automatic store/zip/location choice.
   assert.match(source, /store, zip, and location choices are never made automatically/);
 });
+
+test("a live-DOM Target cart line with only a cartItem-deleteBtn control is independently counted", () => {
+  const adapter = getAdapter("target");
+  const doc = new JSDOM(`<body><main>
+    <div data-test="cartItem" data-tcin="95059193">
+      <a href="https://www.target.com/p/riftbound/-/A-95059193" data-test="cartItem-title">Riftbound Zed vs Shen Showdown Decks</a>
+      <span data-test="cartItem-price">$34.99</span>
+      <select aria-label="Quantity"><option value="2" selected>2</option></select>
+      <button data-test="cartItem-deleteBtn">Delete</button>
+    </div>
+    <div data-test="cart-summary-total">Order total $69.98</div>
+  </main></body>`, { url: "https://www.target.com/cart" }).window.document;
+  const inventory = adapter.cartInventory(doc);
+  assert.deepEqual(inventory.ids, ["95059193"]);
+  assert.equal(inventory.independentLineCount, 1);
+  assert.equal(inventory.independentlyCounted, true);
+  assert.equal(inventory.complete, true);
+  const product = { id: "target:95059193", retailer: "target", sku: "95059193", quantity: 2, maxPrice: 40, maxOrderTotal: 80, action: "checkout", fulfillmentMode: "shipping", enabled: true };
+  assert.equal(verifySingleProductCart(product, inventory).ok, true);
+});
+
+test("an extra unrecognized cart line still makes the independent count fail closed", () => {
+  const adapter = getAdapter("target");
+  const doc = new JSDOM(`<body><main>
+    <div data-test="cartItem" data-tcin="95059193">
+      <a href="https://www.target.com/p/riftbound/-/A-95059193">Riftbound Decks</a>
+      <span data-test="cartItem-price">$34.99</span>
+      <button data-test="cartItem-deleteBtn">Delete</button>
+    </div>
+    <div data-test="cartItem">
+      <span>Mystery line without any TCIN</span>
+      <span data-test="cartItem-price">$9.99</span>
+      <button data-test="cartItem-deleteBtn">Delete</button>
+    </div>
+  </main></body>`, { url: "https://www.target.com/cart" }).window.document;
+  const inventory = adapter.cartInventory(doc);
+  assert.equal(inventory.complete, false);
+  const product = { id: "target:95059193", retailer: "target", sku: "95059193", quantity: 2, maxPrice: 40, maxOrderTotal: 80, action: "checkout", fulfillmentMode: "shipping", enabled: true };
+  assert.equal(verifySingleProductCart(product, inventory).ok, false);
+});
