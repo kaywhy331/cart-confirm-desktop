@@ -16,6 +16,7 @@ const path = require("node:path");
 const crypto = require("node:crypto");
 const { spawn } = require("node:child_process");
 const { checkForUpdate, downloadUpdate, userFacingReleaseNotes } = require("./lib/app-update");
+const { checkoutTrustWithEvidence } = require("./lib/core");
 
 const {
   DEFAULT_SETTINGS,
@@ -826,9 +827,16 @@ function approveCheckoutPreflightRequest(input) {
   }
   const productId = String(input?.productId || "").slice(0, 80);
   try {
+    const preflightedProducts = applyCheckoutPreflight(settings.products, productId, input?.evidence);
+    const approvedProduct = preflightedProducts.find((candidate) => candidate.id === productId);
     settings = {
       ...settings,
-      products: applyCheckoutPreflight(settings.products, productId, input?.evidence)
+      products: preflightedProducts,
+      // The approved destination and payment fingerprints become the
+      // account-level checkout profile for this store and fulfillment mode,
+      // so other auto-submit missions inherit them instead of accepting
+      // whatever destination the live page happens to show.
+      checkoutTrust: checkoutTrustWithEvidence(settings.checkoutTrust, approvedProduct, approvedProduct?.checkoutEvidence)
     };
     persistSettings();
     configVersion += 1;
@@ -1815,6 +1823,7 @@ function extensionConfig() {
     scheduledBlitzDurationSeconds: settings.scheduledBlitzDurationSeconds,
     walmartQueueCaptureReloads: settings.walmartQueueCaptureReloads,
     firstPartyOnly: true,
+    checkoutTrust: settings.checkoutTrust,
     catalogSearch: activeCatalogSearch,
     token: settings.companionToken,
     configVersion,

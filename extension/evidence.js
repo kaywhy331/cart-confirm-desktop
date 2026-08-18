@@ -183,16 +183,35 @@
     };
   }
 
-  async function matches(expected, current, product) {
+  // Account-level checkout trust: destination and payment fingerprints the
+  // operator approved once per store and fulfillment mode. A mission without
+  // its own preflight is only allowed to auto-submit when the live page's
+  // fingerprints match that approved profile exactly.
+  function trustEntryFor(trust, product, mode) {
+    const entry = trust?.[String(product?.retailer || "")]?.[String(mode || "")];
+    return entry && typeof entry === "object" ? entry : null;
+  }
+
+  async function matches(expected, current, product, trust) {
     const currentResult = validate(current, product);
     if (!currentResult.ok) return currentResult;
     const expectedResult = validate(expected, product);
-    if (!expectedResult.ok) {
-      return { ok: true, evidence: currentResult.evidence, verification: "live" };
+    if (expectedResult.ok) {
+      return canonicalString(expectedResult.evidence) === canonicalString(currentResult.evidence)
+        ? { ok: true, evidence: currentResult.evidence, verification: "preflight" }
+        : { ok: false, reason: "checkout-evidence-changed" };
     }
-    return canonicalString(expectedResult.evidence) === canonicalString(currentResult.evidence)
-      ? { ok: true, evidence: currentResult.evidence, verification: "preflight" }
-      : { ok: false, reason: "checkout-evidence-changed" };
+    const live = currentResult.evidence;
+    const entry = trustEntryFor(trust, product, live.fulfillment.mode);
+    if (!entry) return { ok: false, reason: "checkout-trust-required" };
+    const trusted =
+      String(entry.destinationFingerprint || "") === live.fulfillment.destinationFingerprint
+      && String(entry.pickupStoreFingerprint || "") === live.fulfillment.pickupStoreFingerprint
+      && String(entry.instrumentSetFingerprint || "") === live.payment.instrumentSetFingerprint
+      && Number(entry.instrumentCount) === live.payment.instrumentCount;
+    return trusted
+      ? { ok: true, evidence: currentResult.evidence, verification: "account-trust" }
+      : { ok: false, reason: "checkout-trust-changed" };
   }
 
   const api = Object.freeze({

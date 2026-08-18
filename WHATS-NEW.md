@@ -6,6 +6,11 @@ update dialog shows exactly these bullets. Keep every entry short, plain, and
 about what the user will notice — one bullet per change, no internals.
 Publishing fails if the version being released has no section here.
 
+## 3.6.11
+- Auto-buy now checks every order against the shipping address and payment cards you approved during a checkout preflight, even for items you never preflighted
+- Approve once per store: lock one checkout preflight and every auto-buy mission for that store inherits the approved address and payment profile
+- If a store shows a different address or payment set at the last second, the order is stopped and you get an alert instead
+
 ## 3.6.10
 - Fixed: after an item was secured, its cart alarm kept repeating and blocked other products from being checked and added
 - A finished mission's cart tab now goes quiet so the rest of the list keeps working

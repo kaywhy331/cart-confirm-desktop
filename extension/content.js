@@ -1781,7 +1781,7 @@
       orderTotal
     }, fingerprintCheckoutEvidence);
     const expectedEvidence = product.checkoutEvidence;
-    const evidence = await Evidence.matches(expectedEvidence, checkoutEvidence, product);
+    const evidence = await Evidence.matches(expectedEvidence, checkoutEvidence, product, config?.checkoutTrust);
     return { ...review, inventory, line, orderTotal, checkoutEvidence, evidence };
   }
 
@@ -1996,6 +1996,10 @@
               ? `Final order review did not prove the required ${product.fulfillmentMode} fulfillment mode.`
             : blockReason === "checkout-evidence-changed"
                 ? "The destination, payment set, substitution state, cart count, quantity, SKU, or total differs from the approved preflight. Automatic submission stopped."
+            : blockReason === "checkout-trust-required"
+                ? "This store has no approved checkout profile yet. Switch Autopilot off, open one auto-submit mission's final review, and lock the checkout preflight once."
+            : blockReason === "checkout-trust-changed"
+                ? "The live destination or payment set differs from the approved checkout profile for this store. Automatic submission stopped."
                 : "Final order review could not verify the live destination or pickup store, complete payment set, disabled substitutions, exact cart, SKU, first-party offer, unit cap, quantity, fulfillment, and capped total."
       }, `review-blocked:${product.id}:${blockReason}`, 20_000);
       return;
