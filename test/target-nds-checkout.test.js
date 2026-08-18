@@ -72,8 +72,26 @@ test("the single bound item card yields a complete SKU-attributed inventory and 
   const line = adapter.findLine(doc, product);
   assert.ok(line);
   assert.equal(line.quantity, 2);
-  assert.equal(line.price, null);
+  // Unit price is derived from the order summary's "(2 items) $69.98" and
+  // first-party from the absence of any marketplace-seller marker, so the
+  // disarmed preflight lock (which has no cart proof) can verify the offer.
+  assert.equal(line.price, 34.99);
+  assert.equal(line.firstParty, true);
   assert.equal(line.seller, "");
+});
+
+test("the disarmed preflight lock verifies the offer without any cart proof", () => {
+  const doc = reviewDocument();
+  const { effectiveLineOffer } = require("../extension/safety");
+  const offer = effectiveLineOffer(product, adapter.findLine(doc, product));
+  assert.deepEqual({ ok: offer.ok, price: offer.price, firstParty: offer.firstParty }, { ok: true, price: 34.99, firstParty: true });
+
+  // A subtotal that prices the unit above the cap still fails closed.
+  const expensive = reviewDocument();
+  const subtotal = expensive.querySelector("[data-test='cart-summary-subTotal']");
+  subtotal.innerHTML = subtotal.innerHTML.replace("$69.98", "$84.00");
+  const overOffer = effectiveLineOffer(product, adapter.findLine(expensive, product));
+  assert.deepEqual({ ok: overOffer.ok, reason: overOffer.reason }, { ok: false, reason: "over-price" });
 });
 
 test("checkoutSafety passes end-to-end on the NDS review with a fresh cart proof", () => {
