@@ -6,6 +6,10 @@ update dialog shows exactly these bullets. Keep every entry short, plain, and
 about what the user will notice — one bullet per change, no internals.
 Publishing fails if the version being released has no section here.
 
+## 3.6.18
+- Fixed: background stock checks were silently failing to read every product page since 3.6.17, so Autopilot took minutes to open each Target/Walmart mission in Chrome instead of seconds
+- Tabless missions now read the public page correctly again: readable pages report stock quietly, and pages that hide stock data (like Target's) open their Chrome watcher on the first check
+
 ## 3.6.17
 - Background stock checks now send the complete set of headers a real desktop Chrome sends when opening a page (client hints, fetch metadata, language, and compression), instead of a year-old browser signature with none of them
 - This lowers the chance of Walmart rate-limiting or blocking quiet monitoring during busy drops
