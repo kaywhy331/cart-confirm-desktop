@@ -94,8 +94,18 @@ test("a qualified purchase pulls its exact tab forward through checkout", () => 
   assert.match(activation, /\["cart", "review", "checkout"\]\.includes\(product\.action\)/);
   assert.match(activation, /lastTabActivationRequestAt < 10_000/);
   assert.match(activation, /CART_CONFIRM_ACTIVATE_TAB/);
+  // Qualification alone must NOT pull the tab forward: in a multi-item run a
+  // qualified mission can be waiting behind another mission's purchase, and
+  // every waiting tab activating on its own 10s throttle made Chrome's focus
+  // ping-pong between missions. Only the lane holder activates, after its
+  // add action is durably prepared.
   const qualified = section("qualified this exact item", "const prepared = await prepareAddAction");
-  assert.match(qualified, /requestPurchaseTabActivation\(product\)/);
+  assert.doesNotMatch(qualified, /requestPurchaseTabActivation\(product\)/);
+  const preparedSection = section("const prepared = await prepareAddAction", "const clicked = await clickAction");
+  const laneClaimed = preparedSection.indexOf("setActiveProduct(product);");
+  const laneActivation = preparedSection.indexOf("requestPurchaseTabActivation(product);");
+  assert.ok(laneClaimed > 0, "prepared add flow must set the active product");
+  assert.ok(laneActivation > laneClaimed, "activation must follow the successful lane claim");
   const cartPage = section("async function handleCartPage", "async function handleCheckoutPage");
   assert.match(cartPage, /requestPurchaseTabActivation\(product\)/);
   const checkoutPage = section("async function handleCheckoutPage", "async function scan");

@@ -1383,7 +1383,12 @@
       reason: "retrying",
       message: `${adapter.label} qualified this exact item and is preparing the authorized Add to cart action now.`
     }, `qualified-processing:${product.id}:${offer.price}`, Number.MAX_SAFE_INTEGER);
-    requestPurchaseTabActivation(product);
+    // Tab activation is deliberately NOT requested here. A qualified mission
+    // that has not claimed the store lane may be waiting behind another
+    // mission's add/checkout; in a multi-item run every waiting tab pulling
+    // itself forward each 10s throttle window made Chrome's focus ping-pong
+    // between missions. Only the lane holder (below, after prepareAddAction
+    // succeeds) may bring its tab forward.
 
     // A qualified purchase mission no longer needs its pending stock-refresh
     // navigation. Cancel both the tab timer and its durable traffic slot before
@@ -1467,6 +1472,9 @@
 
     clearClaimRetry();
     setActiveProduct(product);
+    // The lane is claimed and the add action is reserved: this mission is the
+    // one actively purchasing, so its exact tab may come forward now.
+    requestPurchaseTabActivation(product);
     const addPersistence = await reserveTargetPersistence(product, "add");
     if (!addPersistence.ok) {
       await markAddAction(product, "canceled");

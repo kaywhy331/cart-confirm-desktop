@@ -6,6 +6,9 @@ update dialog shows exactly these bullets. Keep every entry short, plain, and
 about what the user will notice — one bullet per change, no internals.
 Publishing fails if the version being released has no section here.
 
+## 3.7.2
+- Fixed: with several missions running, Chrome's focus jumped constantly between tabs (product pages, cart, checkout) — every qualified-but-waiting mission was pulling its own tab forward. Now only the mission actually holding the store's purchase lane brings its tab to the front; waiting missions stay quietly in the background until it is their turn
+
 ## 3.7.1
 - Fixed: after the first item was added to the cart, the remaining missions could stop with "could not prepare this mission's add-to-cart boundary (disarmed)" even though Autopilot was still on — a momentary communication hiccup with the desktop was being mistaken for a Stop
 - A pre-click check that cannot reach the desktop now keeps the verified offer on the page and simply retries in a few seconds instead of ending the mission
