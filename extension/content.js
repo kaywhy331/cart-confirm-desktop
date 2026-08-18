@@ -1171,6 +1171,30 @@
       attempt: currentAttempt(product),
       orderTotal: orderTotal === null ? undefined : orderTotal
     }, `order-confirmed:${product.id}`, Number.MAX_SAFE_INTEGER);
+    const combinedStore = combinedContextFor(product);
+    if (combinedStore) {
+      // The captain's confirmed submission covered every carted member line;
+      // record each member's completion and confirmation so its mission card
+      // closes out, or hold it visibly for manual review if recording fails.
+      for (const member of combinedStore.members.filter((entry) => entry.carted && entry.id !== product.id)) {
+        const memberProduct = (config.products || []).find((candidate) => candidate.id === member.id);
+        const completedMember = await runtimeMessage({
+          type: "CART_CONFIRM_COMPLETE_COMBINED_MEMBER",
+          productId: member.id,
+          captainProductId: product.id
+        });
+        if (memberProduct && completedMember.ok) {
+          await send("order-confirmed", memberProduct, {
+            message: `Included in the combined ${adapter.label} order confirmed by the batch captain mission.`
+          }, `combined-order-confirmed:${member.id}`, Number.MAX_SAFE_INTEGER);
+        } else if (memberProduct) {
+          await send("automation-blocked", memberProduct, {
+            reason: "manual-action-required",
+            message: `This mission's line was part of the confirmed combined order, but its completion could not be recorded (${completedMember.reason || "unknown"}). Verify it in the store's order history.`
+          }, `combined-member-complete-failed:${member.id}`, Number.MAX_SAFE_INTEGER);
+        }
+      }
+    }
     if (reported.ok) clearActiveProduct(product);
     return true;
   }
@@ -1770,7 +1794,10 @@
       return;
     }
 
-    const cartSafety = Safety.verifySingleProductCart(product, inventory);
+    const combinedStore = combinedContextFor(product);
+    const cartSafety = combinedStore
+      ? Safety.verifyMemberCart(product, inventory, combinedStore.members.map((member) => member.sku))
+      : Safety.verifySingleProductCart(product, inventory);
     if (!cartSafety.ok) {
       await send("automation-blocked", product, {
         reason: cartSafety.reason,
@@ -1796,6 +1823,24 @@
       scheduleScan(2_000, { replace: false });
       return;
     }
+    if (combinedStore) {
+      const gate = await refreshedCombinedGate(product) || combinedStore;
+      if (!gate.ready) {
+        await send("automation-status", product, {
+          message: `Combined order: this ${adapter.label} cart line is secured and holding (${gate.cartedCount} carted, ${gate.pendingCount} still validating). One checkout submits every line together once the full list has a status.`
+        }, `combined-cart-hold:${product.id}:${gate.cartedCount}:${gate.pendingCount}`, 30_000);
+        scheduleScan(7_000, { replace: false });
+        return;
+      }
+      if (gate.captainProductId !== product.id) {
+        await send("automation-status", product, {
+          message: `Combined order ready — the batch captain mission is completing one ${adapter.label} checkout for ${gate.cartedCount} item line${gate.cartedCount === 1 ? "" : "s"}.`
+        }, `combined-cart-captain-wait:${product.id}`, 60_000);
+        scheduleScan(15_000, { replace: false });
+        return;
+      }
+    }
+
     const checkoutButton = adapter.checkoutButton(document);
     if (!checkoutButton) {
       if (product.retailer === "target" && isBlitz(product)) {
@@ -1821,6 +1866,226 @@
       )) {
         await scheduleRetry(product, "Checkout was not actionable.", "reload", true);
       }
+    }
+  }
+
+  // ---- Combined ordering (per-store collective checkout) ----
+  function combinedContextFor(product) {
+    const combined = config?.combinedOrder;
+    if (!combined?.enabled || product.action !== "checkout") return null;
+    const store = combined.stores?.[product.retailer];
+    if (!store?.members?.some((member) => member.id === product.id)) return null;
+    return store;
+  }
+
+  async function refreshedCombinedGate(product) {
+    await refreshConfig(true);
+    return combinedContextFor(product);
+  }
+
+  // Read the combined review: an adapter batch reader (Target NDS) when it
+  // applies, otherwise the generic SKU-keyed inventory plus one line lookup
+  // per carted member. Member cart proofs supply seller and unit price.
+  async function readCombinedCheckoutReview(product, members) {
+    const batch = adapter.combinedReviewLines?.(document, members) ?? null;
+    let inventory;
+    let lines;
+    if (batch) {
+      if (!batch.ok) return { ok: false, reason: batch.reason };
+      ({ inventory, lines } = batch);
+    } else {
+      inventory = adapter.cartInventory(document);
+      lines = {};
+      for (const member of members) {
+        lines[member.id] = adapter.findLine(document, member);
+      }
+    }
+    const proofs = {};
+    for (const member of members) {
+      const memberState = await runtimeMessage({ type: "CART_CONFIRM_PRODUCT_STATE", productId: member.id });
+      proofs[member.id] = memberState.ok ? memberState.proof : null;
+    }
+    return { ok: true, inventory, lines, proofs };
+  }
+
+  async function combinedReviewEvidenceHash(batchProduct, members, review, orderTotal) {
+    const canonical = JSON.stringify({
+      normalizerVersion: 1,
+      combined: true,
+      path: location.pathname,
+      batchId: batchProduct.id,
+      members: members.map((member) => ({ id: member.id, sku: member.sku, quantity: member.quantity })),
+      evidence: Evidence.comparable(review.checkoutEvidence),
+      orderTotal
+    });
+    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(canonical));
+    return [...new Uint8Array(digest)].map((value) => value.toString(16).padStart(2, "0")).join("");
+  }
+
+  // Everything the captain must re-prove at the final review: batch member
+  // lines, per-member proofs and caps, the combined total under the summed
+  // member caps, and the account-trust destination/payment evidence. Returns
+  // {ok, reason} or {ok:true, safety, checkoutEvidence, evidence, batchProduct}.
+  async function verifyCombinedReview(product, gate) {
+    const members = gate.members.filter((member) => member.carted);
+    if (!members.length) return { ok: false, reason: "cart-unverified" };
+    const review = await readCombinedCheckoutReview(product, members);
+    if (!review.ok) return { ok: false, reason: review.reason };
+    const orderTotal = adapter.orderTotal(document);
+    const fulfillmentMode = adapter.fulfillmentMode(document);
+    const safety = Safety.combinedCheckoutSafety({
+      members,
+      inventory: review.inventory,
+      lines: review.lines,
+      proofs: review.proofs,
+      orderTotal,
+      unsafeChoices: adapter.unsafeOrderChoices(document),
+      fulfillmentMode,
+      requiredFulfillmentMode: product.fulfillmentMode,
+      combinedMaxTotal: gate.combinedMaxTotal,
+      now: Date.now()
+    });
+    if (!safety.ok) return { ok: false, reason: safety.reason, memberId: safety.memberId };
+    const sortedSkus = members.map((member) => String(member.sku)).sort();
+    const batchProduct = {
+      id: `combined:${product.retailer}:${config.automationRunId}`,
+      retailer: product.retailer,
+      sku: sortedSkus.join("+"),
+      quantity: members.reduce((total, member) => total + member.quantity, 0),
+      maxPrice: Math.max(...members.map((member) => member.maxPrice)),
+      maxOrderTotal: gate.combinedMaxTotal,
+      fulfillmentMode: product.fulfillmentMode,
+      combinedLineCount: members.length
+    };
+    const destinationTexts = adapter.destinationEvidence(document, fulfillmentMode);
+    const checkoutEvidence = await Evidence.capture(batchProduct, {
+      fulfillmentMode,
+      destinationTexts: fulfillmentMode === "shipping" ? destinationTexts : [],
+      pickupStoreTexts: fulfillmentMode === "pickup" ? destinationTexts : [],
+      paymentInstrumentTexts: adapter.paymentInstrumentEvidence(document),
+      substitutionState: adapter.substitutionState(document, product),
+      inventory: review.inventory,
+      line: null,
+      orderTotal,
+      cartSummary: {
+        independentlyCounted: review.inventory.independentlyCounted === true,
+        lineCount: members.length,
+        sku: batchProduct.sku,
+        quantity: batchProduct.quantity
+      }
+    }, fingerprintCheckoutEvidence);
+    // A combined batch never matches one mission's saved preflight; it always
+    // verifies against the account-level store trust profile.
+    const evidence = await Evidence.matches(undefined, checkoutEvidence, batchProduct, config?.checkoutTrust);
+    if (!evidence.ok) return { ok: false, reason: evidence.reason };
+    return { ok: true, members, safety, orderTotal, checkoutEvidence, batchProduct };
+  }
+
+  async function handleCombinedCheckout(product, gateHint) {
+    const gate = await refreshedCombinedGate(product) || gateHint;
+    if (!gate?.ready) {
+      await send("automation-status", product, {
+        message: `Combined order: waiting at ${adapter.label} checkout until every mission has a validated status (${gate?.cartedCount ?? 0} carted, ${gate?.pendingCount ?? 0} still validating).`
+      }, `combined-checkout-wait:${product.id}`, 30_000);
+      scheduleScan(7_000, { replace: false });
+      return;
+    }
+    if (gate.captainProductId !== product.id) {
+      await send("automation-status", product, {
+        message: `Combined order ready — the batch captain mission is completing one ${adapter.label} checkout for ${gate.cartedCount} item line${gate.cartedCount === 1 ? "" : "s"}.`
+      }, `combined-captain-wait:${product.id}`, 60_000);
+      scheduleScan(15_000, { replace: false });
+      return;
+    }
+    const verified = await verifyCombinedReview(product, gate);
+    if (!verified.ok) {
+      if (REVIEW_SETTLE_REASONS.includes(verified.reason)) {
+        const settleCount = (reviewSettleRechecks.get(product.id) || 0) + 1;
+        if (settleCount <= REVIEW_SETTLE_RECHECK_LIMIT) {
+          reviewSettleRechecks.set(product.id, settleCount);
+          await send("automation-status", product, {
+            message: "The combined order summary is still updating. Rechecking before any decision."
+          }, `combined-review-settle:${product.id}`, 30_000);
+          scheduleScan(1_500);
+          return;
+        }
+      }
+      await send("automation-blocked", product, {
+        reason: verified.reason === "over-total" ? "over-total" : "manual-action-required",
+        message: `The combined ${adapter.label} order could not be verified (${verified.reason}${verified.memberId ? ` on ${verified.memberId}` : ""}). Every member line, quantity, unit cap, the summed total cap, and the locked checkout profile must all agree; complete or adjust the order manually.`
+      }, `combined-review-blocked:${product.id}:${verified.reason}`, 30_000);
+      return;
+    }
+    reviewSettleRechecks.delete(product.id);
+
+    const submitButton = adapter.submitButton(document);
+    if (!submitButton) {
+      const since = missingSubmitSince.get(product.id) || Date.now();
+      missingSubmitSince.set(product.id, since);
+      if (Date.now() - since >= SUBMIT_CONTROL_MISSING_REPORT_MS) {
+        await send("automation-blocked", product, {
+          reason: "manual-action-required",
+          message: `${adapter.label}'s final Place Order control has not appeared on the combined checkout page after ${Math.round(SUBMIT_CONTROL_MISSING_REPORT_MS / 1000)} seconds. Complete the order manually, or leave the page open — the companion keeps watching.`
+        }, `combined-submit-missing:${product.id}:${pageAddress()}`, 120_000);
+      }
+      scheduleScan(1_500);
+      return;
+    }
+    missingSubmitSince.delete(product.id);
+
+    const expectedHash = await combinedReviewEvidenceHash(verified.batchProduct, verified.members, { checkoutEvidence: verified.checkoutEvidence }, verified.orderTotal);
+    let intentCreated = false;
+    let attempt = 0;
+    const clicked = await clickAction(submitButton, product, async () => {
+      const submitPersistence = await reserveTargetPersistence(product, "submit");
+      if (!submitPersistence.ok) return false;
+      if (!await requireStoreAction(
+        product,
+        submitPersistence.targetPersistence === true ? "submit" : "order-submit",
+        submitPersistence.targetPersistence === true
+      )) return false;
+      attempt = await requireAttempt(product);
+      if (attempt === null) return false;
+      const freshGate = await refreshedCombinedGate(product);
+      if (!freshGate?.ready || freshGate.captainProductId !== product.id) return false;
+      const fresh = await verifyCombinedReview(product, freshGate);
+      if (
+        !fresh.ok
+        || await combinedReviewEvidenceHash(fresh.batchProduct, fresh.members, { checkoutEvidence: fresh.checkoutEvidence }, fresh.orderTotal) !== expectedHash
+      ) {
+        await send("automation-blocked", product, {
+          reason: "manual-action-required",
+          message: "The combined order evidence changed before submission. Automatic checkout stopped for a fresh manual review."
+        }, `combined-review-changed:${product.id}:${Date.now()}`, 0);
+        return false;
+      }
+      const intent = await runtimeMessage({
+        type: "CART_CONFIRM_BEGIN_SUBMISSION",
+        productId: product.id,
+        evidenceHash: expectedHash
+      });
+      intentCreated = intent.ok;
+      return intent.ok;
+    });
+    if (clicked) {
+      await runtimeMessage({ type: "CART_CONFIRM_MARK_SUBMISSION", productId: product.id, outcome: "clicked" });
+      await send("order-submit-clicked", product, {
+        attempt,
+        quantity: verified.batchProduct.quantity,
+        orderTotal: verified.orderTotal,
+        firstParty: true,
+        eligible: true,
+        reason: "eligible",
+        message: `Combined ${adapter.label} order submitted: ${verified.members.length} mission line${verified.members.length === 1 ? "" : "s"}, ${verified.batchProduct.quantity} unit${verified.batchProduct.quantity === 1 ? "" : "s"}, total $${verified.orderTotal.toFixed(2)}.`
+      }, `combined-order-submit:${product.id}:${attempt}`, 0);
+      scheduleScan(2_000);
+    } else if (intentCreated) {
+      await send("automation-blocked", product, {
+        reason: "manual-action-required",
+        message: "A durable combined submit intent was recorded but the click result is uncertain. Automatic retry is locked for manual review."
+      }, `combined-submit-uncertain:${product.id}:${attempt}`, Number.MAX_SAFE_INTEGER);
+    } else {
+      await scheduleRetry(product, "The final combined order control was not actionable.", "reload", true);
     }
   }
 
@@ -2071,6 +2336,12 @@
         message: `The checkout page is waiting for the ${adapter.label} store lane (${claim.reason || "unavailable"}${claim.blockingPhase ? `: ${claim.blockingPhase}` : ""}). It rechecks automatically.`
       }, `checkout-claim-wait:${product.id}:${claim.reason || ""}`, 30_000);
       scheduleScan(2_000, { replace: false });
+      return;
+    }
+
+    const combinedStore = combinedContextFor(product);
+    if (combinedStore) {
+      await handleCombinedCheckout(product, combinedStore);
       return;
     }
 

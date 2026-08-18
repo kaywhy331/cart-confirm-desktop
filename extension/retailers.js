@@ -980,6 +980,32 @@
     return entry;
   }
 
+  // Combined-order batch binding: every visible item card must match exactly
+  // one distinct batch mission by title with a readable quantity badge, and
+  // the order summary's independent unit count must equal the badge sum. Any
+  // ambiguity — extra card, missing card, duplicate or unmatched title —
+  // yields a failed binding, never a partial one.
+  function targetCheckoutReviewBatch(doc, missions) {
+    const cards = targetCheckoutItemCards(doc);
+    if (!cards) return null;
+    const wanted = Array.isArray(missions) ? missions : [];
+    if (!wanted.length || cards.length !== wanted.length) return { ok: false, reason: "cart-unverified" };
+    const remaining = [...wanted];
+    const entries = [];
+    for (const card of cards) {
+      if (!Number.isInteger(card.quantity) || card.quantity < 1) {
+        return { ok: false, reason: "quantity-unavailable" };
+      }
+      const matches = remaining.filter((mission) => targetReviewTitlesMatch(mission.title, card.title));
+      if (matches.length !== 1) return { ok: false, reason: "manual-action-required" };
+      remaining.splice(remaining.indexOf(matches[0]), 1);
+      entries.push({ mission: matches[0], card: card.card, quantity: card.quantity, title: card.title });
+    }
+    const units = entries.reduce((total, entry) => total + entry.quantity, 0);
+    if (targetCheckoutSummaryUnitCount(doc) !== units) return { ok: false, reason: "cart-unverified" };
+    return { ok: true, entries };
+  }
+
   function targetAddControlExcluded(element) {
     return Boolean(element?.closest?.([
       "[data-test*='recommend' i]",
@@ -1207,12 +1233,42 @@
         const state = substitutionState(doc, product);
         if (state !== "unknown") return state;
         const root = targetNdsCheckoutRoot(doc);
-        if (!root || !targetCheckoutReviewLine(doc, product)) return state;
-        // The bound review shows no substitution choice anywhere on the
-        // page: substitutions do not apply to this shipped order.
+        if (!root) return state;
+        // The NDS review shows no substitution choice anywhere on the page:
+        // substitutions do not apply to this shipped order. This is a
+        // page-level fact, so it holds for single and combined reviews alike.
         return queryAll(root, SUBSTITUTION_CONTROL_SELECTORS).filter(isVisibleEvidence).length
           ? state
           : "not-applicable";
+      },
+      // Combined-order review reader: on the NDS page, bind every card to a
+      // distinct batch mission; elsewhere return null so the caller uses the
+      // generic SKU-keyed inventory and per-member line lookups.
+      combinedReviewLines(doc, missions) {
+        const batch = targetCheckoutReviewBatch(doc, missions);
+        if (batch === null) return null;
+        if (!batch.ok) return { ok: false, reason: batch.reason };
+        const items = batch.entries.map((entry) => ({ sku: String(entry.mission.sku), container: entry.card }));
+        const lines = Object.fromEntries(batch.entries.map((entry) => [entry.mission.id, {
+          container: entry.card,
+          seller: "",
+          firstParty: false,
+          price: null,
+          quantity: entry.quantity,
+          controls: []
+        }]));
+        return {
+          ok: true,
+          inventory: {
+            complete: true,
+            independentlyCounted: true,
+            independentLineCount: items.length,
+            removalLineCount: 0,
+            ids: items.map((item) => item.sku),
+            items
+          },
+          lines
+        };
       }
     },
     walmart: {

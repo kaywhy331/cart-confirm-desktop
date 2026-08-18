@@ -16,7 +16,7 @@ const path = require("node:path");
 const crypto = require("node:crypto");
 const { spawn } = require("node:child_process");
 const { checkForUpdate, downloadUpdate, userFacingReleaseNotes } = require("./lib/app-update");
-const { checkoutTrustWithEvidence } = require("./lib/core");
+const { checkoutTrustWithEvidence, combinedOrderStatus } = require("./lib/core");
 
 const {
   DEFAULT_SETTINGS,
@@ -421,6 +421,7 @@ function publicSettings() {
     monitoringPaused: settings.monitoringPaused,
     automationRunId: settings.automationRunId,
     fastMode: settings.fastMode,
+    combinedOrderEnabled: settings.combinedOrderEnabled,
     retryIntervalSeconds: settings.retryIntervalSeconds,
     eligibilityRefreshIntervalSeconds: settings.eligibilityRefreshIntervalSeconds,
     storeNavigationIntervalSeconds: settings.storeNavigationIntervalSeconds,
@@ -1831,6 +1832,11 @@ function extensionConfig() {
     walmartQueueCaptureReloads: settings.walmartQueueCaptureReloads,
     firstPartyOnly: true,
     checkoutTrust: settings.checkoutTrust,
+    combinedOrder: combinedOrderStatus(
+      settings,
+      productStatuses,
+      (product) => productCalendarOwned(settings, product)
+    ),
     catalogSearch: activeCatalogSearch,
     token: settings.companionToken,
     configVersion,

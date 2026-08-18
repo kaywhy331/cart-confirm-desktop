@@ -341,7 +341,7 @@ test("both claim paths heal a stranded confirmed cart hold before giving up", ()
   // Both the claim wrapper and the add-preparation wrapper retry once after
   // healing, inside the same state lock and durable write.
   assert.equal((background.match(/if \(healStrandedCartHold\(state, config, /g) || []).length, 2);
-  assert.equal((background.match(/= AutomationState\.claim\(state, product, ownerId, now\);/g) || []).length, 4);
+  assert.equal((background.match(/= AutomationState\.claim\(state, product, ownerId, now, claimOptions\);/g) || []).length, 4);
 });
 
 test("a completed mission's cart tab goes quiet instead of alarming and re-activating", () => {

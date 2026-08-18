@@ -49,14 +49,22 @@
     return { ok: true };
   }
 
-  function recentCartProof(product, proof, now = Date.now()) {
+  function recentCartProof(product, proof, now = Date.now(), options = {}) {
+    // A combined batch confirms each member while sibling member lines are
+    // already in the cart, so its proofs legitimately carry more than one
+    // line. Single-mission flows keep the strict one-line requirement.
+    const maxLineCount = Number.isInteger(options.maxLineCount) && options.maxLineCount >= 1
+      ? options.maxLineCount
+      : 1;
     if (
       !proof
       || proof.productId !== product.id
       || proof.source !== "cart"
       || proof.quantityConfirmed !== true
       || proof.inventoryConfirmed !== true
-      || proof.cartLineCount !== 1
+      || !Number.isInteger(proof.cartLineCount)
+      || proof.cartLineCount < 1
+      || proof.cartLineCount > maxLineCount
       || proof.cartSku !== product.sku
       || proof.firstParty !== true
       || !Number.isFinite(proof.price)
@@ -98,11 +106,86 @@
     return { ...offer, ok: true, orderTotal };
   }
 
+  // Combined-order cart scope: the cart may hold exactly the mission's own
+  // line plus lines belonging to other batch members — nothing else, and no
+  // duplicates. Everything foreign still stops for manual review.
+  function verifyMemberCart(product, inventory, memberSkus) {
+    const allowed = new Set((memberSkus || []).map((sku) => String(sku)));
+    allowed.add(String(product.sku));
+    if (
+      !inventory?.complete
+      || inventory.independentlyCounted !== true
+      || !Array.isArray(inventory.items)
+      || !inventory.items.length
+      || Number(inventory.independentLineCount) !== inventory.items.length
+    ) {
+      return { ok: false, reason: "cart-unverified" };
+    }
+    const skus = inventory.items.map((item) => String(item.sku));
+    if (new Set(skus).size !== skus.length) return { ok: false, reason: "manual-action-required" };
+    if (!skus.includes(String(product.sku))) return { ok: false, reason: "manual-action-required" };
+    if (skus.some((sku) => !allowed.has(sku))) return { ok: false, reason: "manual-action-required" };
+    return { ok: true };
+  }
+
+  // Combined final review: every carted member's line must be present at its
+  // exact quantity with a fresh member proof proving first-party under its
+  // unit cap, the cart must contain exactly the member set, and the combined
+  // total must stay under the sum of the included missions' caps.
+  function combinedCheckoutSafety(input) {
+    const { members, inventory, lines, proofs, orderTotal, combinedMaxTotal, now } = input;
+    if (Array.isArray(input.unsafeChoices) && input.unsafeChoices.length) {
+      return { ok: false, reason: "manual-action-required" };
+    }
+    if (input.fulfillmentMode !== input.requiredFulfillmentMode) {
+      return { ok: false, reason: "fulfillment-unverified" };
+    }
+    if (!Array.isArray(members) || !members.length) return { ok: false, reason: "cart-unverified" };
+    if (
+      !inventory?.complete
+      || inventory.independentlyCounted !== true
+      || !Array.isArray(inventory.items)
+      || inventory.items.length !== members.length
+    ) {
+      return { ok: false, reason: "cart-unverified" };
+    }
+    const cartSkus = inventory.items.map((item) => String(item.sku)).sort();
+    const memberSkus = members.map((member) => String(member.sku)).sort();
+    if (cartSkus.join("|") !== memberSkus.join("|") || new Set(cartSkus).size !== cartSkus.length) {
+      return { ok: false, reason: "manual-action-required" };
+    }
+    const prices = {};
+    for (const member of members) {
+      const line = lines?.[member.id];
+      if (!line) return { ok: false, reason: "unmatched-product", memberId: member.id };
+      const proof = recentCartProof(member, proofs?.[member.id], now, { maxLineCount: members.length });
+      if (!proof) return { ok: false, reason: "cart-unverified", memberId: member.id };
+      const offer = effectiveLineOffer(member, line, proof);
+      if (!offer.ok) return { ...offer, memberId: member.id };
+      if (line.quantity !== null && line.quantity !== undefined && line.quantity !== member.quantity) {
+        return { ok: false, reason: "quantity-unavailable", memberId: member.id };
+      }
+      if ((line.quantity === null || line.quantity === undefined) && proof.quantityConfirmed !== true) {
+        return { ok: false, reason: "quantity-unavailable", memberId: member.id };
+      }
+      prices[member.id] = offer.price;
+    }
+    if (orderTotal === null || orderTotal === undefined || !Number.isFinite(orderTotal)) {
+      return { ok: false, reason: "total-unavailable" };
+    }
+    if (!Number.isFinite(combinedMaxTotal) || combinedMaxTotal <= 0 || orderTotal > combinedMaxTotal) {
+      return { ok: false, reason: "over-total", orderTotal };
+    }
+    return { ok: true, orderTotal, prices };
+  }
+
   const api = Object.freeze({
     CART_PROOF_MAX_AGE_MS,
     checkoutSafety,
+    combinedCheckoutSafety,
     effectiveLineOffer,
     recentCartProof,
+    verifyMemberCart,
     verifySingleProductCart
   });
 

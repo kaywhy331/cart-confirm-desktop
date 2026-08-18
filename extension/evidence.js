@@ -129,7 +129,7 @@
       || !["disabled", "not-applicable"].includes(value.substitutions.state)
       || value.substitutions.sku !== product?.sku
       || value.cart.independentlyCounted !== true
-      || value.cart.lineCount !== 1
+      || value.cart.lineCount !== (Number.isInteger(product?.combinedLineCount) && product.combinedLineCount >= 1 ? product.combinedLineCount : 1)
       || value.cart.sku !== product?.sku
       || value.cart.quantity !== product?.quantity
       || !Number.isFinite(value.orderTotal)
@@ -172,11 +172,21 @@
         state: String(observed.substitutionState || "unknown"),
         sku: String(product?.sku || "")
       },
-      cart: {
-        independentlyCounted: observed.inventory?.independentlyCounted === true,
-        lineCount: Array.isArray(observed.inventory?.items) ? observed.inventory.items.length : 0,
-        sku: String(observed.inventory?.items?.[0]?.sku || ""),
-        quantity: Number(observed.line?.quantity)
+      // A combined batch supplies its own cart summary (line count, the
+      // sorted joined member SKU set, and total units); single missions keep
+      // deriving these from the live inventory and line.
+      cart: observed.cartSummary
+        ? {
+            independentlyCounted: observed.cartSummary.independentlyCounted === true,
+            lineCount: Number(observed.cartSummary.lineCount),
+            sku: String(observed.cartSummary.sku || ""),
+            quantity: Number(observed.cartSummary.quantity)
+          }
+        : {
+            independentlyCounted: observed.inventory?.independentlyCounted === true,
+            lineCount: Array.isArray(observed.inventory?.items) ? observed.inventory.items.length : 0,
+            sku: String(observed.inventory?.items?.[0]?.sku || ""),
+            quantity: Number(observed.line?.quantity)
       },
       orderTotal: Number(observed.orderTotal),
       capturedAt: new Date(observed.capturedAt || Date.now()).toISOString()

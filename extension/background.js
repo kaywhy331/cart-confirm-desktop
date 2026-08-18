@@ -1077,10 +1077,24 @@ async function reserveQueueCaptureAttempt(productId, reservationId) {
   }
 }
 
+function combinedMembersByStore(config) {
+  const stores = config?.combinedOrder?.enabled ? config.combinedOrder.stores || {} : {};
+  const byStore = {};
+  for (const [retailer, store] of Object.entries(stores)) {
+    const ids = (store?.members || []).map((member) => String(member?.id || "")).filter(Boolean);
+    if (ids.length) byStore[retailer] = ids;
+  }
+  return Object.keys(byStore).length ? byStore : null;
+}
+
+function combinedMemberIdsFor(config, retailer) {
+  return combinedMembersByStore(config)?.[String(retailer || "")] || [];
+}
+
 async function readAutomationState(config) {
   const stored = await chrome.storage.local.get(AUTOMATION_STATE_KEY);
   const runId = String(config.automationRunId || "");
-  return AutomationState.normalizeState(stored[AUTOMATION_STATE_KEY], runId, Date.now());
+  return AutomationState.normalizeState(stored[AUTOMATION_STATE_KEY], runId, Date.now(), combinedMembersByStore(config));
 }
 
 async function writeAutomationState(state) {
@@ -1146,9 +1160,10 @@ async function claimProduct(productId, ownerId) {
   return withAutomationStateLock(async () => {
     const state = await readAutomationState(config);
     const now = Date.now();
-    let result = AutomationState.claim(state, product, ownerId, now);
+    const claimOptions = { combinedMemberIds: combinedMemberIdsFor(config, product.retailer) };
+    let result = AutomationState.claim(state, product, ownerId, now, claimOptions);
     if (healStrandedCartHold(state, config, result, now)) {
-      result = AutomationState.claim(state, product, ownerId, now);
+      result = AutomationState.claim(state, product, ownerId, now, claimOptions);
     }
     await writeAutomationState(state);
     return { ...result, product: result.ok ? product : undefined };
@@ -1163,9 +1178,10 @@ async function prepareProductAddAction(productId, ownerId, proof) {
   return withAutomationStateLock(async () => {
     const state = await readAutomationState(config);
     const now = Date.now();
-    let claimed = AutomationState.claim(state, product, ownerId, now);
+    const claimOptions = { combinedMemberIds: combinedMemberIdsFor(config, product.retailer) };
+    let claimed = AutomationState.claim(state, product, ownerId, now, claimOptions);
     if (healStrandedCartHold(state, config, claimed, now)) {
-      claimed = AutomationState.claim(state, product, ownerId, now);
+      claimed = AutomationState.claim(state, product, ownerId, now, claimOptions);
     }
     if (!claimed.ok) {
       await writeAutomationState(state);
@@ -1268,6 +1284,24 @@ async function getActiveTabProductState(tabIdValue, sender) {
     resolutionRequired: true,
     phase: resolution.phase
   };
+}
+
+async function completeCombinedMemberProduct(productId, captainProductId) {
+  const config = await discoverConfig(true);
+  if (!config) return { ok: false, reason: "desktop-not-found" };
+  const product = configuredProduct(config, productId);
+  const captain = configuredProduct(config, captainProductId);
+  if (!product || !captain) return { ok: false, reason: "product-disabled" };
+  const memberIds = combinedMemberIdsFor(config, product.retailer);
+  if (!memberIds.includes(product.id) || !memberIds.includes(captain.id)) {
+    return { ok: false, reason: "not-combined-members" };
+  }
+  return withAutomationStateLock(async () => {
+    const state = await readAutomationState(config);
+    const result = AutomationState.completeCombinedMember(state, product, captain, Date.now());
+    await writeAutomationState(state);
+    return result;
+  });
 }
 
 async function completeProduct(productId) {
@@ -1554,6 +1588,8 @@ async function handleMessage(message, sender) {
       );
     case "CART_CONFIRM_PRODUCT_STATE":
       return getProductState(String(message.productId || ""));
+    case "CART_CONFIRM_COMPLETE_COMBINED_MEMBER":
+      return completeCombinedMemberProduct(String(message.productId || ""), String(message.captainProductId || ""));
     case "CART_CONFIRM_COMPLETE_PRODUCT":
       return completeProduct(String(message.productId || ""));
     case "CART_CONFIRM_BEGIN_MANUAL_REVIEW":
