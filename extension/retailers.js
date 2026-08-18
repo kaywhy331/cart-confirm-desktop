@@ -498,7 +498,22 @@
     ));
   }
 
-  function removalLineContainers(doc) {
+  // Real retailer markup nests line controls inside several wrapper divs, so
+  // the generic closestLineContainer climb can stop at a control's immediate
+  // wrapper (the first ancestor that "contains a control") before reaching
+  // the SKU-bearing row. For independent line counting the SKU is the point:
+  // climb to the nearest ancestor that yields exactly one SKU first, and only
+  // fall back to the generic climb when no ancestor does.
+  function lineContainerForControl(control, retailer) {
+    let current = control?.parentElement || null;
+    for (let depth = 0; depth < 14 && current; depth += 1) {
+      if (skuFromContainer(current, retailer)) return current;
+      current = current.parentElement;
+    }
+    return closestLineContainer(control);
+  }
+
+  function removalLineContainers(doc, retailer) {
     return uniqueElements(queryAll(doc, [
       "button[aria-label*='remove item' i]",
       "button[title*='remove item' i]",
@@ -512,7 +527,7 @@
       "button[data-test*='delete-btn' i]",
       "[data-test*='remove-item' i]",
       "[data-testid*='delete-item' i]"
-    ]).map((control) => closestLineContainer(control)).filter(Boolean));
+    ]).map((control) => lineContainerForControl(control, retailer)).filter(Boolean));
   }
 
   function summaryLineContainers(doc, retailer) {
@@ -547,7 +562,7 @@
   }
 
   function cartInventory(doc, retailer, selectors) {
-    const removalContainers = removalLineContainers(doc);
+    const removalContainers = removalLineContainers(doc, retailer);
     const summaryContainers = summaryLineContainers(doc, retailer);
     const retailerContainers = queryAll(doc, selectors).filter((container) => (
       hasLineControls(container)

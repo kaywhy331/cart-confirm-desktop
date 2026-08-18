@@ -517,3 +517,51 @@ test("an extra unrecognized cart line still makes the independent count fail clo
   const product = { id: "target:95059193", retailer: "target", sku: "95059193", quantity: 2, maxPrice: 40, maxOrderTotal: 80, action: "checkout", fulfillmentMode: "shipping", enabled: true };
   assert.equal(verifySingleProductCart(product, inventory).ok, false);
 });
+
+test("a deeply nested Target delete button still resolves to its TCIN-bearing row for independent counting", () => {
+  const adapter = getAdapter("target");
+  // Live Target markup nests line controls in several wrapper divs; the
+  // remove control's immediate wrapper carries no TCIN. Regression for the
+  // flat-fixture blind spot that shipped a broken climb in 3.6.14.
+  const doc = new JSDOM(`<body><main>
+    <div data-test="cartItem" data-tcin="95059193">
+      <div class="row">
+        <div class="details">
+          <a href="https://www.target.com/p/riftbound/-/A-95059193" data-test="cartItem-title">Riftbound Decks</a>
+          <span data-test="cartItem-price">$34.99</span>
+        </div>
+        <div class="controls">
+          <div class="qty-wrap"><select aria-label="Quantity"><option value="2" selected>2</option></select></div>
+          <div class="actions"><div class="action-slot"><button data-test="cartItem-deleteBtn"><span>Delete</span></button></div></div>
+        </div>
+      </div>
+    </div>
+    <div data-test="cart-summary-total">Order total $69.98</div>
+  </main></body>`, { url: "https://www.target.com/cart" }).window.document;
+  const inventory = adapter.cartInventory(doc);
+  assert.deepEqual(inventory.ids, ["95059193"]);
+  assert.equal(inventory.independentLineCount, 1);
+  assert.equal(inventory.independentlyCounted, true);
+  assert.equal(inventory.complete, true);
+  const product = { id: "target:95059193", retailer: "target", sku: "95059193", quantity: 2, maxPrice: 40, maxOrderTotal: 80, action: "checkout", fulfillmentMode: "shipping", enabled: true };
+  assert.equal(verifySingleProductCart(product, inventory).ok, true);
+});
+
+test("nested delete buttons on two rows still count two independent lines and fail single-line scope", () => {
+  const adapter = getAdapter("target");
+  const row = (tcin, price) => `
+    <div data-test="cartItem" data-tcin="${tcin}">
+      <div class="row"><div class="details">
+        <a href="https://www.target.com/p/x/-/A-${tcin}">Item ${tcin}</a>
+        <span data-test="cartItem-price">${price}</span>
+      </div>
+      <div class="controls"><div class="actions"><div><button data-test="cartItem-deleteBtn">Delete</button></div></div></div></div>
+    </div>`;
+  const doc = new JSDOM(`<body><main>${row("95059193", "$34.99")}${row("87654321", "$9.99")}</main></body>`,
+    { url: "https://www.target.com/cart" }).window.document;
+  const inventory = adapter.cartInventory(doc);
+  assert.equal(inventory.independentLineCount, 2);
+  assert.deepEqual([...inventory.ids].sort(), ["87654321", "95059193"]);
+  const product = { id: "target:95059193", retailer: "target", sku: "95059193", quantity: 2, maxPrice: 40, maxOrderTotal: 80, action: "checkout", fulfillmentMode: "shipping", enabled: true };
+  assert.equal(verifySingleProductCart(product, inventory).ok, false);
+});
