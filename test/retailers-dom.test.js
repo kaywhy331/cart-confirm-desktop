@@ -565,3 +565,60 @@ test("nested delete buttons on two rows still count two independent lines and fa
   const product = { id: "target:95059193", retailer: "target", sku: "95059193", quantity: 2, maxPrice: 40, maxOrderTotal: 80, action: "checkout", fulfillmentMode: "shipping", enabled: true };
   assert.equal(verifySingleProductCart(product, inventory).ok, false);
 });
+
+test("target variant product layout resolves a plain-label CTA after every known add hook misses", () => {
+  const adapter = getAdapter("target");
+  const product = { ...productFor(CASES[0]), sku: "83601718", id: "target:83601718" };
+  const doc = new JSDOM(`
+    <main>
+      <div data-test="fulfillment-section">
+        <button>Pickup<br>Check nearby stores</button>
+        <button>Delivery<br>As soon as 6pm with Shipt</button>
+        <button>Shipping<br>Arrives by Sat, Aug 23</button>
+      </div>
+      <div data-test="product-recommendations carousel">
+        <button>Add to cart</button>
+      </div>
+      <div>
+        <button>Ship it</button>
+      </div>
+    </main>
+  `, { url: "https://www.target.com/p/aquafresh-extreme-clean-toothpaste-3pk/-/A-83601718" }).window.document;
+  const offer = adapter.offer(doc, product);
+  assert.ok(offer.addButton, "variant-layout CTA must be found");
+  assert.equal(offer.addButton.textContent.trim(), "Ship it");
+});
+
+test("target variant CTA fallback never picks fulfillment cells, carousels, or other-TCIN scopes", () => {
+  const adapter = getAdapter("target");
+  const product = { ...productFor(CASES[0]), sku: "83601718", id: "target:83601718" };
+  const doc = new JSDOM(`
+    <main>
+      <div data-test="fulfillment-section">
+        <button>Shipping<br>Arrives by Sat, Aug 23</button>
+      </div>
+      <div data-test="related-items">
+        <button>Add to cart</button>
+      </div>
+      <div data-tcin="99999999">
+        <button>Add to cart</button>
+      </div>
+      <button>Learn more about shipping</button>
+    </main>
+  `, { url: "https://www.target.com/p/aquafresh-extreme-clean-toothpaste-3pk/-/A-83601718" }).window.document;
+  assert.equal(adapter.offer(doc, product).addButton, null);
+  const wrongUrlDoc = new JSDOM(
+    "<main><button>Ship it</button></main>",
+    { url: "https://www.target.com/p/other-item/-/A-11112222" }
+  ).window.document;
+  assert.equal(adapter.offer(wrongUrlDoc, product).addButton, null);
+});
+
+test("the content script recovers variant layouts by selecting the configured method before waiting or adding", () => {
+  const source = fs.readFileSync(path.join(__dirname, "..", "extension", "content.js"), "utf8");
+  // Missing-CTA layouts: attempt the bounded method toggle instead of settling
+  // into the out-of-stock wait.
+  assert.match(source, /result\.reason === "out-of-stock"[\s\S]{0,200}await selectConfiguredFulfillment\(product\)/);
+  // Wrong-method-preselected layouts: toggle before any add click is prepared.
+  assert.match(source, /pageFulfillmentMode\s*&&\s*pageFulfillmentMode !== product\.fulfillmentMode[\s\S]{0,120}selectConfiguredFulfillment\(product\)/);
+});
