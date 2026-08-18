@@ -1856,7 +1856,19 @@
     }, fingerprintCheckoutEvidence);
     const expectedEvidence = product.checkoutEvidence;
     const evidence = await Evidence.matches(expectedEvidence, checkoutEvidence, product, config?.checkoutTrust);
-    return { ...review, inventory, line, orderTotal, checkoutEvidence, evidence };
+    // Count-only observability for review blocks: which evidence pieces the
+    // page actually yielded. Raw address and payment text stays local.
+    const evidenceDiagnostics = {
+      fulfillmentMode: fulfillmentMode || "none",
+      destinationRegions: destinationTexts.length,
+      paymentInstruments: paymentInstrumentTexts.length,
+      substitutionState,
+      inventoryLines: Array.isArray(inventory?.items) ? inventory.items.length : 0,
+      independentlyCounted: inventory?.independentlyCounted === true,
+      lineQuantity: line?.quantity ?? "none",
+      orderTotalReadable: Number.isFinite(orderTotal)
+    };
+    return { ...review, inventory, line, orderTotal, checkoutEvidence, evidence, evidenceDiagnostics };
   }
 
   async function captureCheckoutPreflight() {
@@ -2095,6 +2107,12 @@
                 ? "The live destination or payment set differs from the approved checkout profile for this store. Automatic submission stopped."
                 : "Final order review could not verify the live destination or pickup store, complete payment set, disabled substitutions, exact cart, SKU, first-party offer, unit cap, quantity, fulfillment, and capped total."
       }, `review-blocked:${product.id}:${blockReason}`, 20_000);
+      if (["fulfillment-unverified", "checkout-evidence-unverified", "checkout-trust-changed", "checkout-evidence-changed"].includes(blockReason) && review.evidenceDiagnostics) {
+        const d = review.evidenceDiagnostics;
+        await send("automation-status", product, {
+          message: `Review evidence observed on this page — fulfillment: ${d.fulfillmentMode} (required ${product.fulfillmentMode}), destination regions: ${d.destinationRegions}, payment instruments: ${d.paymentInstruments}, substitutions: ${d.substitutionState}, cart lines: ${d.inventoryLines}${d.independentlyCounted ? "" : " (not independently counted)"}, line quantity: ${d.lineQuantity}, order total readable: ${d.orderTotalReadable ? "yes" : "no"}.`
+        }, `review-diagnostics:${product.id}:${blockReason}`, 60_000);
+      }
       return;
     }
     reviewSettleRechecks.delete(product.id);
