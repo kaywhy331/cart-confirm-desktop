@@ -1091,14 +1091,25 @@
         if (line) return line;
         const entry = targetCheckoutReviewLine(doc, product);
         if (!entry) return null;
-        // Synthetic NDS review line: the page shows no per-line seller or
-        // price, so both stay empty and the safety chain must fill them from
-        // the recent SKU-anchored cart proof or fail closed.
+        // Synthetic NDS review line. The page shows no per-line price, but
+        // the order summary states the subtotal for its independently counted
+        // units, so the unit price is pure arithmetic — kept only when it
+        // round-trips to the cent. First-party follows the same
+        // marketplace-marker-absence rule the Target product page uses (a
+        // Target Plus line always carries an explicit "Sold by" marker).
+        // The disarmed preflight lock relies on both; the armed submit chain
+        // additionally demands the fresh SKU-anchored cart proof regardless.
+        const subtotal = readOrderTotal(doc, ["[data-test='cart-summary-subTotal']"]);
+        let price = null;
+        if (Number.isFinite(subtotal) && subtotal > 0) {
+          const unit = Math.round((subtotal / entry.quantity) * 100) / 100;
+          if (Math.abs(unit * entry.quantity - subtotal) <= 0.02) price = unit;
+        }
         return {
           container: entry.card,
           seller: "",
-          firstParty: false,
-          price: null,
+          firstParty: targetFirstPartyByAbsence(pageText(doc, 200_000)),
+          price,
           quantity: entry.quantity,
           controls: []
         };

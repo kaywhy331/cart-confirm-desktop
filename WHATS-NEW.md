@@ -6,6 +6,10 @@ update dialog shows exactly these bullets. Keep every entry short, plain, and
 about what the user will notice — one bullet per change, no internals.
 Publishing fails if the version being released has no section here.
 
+## 3.6.21
+- Fixed: the one-time checkout preflight lock could not be approved on Target's redesigned review page — it stopped with "did not prove an eligible first-party offer" because the new page shows no per-item price or seller
+- The lock now verifies the unit price from the order summary's own item count and subtotal (exact-cents arithmetic only) and first-party status the same way the product page does; a unit price over your cap still refuses to lock
+
 ## 3.6.20
 - Fixed: auto-buy stopped at Target's final review with "did not prove the required shipping fulfillment mode" — Target's redesigned checkout shows shipping, payment, items, and totals as plain text with no product ID anywhere, which the old verifier could not read
 - The final review is now verified on the new page: shipping address section, payment card on file, order total, the single item card with its quantity badge, and the order summary's own item count all have to agree with what was verified in the cart minutes earlier — any mismatch still stops for your manual review
