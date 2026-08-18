@@ -1358,7 +1358,14 @@ function sendEventNotification(event, product, queueFanout = null) {
   } else if (event.eventType === "cart-item-confirmed") {
     notifyOnce(key, `${store} cart confirmed`, event.message || `${product.title || product.sku}, quantity ${event.quantity ?? product.quantity}, is in the cart.`, force, activity);
   } else if (event.eventType === "checkout-reached") {
-    notifyOnce(key, `${store} checkout reached`, "The browser companion is validating the order review before submission.", false, activity);
+    // The copy must match what the mission is actually authorized to do:
+    // claiming an imminent automatic submission for a cart-only or manual
+    // mission reads as a stall when nothing more was ever going to happen.
+    notifyOnce(key, `${store} checkout reached`, product.action === "checkout"
+      ? "The browser companion is validating the order review before submission."
+      : product.action === "review"
+        ? "The browser companion is validating the order review; you submit the final order."
+        : "Checkout is open. This mission only carts automatically — complete the purchase there yourself.", false, activity);
   } else if (event.eventType === "order-confirmed") {
     notifyOnce(key, `${store} order confirmed`, `${product.sku} reached an order-confirmation page.`, true, activity);
   } else if (event.eventType === "review-ready") {

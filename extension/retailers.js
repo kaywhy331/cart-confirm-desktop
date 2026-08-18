@@ -852,6 +852,13 @@
     ]);
   }
 
+  const SUBSTITUTION_CONTROL_SELECTORS = Object.freeze([
+    "input[name*='substitut' i]",
+    "[role='checkbox'][aria-label*='substitut' i]",
+    "[data-testid*='substitut' i] input",
+    "[data-automation-id*='substitut' i] input"
+  ]);
+
   function substitutionState(doc, product) {
     const sku = String(product?.sku || "");
     const line = sku ? query(doc, [
@@ -863,12 +870,7 @@
     ]) : null;
     const root = line ? closestLineContainer(line) : null;
     if (!root) return "unknown";
-    const controls = queryAll(root, [
-      "input[name*='substitut' i]",
-      "[role='checkbox'][aria-label*='substitut' i]",
-      "[data-testid*='substitut' i] input",
-      "[data-automation-id*='substitut' i] input"
-    ]).filter(isVisibleEvidence);
+    const controls = queryAll(root, SUBSTITUTION_CONTROL_SELECTORS).filter(isVisibleEvidence);
     if (!controls.length) {
       const text = visibleTextOf(root, 8_000);
       if (/\b(?:substitutions?|replacements?)\s+(?:are\s+)?(?:not available|not offered|not applicable|unavailable|ineligible)\b|\b(?:cannot|can(?:'|’)t)\s+be\s+substituted\b/i.test(text)) {
@@ -913,6 +915,66 @@
       }
     }
     return limits.length ? Math.min(...limits) : null;
+  }
+
+  // ---- Target NDS checkout review (rolled out 2026-08) ----
+  // The redesigned /checkout order review renders everything as static text:
+  // no TCIN or SKU appears anywhere in its DOM, each item is an image card
+  // with a quantity badge, and fulfillment, destination, and payment are
+  // plain sections without selectable controls. Evidence is therefore bound
+  // through the mission's recent SKU-anchored cart proof plus an exact
+  // single-card title-and-quantity match, corroborated by the order summary's
+  // independent unit count. Every ambiguity fails closed to manual review.
+  function targetNdsCheckoutRoot(doc) {
+    const root = query(doc, ["[data-test='checkout-container']"]);
+    return root && isVisibleEvidence(root) ? root : null;
+  }
+
+  function targetCheckoutItemCards(doc) {
+    const root = targetNdsCheckoutRoot(doc);
+    if (!root) return null;
+    return queryAll(root, ["[data-test^='image-card-']"]).filter(isVisibleEvidence).map((card) => {
+      const alt = String(card.querySelector?.("img")?.getAttribute?.("alt") || "").replace(/\s+/g, " ").trim();
+      const altMatch = alt.match(/^(.*?)\s+quantity\s+(\d{1,3})$/i);
+      const styleMatch = String(card.getAttribute?.("style") || "").match(/--image-quantity:\s*["']?(\d{1,3})/i);
+      return {
+        card,
+        title: altMatch ? altMatch[1].trim() : alt,
+        quantity: altMatch ? Number(altMatch[2]) : styleMatch ? Number(styleMatch[1]) : null
+      };
+    });
+  }
+
+  function targetCheckoutSummaryUnitCount(doc) {
+    const summary = query(doc, ["[data-test='cart-summary-subTotal']"]);
+    const match = summary && isVisibleEvidence(summary)
+      ? textOf(summary).match(/\((\d{1,3})\s+items?\)/i)
+      : null;
+    return match ? Number(match[1]) : null;
+  }
+
+  function normalizedTitleKey(value) {
+    return String(value || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  }
+
+  function targetReviewTitlesMatch(missionTitle, cardTitle) {
+    const mission = normalizedTitleKey(missionTitle);
+    const card = normalizedTitleKey(cardTitle);
+    if (mission.length < 12 || card.length < 12) return false;
+    return card.startsWith(mission) || mission.startsWith(card);
+  }
+
+  // The single review card bound to this mission: exactly one visible item
+  // card whose title matches the mission and whose quantity badge is readable,
+  // with the order summary's independent "(N items)" count agreeing.
+  function targetCheckoutReviewLine(doc, product) {
+    const cards = targetCheckoutItemCards(doc);
+    if (!cards || cards.length !== 1) return null;
+    const [entry] = cards;
+    if (!Number.isInteger(entry.quantity) || entry.quantity < 1) return null;
+    if (!targetReviewTitlesMatch(product?.title, entry.title)) return null;
+    if (targetCheckoutSummaryUnitCount(doc) !== entry.quantity) return null;
+    return entry;
   }
 
   function targetAddControlExcluded(element) {
@@ -1018,7 +1080,7 @@
         };
       },
       findLine(doc, product) {
-        return findLineResult(doc, "target", [
+        const line = findLineResult(doc, "target", [
           `[data-tcin='${cssEscape(product.sku)}']`,
           `[data-test='cart-item'] a[href*='A-${cssEscape(product.sku)}']`,
           `[data-test='cartItem'] a[href*='A-${cssEscape(product.sku)}']`,
@@ -1026,18 +1088,57 @@
           `[data-test^='cart-item-'] a[href*='A-${cssEscape(product.sku)}']`,
           `[data-test^='cartItem-'] a[href*='A-${cssEscape(product.sku)}']`
         ], { requireLineEvidence: true });
+        if (line) return line;
+        const entry = targetCheckoutReviewLine(doc, product);
+        if (!entry) return null;
+        // Synthetic NDS review line: the page shows no per-line seller or
+        // price, so both stay empty and the safety chain must fill them from
+        // the recent SKU-anchored cart proof or fail closed.
+        return {
+          container: entry.card,
+          seller: "",
+          firstParty: false,
+          price: null,
+          quantity: entry.quantity,
+          controls: []
+        };
       },
       cartProductIds(doc) {
         return this.cartInventory(doc).ids;
       },
-      cartInventory(doc) {
-        return cartInventory(doc, "target", [
+      cartInventory(doc, product) {
+        const inventory = cartInventory(doc, "target", [
           "[data-test='cart-item']",
           "[data-test='cartItem']",
           "[data-testid='cart-item']",
           "[data-test^='cart-item-']",
           "[data-test^='cartItem-']"
         ]);
+        if (inventory.items.length || !targetNdsCheckoutRoot(doc)) return inventory;
+        const cards = targetCheckoutItemCards(doc) || [];
+        if (!cards.length) return inventory;
+        // The NDS review exposes no SKU. The mission's SKU may only be
+        // attributed to the single card that passes the full review binding
+        // (title match, readable quantity, summary unit-count agreement);
+        // everything else stays unattributed and fails closed downstream.
+        const bound = product ? targetCheckoutReviewLine(doc, product) : null;
+        const summaryUnits = targetCheckoutSummaryUnitCount(doc);
+        const cardUnits = cards.reduce((total, entry) => (
+          total === null || !Number.isInteger(entry.quantity) ? null : total + entry.quantity
+        ), 0);
+        const independentlyCounted = summaryUnits !== null && cardUnits !== null && summaryUnits === cardUnits;
+        const items = cards.map((entry) => ({
+          sku: bound && entry.card === bound.card ? String(product.sku) : "",
+          container: entry.card
+        }));
+        return {
+          complete: independentlyCounted && items.every((item) => Boolean(item.sku)),
+          independentlyCounted,
+          independentLineCount: items.length,
+          removalLineCount: 0,
+          ids: items.map((item) => item.sku).filter(Boolean),
+          items
+        };
       },
       cartItemCount(doc) {
         return targetCartItemCount(doc);
@@ -1047,7 +1148,8 @@
           "[data-test='order-summary-total']",
           "[data-test='orderTotal']",
           "[data-test='grand-total']",
-          "[data-testid='order-total']"
+          "[data-testid='order-total']",
+          "[data-test='cart-summary-total']"
         ]);
       },
       checkoutButton(doc) {
@@ -1055,6 +1157,48 @@
       },
       submitButton(doc) {
         return findAction(doc, ["button[data-test*='placeOrder' i]", "button[id*='placeOrder' i]"], /place (?:my |your )?order/i);
+      },
+      // The NDS review page has no checked/selected controls, so the shared
+      // selected-control readers come first and these static-section readers
+      // only engage on the recognized checkout container.
+      fulfillmentMode(doc) {
+        const selected = fulfillmentMode(doc);
+        if (selected) return selected;
+        const root = targetNdsCheckoutRoot(doc);
+        if (!root) return "";
+        const shipping = queryAll(root, [
+          "[data-test='cart-shipping-address']",
+          "[data-test='STEP_SHIPPING_CONTAINER']"
+        ]).some(isVisibleEvidence);
+        const pickup = queryAll(root, ["[data-test*='pickup' i]"]).some(isVisibleEvidence);
+        if (shipping && !pickup) return "shipping";
+        if (pickup && !shipping) return "pickup";
+        return "";
+      },
+      destinationEvidence(doc, mode) {
+        const regions = destinationEvidence(doc, mode);
+        if (regions.length || mode !== "shipping" || !targetNdsCheckoutRoot(doc)) return regions;
+        const address = query(doc, ["[data-test='cart-shipping-address']"]);
+        if (!address || !isVisibleEvidence(address)) return regions;
+        const text = textOf(address).slice(0, 500);
+        return text ? [text] : regions;
+      },
+      paymentInstrumentEvidence(doc) {
+        const regions = paymentInstrumentEvidence(doc);
+        if (regions.length || !targetNdsCheckoutRoot(doc)) return regions;
+        return unique(queryAll(doc, ["[data-test^='IconPayment']"]).filter(isVisibleEvidence)
+          .map((region) => textOf(region).slice(0, 500)));
+      },
+      substitutionState(doc, product) {
+        const state = substitutionState(doc, product);
+        if (state !== "unknown") return state;
+        const root = targetNdsCheckoutRoot(doc);
+        if (!root || !targetCheckoutReviewLine(doc, product)) return state;
+        // The bound review shows no substitution choice anywhere on the
+        // page: substitutions do not apply to this shipped order.
+        return queryAll(root, SUBSTITUTION_CONTROL_SELECTORS).filter(isVisibleEvidence).length
+          ? state
+          : "not-applicable";
       }
     },
     walmart: {
@@ -1202,11 +1346,11 @@
     adapter.storeErrorDismissButton = storeErrorDismissButton;
     adapter.submissionFailure = submissionFailure;
     adapter.unsafeOrderChoices = unsafeOrderChoices;
-    adapter.fulfillmentMode = fulfillmentMode;
+    adapter.fulfillmentMode = adapter.fulfillmentMode || fulfillmentMode;
     adapter.fulfillmentOptionControl = fulfillmentOptionControl;
-    adapter.destinationEvidence = destinationEvidence;
-    adapter.paymentInstrumentEvidence = paymentInstrumentEvidence;
-    adapter.substitutionState = substitutionState;
+    adapter.destinationEvidence = adapter.destinationEvidence || destinationEvidence;
+    adapter.paymentInstrumentEvidence = adapter.paymentInstrumentEvidence || paymentInstrumentEvidence;
+    adapter.substitutionState = adapter.substitutionState || substitutionState;
     adapter.visibleQuantityLimit = visibleQuantityLimit;
     adapter.retailer = retailer;
   }
