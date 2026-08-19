@@ -2649,6 +2649,11 @@ async function quietCheck(product, taskEpoch, startToken) {
         );
         void openProduct(product.id, {
           actionKind: "background-stock-open",
+          // The stock-detected tab loads unfocused: the browser companion
+          // verifies the offer there and only the mission that claims the
+          // purchase lane pulls its tab forward. Opening it in the
+          // foreground made every in-stock watcher steal focus in turn.
+          background: true,
           resumeMonitoring: false,
           stopEpoch: taskEpoch
         }).catch(() => {});

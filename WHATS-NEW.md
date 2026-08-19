@@ -6,6 +6,10 @@ update dialog shows exactly these bullets. Keep every entry short, plain, and
 about what the user will notice — one bullet per change, no internals.
 Publishing fails if the version being released has no section here.
 
+## 3.7.4
+- Fixed: Chrome kept ping-ponging back to the first carted item while the other missions were still loading — stock-detected mission tabs now open quietly in the background, and a carted item that is just holding for the combined order no longer re-pulls its tab forward
+- The only tab that comes to the front is the mission actually purchasing right now: adding to cart, or the combined-order captain heading into the single checkout
+
 ## 3.7.3
 - Fixed: on Target's redesigned buy box the mission could add the item under "Ready for pickup" even though it was configured for Shipping — the new method cells (Pickup / Delivery / Shipping) mark their selection in a way the old reader could not see
 - The selected method cell is now read directly, a plain "Add to cart" button is only pressed when the mission's configured method is provably the selected one, and "Ship it" / "Pick it up" buttons only count for the matching mission; otherwise Autopilot first selects your configured method (bounded, never a store, zip, or location) and re-checks
