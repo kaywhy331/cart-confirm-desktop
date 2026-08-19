@@ -868,9 +868,18 @@
     return true;
   }
 
+  function elementInViewport(element) {
+    const rect = element.getBoundingClientRect?.();
+    if (!rect) return false;
+    return rect.top >= 0 && rect.bottom <= (window.innerHeight || 0)
+      && rect.left >= 0 && rect.right <= (window.innerWidth || 0);
+  }
+
   async function clickAction(element, product, beforeClick = null, options = {}) {
     if (!Retailers.isActionable(element)) return false;
-    element.scrollIntoView?.({ block: "center", inline: "nearest" });
+    // Scroll only when the control is actually outside the viewport: repeated
+    // centering scrolls on every attempt made the visible page jump around.
+    if (!elementInViewport(element)) element.scrollIntoView?.({ block: "center", inline: "nearest" });
     element.focus?.({ preventScroll: true });
     await sleep(80);
     if (!Retailers.isActionable(element) || adapter.securityChallenge(document)) return false;

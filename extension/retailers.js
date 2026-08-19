@@ -1039,6 +1039,49 @@
     ].join(",")));
   }
 
+  // Redesigned Target buy boxes show a group of method cells ("Pickup",
+  // "Delivery", "Shipping") whose selection state often carries no checked
+  // attribute the shared fulfillmentMode reader can see. These helpers read
+  // that variant group so a mission never adds under the wrong method.
+  // Trailing \b is deliberately omitted: nested markup glues words together
+  // ("Pickup<br>Ready" reads as "PickupReady").
+  const TARGET_FULFILLMENT_CELL_LABEL = /^(pick ?up|delivery|shipping)/i;
+
+  function targetFulfillmentCells(doc) {
+    const cells = [];
+    for (const control of queryAll(doc, ["button", "[role='radio']", "[role='tab']"]).slice(0, 400)) {
+      const own = textOf(control).replace(/\s+/g, " ").trim();
+      const match = TARGET_FULFILLMENT_CELL_LABEL.exec(own);
+      if (!match || own.length > 120) continue;
+      cells.push({ control, mode: match[1].toLowerCase().replace(/\s+/g, "") });
+    }
+    // A genuine method group offers at least two distinct options; a lone
+    // "Shipping…" text button elsewhere on the page is not a group.
+    return new Set(cells.map((cell) => cell.mode)).size >= 2 ? cells : [];
+  }
+
+  function targetCellSelected(control) {
+    return Boolean(
+      control.matches?.("[aria-pressed='true'], [aria-checked='true'], [aria-selected='true'], [data-selected='true']")
+      || control.querySelector?.("input:checked, [aria-checked='true']")
+      || /(?:^|[\s_-])(?:selected|checked)(?:[\s_-]|$)/i.test(String(control.className || ""))
+    );
+  }
+
+  function targetVariantFulfillmentMode(doc) {
+    const cells = targetFulfillmentCells(doc);
+    const selected = cells.filter((cell) => targetCellSelected(cell.control));
+    // Exactly one positively marked cell is proof; anything else is unreadable.
+    if (selected.length !== 1) return "";
+    if (selected[0].mode === "pickup") return "pickup";
+    if (selected[0].mode === "shipping") return "shipping";
+    return ""; // "Delivery" (Shipt) is never a configured mission mode.
+  }
+
+  function targetPageFulfillmentMode(doc) {
+    return fulfillmentMode(doc) || targetVariantFulfillmentMode(doc);
+  }
+
   function targetAddButton(doc, product) {
     const sku = cssEscape(product.sku);
     const candidates = queryAll(doc, [
@@ -1059,11 +1102,30 @@
     // known selector missed, so pages using the established format keep the
     // exact behavior above. Fulfillment CELLS ("Shipping\nArrives by …") are
     // not CTAs and are excluded by requiring the label to BE the action text.
-    const ctaPattern = /^\s*(?:add to cart|ship it)\s*$/i;
+    const ctaPattern = /^\s*(?:add to cart|ship it|pick it up)\s*$/i;
+    const configuredMode = product?.fulfillmentMode === "pickup" ? "pickup" : "shipping";
+    const methodCells = targetFulfillmentCells(doc);
+    const pageMode = targetPageFulfillmentMode(doc);
     for (const candidate of queryAll(doc, ["button"]).slice(0, 400)) {
-      const ownLabel = `${candidate.getAttribute?.("aria-label") || ""} ${textOf(candidate)}`.replace(/\s+/g, " ").trim();
-      if (!ctaPattern.test(textOf(candidate).replace(/\s+/g, " ").trim()) && !ctaPattern.test(ownLabel)) continue;
+      const visibleLabel = textOf(candidate).replace(/\s+/g, " ").trim();
+      const ownLabel = `${candidate.getAttribute?.("aria-label") || ""} ${visibleLabel}`.replace(/\s+/g, " ").trim();
+      if (!ctaPattern.test(visibleLabel) && !ctaPattern.test(ownLabel)) continue;
       if (candidate.closest?.("[data-test*='fulfillment' i]")) continue;
+      // Method safety: the CTA must provably add under this mission's
+      // configured fulfillment. "Ship it" / "Pick it up" prove their method
+      // in the label itself. A bare "Add to cart" adds under whichever method
+      // cell is currently selected, so it only qualifies when the page shows
+      // no method group at all (online-only layouts) or the readable selected
+      // mode equals the configured one. Anything else stays unmatched, which
+      // reads as out-of-stock and triggers the bounded configured-method
+      // toggle instead of a wrong-method add.
+      const provenMode = /^\s*ship it\s*$/i.test(visibleLabel) || /^\s*ship it\s*$/i.test(ownLabel)
+        ? "shipping"
+        : /^\s*pick it up\s*$/i.test(visibleLabel) || /^\s*pick it up\s*$/i.test(ownLabel)
+          ? "pickup"
+          : "";
+      if (provenMode && provenMode !== configuredMode) continue;
+      if (!provenMode && methodCells.length && pageMode !== configuredMode) continue;
       if (targetAddControlMatchesProduct(doc, candidate, product)) return candidate;
       // Variant layouts can also omit the ProductDetailPage container marker.
       // A bare exact-label CTA still qualifies when the page URL is this exact
@@ -1229,6 +1291,10 @@
       fulfillmentMode(doc) {
         const selected = fulfillmentMode(doc);
         if (selected) return selected;
+        // Redesigned buy-box method cells mark selection without any checked
+        // attribute; the variant reader recognizes exactly one marked cell.
+        const variant = targetVariantFulfillmentMode(doc);
+        if (variant) return variant;
         const root = targetNdsCheckoutRoot(doc);
         if (!root) return "";
         const shipping = queryAll(root, [
