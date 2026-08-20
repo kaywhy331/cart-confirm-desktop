@@ -10,6 +10,37 @@ const PRODUCT = {
   action: "checkout"
 };
 
+test("store options for one item race safely and stop after the first completion", () => {
+  const state = State.createState("run", 1_000);
+  const walmart = { ...PRODUCT, itemId: "item:console", action: "cart" };
+  const target = {
+    id: "target:1011960739",
+    retailer: "target",
+    itemId: "item:console",
+    action: "cart"
+  };
+  assert.equal(State.claim(state, walmart, "tab:1", 1_000).ok, true);
+  assert.equal(State.claim(state, target, "tab:2", 1_001).reason, "item-busy");
+  assert.equal(State.beginAddAction(state, walmart, "tab:1", 1_010).ok, true);
+  assert.equal(State.markAddAction(state, walmart, "tab:1", "clicked", 1_020).ok, true);
+  assert.equal(State.markAddAction(state, walmart, "tab:1", "confirmed", 1_030).ok, true);
+  assert.equal(State.complete(state, walmart, 1_040).ok, true);
+  const sibling = State.claim(state, target, "tab:2", 1_050);
+  assert.equal(sibling.reason, "item-completed");
+  assert.equal(sibling.activeProductId, walmart.id);
+});
+
+test("normalization restores an item hold for an uncertain route", () => {
+  const product = { ...PRODUCT, itemId: "item:console" };
+  const state = State.createState("run", 1_000);
+  State.claim(state, product, "tab:1", 1_000);
+  State.beginSubmission(state, product, "tab:1", "a".repeat(64), 1_010);
+  State.markSubmission(state, product, "tab:1", "clicked", 1_020);
+  delete state.locks[`item:${product.itemId}`];
+  const restored = State.normalizeState(structuredClone(state), "run", 9_000, null, [product]);
+  assert.equal(restored.locks[`item:${product.itemId}`].hold, true);
+});
+
 test("one store workflow is serialized even across different products", () => {
   const state = State.createState("run", 1_000);
   assert.equal(State.claim(state, PRODUCT, "tab:1", 1_000).ok, true);
@@ -547,4 +578,3 @@ test("a stranded confirmed cart mission can be finalized to free the store lane"
   assert.equal(State.complete(other, checkoutA, 1_400).ok, false);
   assert.equal(State.complete(other, checkoutA, 1_400).reason, "submission-intent-missing");
 });
-

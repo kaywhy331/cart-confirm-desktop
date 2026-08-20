@@ -23,6 +23,7 @@ test("legacy armed checkout settings receive tax-aware defaults without requirin
   assert.equal(migrated.automationEnabled, true);
   assert.equal(migrated.retryIntervalSeconds, 30);
   assert.equal(migrated.products[0].sku, "1011960739");
+  assert.equal(migrated.products[0].itemId, "item:target:1011960739");
   assert.equal(migrated.products[0].maxOrderTotal, 142);
   assert.equal(migrated.orderTaxPercent, 12);
   assert.deepEqual(migrated.storeOrderAllowances, { target: 30, walmart: 30, amazon: 30 });

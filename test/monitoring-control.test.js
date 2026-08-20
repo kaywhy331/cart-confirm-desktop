@@ -119,6 +119,7 @@ test("calendar-owned missions stay out of quiet checks and missed schedules stay
   );
   assert.match(source, /function extensionConfig[\s\S]*?calendarOwned: productCalendarOwned\(settings, product\)/);
   assert.match(source, /function quietProductEligible[\s\S]*?productCalendarOwned\(settings, product\)/);
+  assert.match(source, /function quietProductEligible[\s\S]*?itemHasProtectedProgress\(settings\.products, productStatuses, product\.itemId\)/);
   assert.match(scheduleHandler, /if \(decision\.action === "missed"\)[\s\S]*?return;[\s\S]*?clearProductOpenAt\(decision\.productId\)/);
   assert.match(backgroundSource, /function configuredProduct[\s\S]*?!ScheduleGate\.calendarOwned\(candidate\)/);
 });

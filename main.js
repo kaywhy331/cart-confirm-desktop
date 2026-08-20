@@ -51,6 +51,7 @@ const {
 } = require("./lib/catalog");
 const { migrateStoredSettings } = require("./lib/migrations");
 const { itemProfileById } = require("./lib/item-defaults");
+const { itemHasProtectedProgress } = require("./lib/item-missions");
 const { canBypassStoreOverload, consumeStoreAction } = require("./lib/action-budget");
 const {
   assertNoNewPastProductSchedules,
@@ -705,10 +706,10 @@ async function installAvailableUpdate() {
 function appendMissionProducts(additions, message) {
   if (!Array.isArray(additions) || !additions.length) return snapshot();
   if (settings.automationEnabled) {
-    throw new Error("Switch Autopilot off before adding missions.");
+    throw new Error("Switch Autopilot off before adding items.");
   }
   if (settings.products.length + additions.length > MAX_PRODUCTS) {
-    throw new Error(`A buy list can contain at most ${MAX_PRODUCTS} products.`);
+    throw new Error(`An item plan can contain at most ${MAX_PRODUCTS} store options.`);
   }
 
   const previousProducts = settings.products;
@@ -725,7 +726,7 @@ function appendMissionProducts(additions, message) {
   for (const product of additions) {
     productStatuses[product.id] = createProductStatus(product);
   }
-  status = { ...status, lastMessage: String(message || "Missions added.").slice(0, 240) };
+  status = { ...status, lastMessage: String(message || "Items added.").slice(0, 240) };
   persistSettings();
   persistRuntimeState();
   configVersion += 1;
@@ -784,7 +785,7 @@ function quickAddMissionRequest(input) {
       ].filter(Boolean).join(" and ");
       status = {
         ...status,
-        lastMessage: `${existing.title || existing.sku} kept its mission settings; its ${captured} from Chrome ${affiliateUpdated && imageUpdated ? "were" : "was"} attached.`.slice(0, 240)
+        lastMessage: `${existing.title || existing.sku} kept its item settings; its ${captured} from Chrome ${affiliateUpdated && imageUpdated ? "were" : "was"} attached.`.slice(0, 240)
       };
       persistSettings();
       configVersion += 1;
@@ -804,7 +805,7 @@ function quickAddMissionRequest(input) {
   if (settings.products.length >= MAX_PRODUCTS) {
     return {
       statusCode: 409,
-      payload: { ok: false, reason: "mission-limit", error: `The mission list already contains ${MAX_PRODUCTS} products.` }
+      payload: { ok: false, reason: "mission-limit", error: `The item plan already contains ${MAX_PRODUCTS} store options.` }
     };
   }
 
@@ -878,7 +879,7 @@ function authorizeOperatorResolutionRequest(input) {
   if (settings.automationEnabled) {
     return {
       statusCode: 409,
-      payload: { ok: false, reason: "automation-armed", error: "Switch Autopilot off before resolving a held mission." }
+      payload: { ok: false, reason: "automation-armed", error: "Switch Autopilot off before resolving a held item." }
     };
   }
   const productId = String(input?.productId || "").slice(0, 80);
@@ -886,7 +887,7 @@ function authorizeOperatorResolutionRequest(input) {
   if (!product || input?.checkedOrderHistory !== true || input?.abandonMission !== true) {
     return {
       statusCode: 409,
-      payload: { ok: false, reason: "operator-resolution-rejected", error: "The exact mission and explicit order-history acknowledgment are required." }
+      payload: { ok: false, reason: "operator-resolution-rejected", error: "The exact item/store option and explicit order-history acknowledgment are required." }
     };
   }
   return { statusCode: 200, payload: { ok: true, productId: product.id } };
@@ -1117,7 +1118,7 @@ async function openExternalRetailer(url, options = {}) {
 
 function findProduct(productId) {
   const product = settings.products.find((candidate) => candidate.id === productId);
-  if (!product) throw new Error("That product is no longer in the buy list.");
+  if (!product) throw new Error("That store option is no longer in the item plan.");
   return product;
 }
 
@@ -1136,12 +1137,12 @@ async function openProduct(productId, options = {}) {
   const product = productId
     ? findProduct(productId)
     : settings.products.find((candidate) => candidate.enabled);
-  if (!product) throw new Error("Enable at least one product first.");
+  if (!product) throw new Error("Enable at least one store option first.");
   const requestedUrl = String(options.urlOverride || missionOpenUrl(product));
   const requested = parseRetailUrl(requestedUrl);
   const requestedSku = extractSku(requested.retailer, requested.parsed.href);
   if (requested.retailer !== product.retailer || requestedSku !== product.sku) {
-    throw new Error("The requested signal entry does not match this mission's store and product ID.");
+    throw new Error("The requested signal entry does not match this item's store and product ID.");
   }
   if (options.resumeMonitoring === false) {
     if (
@@ -1187,7 +1188,7 @@ async function ensureCompanionConnection(plan, prepCandidates) {
   }
 
   const bootstrap = selectConnectionBootstrap(plan, prepCandidates);
-  if (!bootstrap) throw new Error("Enable at least one supported retailer mission before connecting Chrome.");
+  if (!bootstrap) throw new Error("Enable at least one supported store option before connecting Chrome.");
   const startedAt = Date.now();
   const opened = await openExternalRetailer(missionOpenUrl(bootstrap), {
     productId: bootstrap.id,
@@ -1377,7 +1378,7 @@ function sendEventNotification(event, product, queueFanout = null) {
       ? "The browser companion is validating the order review before submission."
       : product.action === "review"
         ? "The browser companion is validating the order review; you submit the final order."
-        : "Checkout is open. This mission only carts automatically — complete the purchase there yourself.", false, activity);
+        : "Checkout is open. This item only carts automatically — complete the purchase there yourself.", false, activity);
   } else if (event.eventType === "order-confirmed") {
     notifyOnce(key, `${store} order confirmed`, `${product.sku} reached an order-confirmation page.`, true, activity);
   } else if (event.eventType === "review-ready") {
@@ -1387,7 +1388,7 @@ function sendEventNotification(event, product, queueFanout = null) {
       key,
       `${store} purchase queue`,
       queueFanout
-        ? `Official queue active. Opening ${queueFanout.productIds.length} other enabled mission${queueFanout.productIds.length === 1 ? "" : "s"} together; scheduled Walmart loser tabs may use their configured bounded final reloads.`
+        ? `Official queue active. Opening ${queueFanout.productIds.length} other enabled store option${queueFanout.productIds.length === 1 ? "" : "s"} together; scheduled Walmart loser tabs may use their configured bounded final reloads.`
         : "The companion is waiting for the official retailer queue without refreshing it.",
       false,
       activity
@@ -1420,7 +1421,7 @@ function triggerQueueFanout(event) {
   persistRuntimeState();
   status = {
     ...status,
-    lastMessage: `Official ${retailerLabel(decision.retailer)} queue detected. Opening ${decision.productIds.length} other enabled mission${decision.productIds.length === 1 ? "" : "s"} together; queued tabs freeze while scheduled loser tabs use bounded final reloads.`
+    lastMessage: `Official ${retailerLabel(decision.retailer)} queue detected. Opening ${decision.productIds.length} other enabled store option${decision.productIds.length === 1 ? "" : "s"} together; queued tabs freeze while scheduled loser tabs use bounded final reloads.`
   };
 
   const runId = settings.automationRunId;
@@ -1445,12 +1446,12 @@ function triggerQueueFanout(event) {
     if (unsuccessful && settings.automationEnabled && settings.automationRunId === runId) {
       status = {
         ...status,
-        lastMessage: `${retailerLabel(decision.retailer)} queue fan-out finished, but ${unsuccessful} mission${unsuccessful === 1 ? "" : "s"} could not open because a safety budget, Stop, or browser action blocked it.`
+        lastMessage: `${retailerLabel(decision.retailer)} queue fan-out finished, but ${unsuccessful} store option${unsuccessful === 1 ? "" : "s"} could not open because a safety budget, Stop, or browser action blocked it.`
       };
       notifyOnce(
         `queue-fanout-partial:${decision.key}`,
         `${retailerLabel(decision.retailer)} queue fan-out incomplete`,
-        `${unsuccessful} mission${unsuccessful === 1 ? "" : "s"} did not open. Cart Confirm will not repeat the burst automatically.`,
+        `${unsuccessful} store option${unsuccessful === 1 ? "" : "s"} did not open. Cart Confirm will not repeat the burst automatically.`,
         true
       );
       broadcast();
@@ -1641,7 +1642,7 @@ async function openSignal(signalId, requestedEntry = "product") {
   if (!signal) throw new Error("That restock signal is no longer in the inbox.");
   const product = settings.products.find((candidate) => candidate.id === signal.productId);
   if (!product) {
-    if (requestedEntry !== "product") throw new Error("Add this product as a desired mission before using a direct store entry.");
+    if (requestedEntry !== "product") throw new Error("Add this product as a desired item before using a direct store entry.");
     resumeMonitoring();
     const opened = await openExternalRetailer(signal.productUrl, { actionKind: "discord-signal-manual" });
     return { productId: "", via: opened.via };
@@ -2187,25 +2188,34 @@ function registerIpc() {
     return snapshot();
   });
 
-  ipcMain.handle("cart-assist:bulk-import", (_event, text) => {
+  const bulkImportPlan = (text) => {
     const input = String(text || "");
     if (input.length > 50_000) {
       throw new Error("The bulk import is too large. Paste no more than 50,000 characters.");
     }
     if (settings.automationEnabled) {
-      throw new Error("Switch Autopilot off before importing missions.");
+      throw new Error("Switch Autopilot off before importing items.");
     }
     const profile = itemProfileById(settings.defaultItemProfileId, settings.itemProfiles);
-    const plan = planBulkImport(input, settings.products, MAX_PRODUCTS, {
+    return planBulkImport(input, settings.products, MAX_PRODUCTS, {
       profile,
       msrpCatalog: settings.msrpCatalog,
       orderTaxPercent: settings.orderTaxPercent,
       storeOrderAllowances: settings.storeOrderAllowances
     });
+  };
+
+  ipcMain.handle("cart-assist:bulk-import-preview", (_event, text) => {
+    const plan = bulkImportPlan(text);
+    return { summary: plan.summary, issues: plan.issues };
+  });
+
+  ipcMain.handle("cart-assist:bulk-import", (_event, text) => {
+    const plan = bulkImportPlan(text);
     const nextSnapshot = plan.additions.length
       ? appendMissionProducts(
           plan.additions,
-          `${plan.additions.length} mission${plan.additions.length === 1 ? "" : "s"} imported with the default item profile.`
+          `${plan.additions.length} item${plan.additions.length === 1 ? "" : "s"} imported with the default item template.`
         )
       : snapshot();
     return {
@@ -2219,7 +2229,7 @@ function registerIpc() {
 
   ipcMain.handle("cart-assist:catalog-add-missions", (_event, input) => {
     if (settings.automationEnabled) {
-      throw new Error("Switch Autopilot off before adding catalog results to Missions.");
+      throw new Error("Switch Autopilot off before adding catalog results to Items.");
     }
     const selectedIds = Array.isArray(input) ? input : input?.selectedIds;
     const requestedProfileId = Array.isArray(input)
@@ -2236,7 +2246,7 @@ function registerIpc() {
     const nextSnapshot = plan.additions.length
       ? appendMissionProducts(
           plan.additions,
-          `${plan.additions.length} catalog mission${plan.additions.length === 1 ? "" : "s"} added with ${profile.name}.`
+          `${plan.additions.length} catalog item${plan.additions.length === 1 ? "" : "s"} added with ${profile.name}.`
         )
       : snapshot();
     return { snapshot: nextSnapshot, summary: plan.summary };
@@ -2367,7 +2377,7 @@ function registerIpc() {
     configVersion += 1;
     status = {
       ...status,
-      lastMessage: "Stopped. Autopilot off, monitoring paused, and queued openings cancelled. Your mission plan and scheduled times were preserved."
+      lastMessage: "Stopped. Autopilot off, monitoring paused, and queued openings cancelled. Your item plan and scheduled times were preserved."
     };
     broadcast();
     return snapshot();
@@ -2485,6 +2495,11 @@ function registerIpc() {
     shell.showItemInFolder(path.join(extensionPath(), "manifest.json"));
     return extensionPath();
   });
+  ipcMain.handle("cart-assist:open-chrome-extensions", () => {
+    const chromePath = findChrome();
+    if (!chromePath) throw new Error("Google Chrome was not found. Open chrome://extensions manually in Chrome.");
+    return openPageInChrome("chrome://extensions");
+  });
   ipcMain.handle("cart-assist:copy-extension-path", () => {
     clipboard.writeText(extensionPath());
     return extensionPath();
@@ -2551,6 +2566,7 @@ function quietProductEligible(product, now = Date.now()) {
     || productCalendarOwned(settings, product)
     || productExecutionMode(runtimeState, product.id, settings.automationRunId, now) !== "watcher"
     || now - (productTabSeenAt.get(product.id) || 0) <= QUIET_TAB_FRESH_MS
+    || itemHasProtectedProgress(settings.products, productStatuses, product.itemId)
     || productStatuses[product.id]?.order === "confirmed"
   ) return false;
   const quarantineUntil = quietState.productQuarantineUntil.get(product.id) || 0;
@@ -2898,12 +2914,12 @@ function materializeWalmartPrepCandidate(candidate, transition) {
   configVersion += 1;
   status = {
     ...status,
-    lastMessage: `${candidate.title || candidate.sku} changed (${transition.reason}) and was added to Missions for its approved drop time.`
+    lastMessage: `${candidate.title || candidate.sku} changed (${transition.reason}) and was added to Items for its approved drop time.`
   };
   notifyOnce(
     `walmart-prep:${candidate.id}:${transition.reason}`,
     "Walmart prep signal detected",
-    `${candidate.title || candidate.sku} was added to Missions for ${new Date(candidate.openAt).toLocaleString()}.`,
+    `${candidate.title || candidate.sku} was added to Items for ${new Date(candidate.openAt).toLocaleString()}.`,
     true
   );
   persistRuntimeState();

@@ -21,7 +21,7 @@
         </div>
         <div>
           <h1>Cart Confirm</h1>
-          <p>Mission control for your buy list</p>
+          <p>Item control for your buy list</p>
         </div>
       </div>
       <div class="topbar-controls">
@@ -37,8 +37,8 @@
           <span class="autopilot-label">Autopilot</span>
           <span class="autopilot-state" id="autopilotState">OFF</span>
         </button>
-        <button class="button secondary" id="testButton" type="button" title="Checks every enabled mission that does not have a calendar time; nothing is added">Monitor only</button>
-        <button class="button danger" id="disarmButton" type="button" title="Autopilot off, monitoring paused, and queued openings cancelled; your mission plan and scheduled times stay saved">Stop everything</button>
+        <button class="button secondary" id="testButton" type="button" title="Checks every enabled item that does not have a calendar time; nothing is added">Monitor only</button>
+        <button class="button danger" id="disarmButton" type="button" title="Autopilot off, monitoring paused, and queued openings cancelled; your item plan and scheduled times stay saved">Stop everything</button>
       </div>
     </header>
 
@@ -50,6 +50,14 @@
     <div class="digest-bar" id="digestBar" hidden>
       <span id="digestText">While you were away…</span>
       <button class="button ghost compact" id="digestDismissButton" type="button">Dismiss</button>
+    </div>
+
+    <div class="run-state-banner" id="runStateBanner" data-mode="stopped">
+      <div>
+        <strong id="runStateTitle">Stopped</strong>
+        <span id="runStateDetail">Monitoring is paused and purchase actions are off.</span>
+      </div>
+      <button class="button ghost compact" id="runReviewOpenButton" type="button">Review run</button>
     </div>
 
     <main class="layout">
@@ -64,14 +72,15 @@
             <span class="step-state attention" id="connectState">Waiting for Chrome</span>
           </div>
           <ol class="install-steps">
-            <li>Click <strong>Show companion folder</strong> below.</li>
-            <li>In Chrome, open <strong>chrome://extensions</strong> and turn on <strong>Developer mode</strong>.</li>
-            <li>Click <strong>Load unpacked</strong> and pick the companion folder.</li>
-            <li>Open or reload a Target, Walmart, or Amazon tab — the badge shows <strong>IDLE</strong> when connected.</li>
+            <li>Choose <strong>Show companion folder</strong> so the correct folder is selected for you.</li>
+            <li>Choose <strong>Open Chrome extensions</strong>, turn on Developer mode, then use <strong>Load unpacked</strong> on that folder.</li>
+            <li>Choose <strong>Test connection safely</strong>. The app opens one store page and confirms the connection here.</li>
           </ol>
           <div class="action-row">
             <button class="button secondary" id="showExtensionButton" type="button">Show companion folder</button>
+            <button class="button ghost" id="openChromeExtensionsButton" type="button">Open Chrome extensions</button>
             <button class="button ghost" id="copyExtensionButton" type="button">Copy folder path</button>
+            <button class="button primary" id="testConnectionButton" type="button">Test connection safely</button>
             <span class="port-badge" id="portBadge">Port —</span>
           </div>
           <p class="step-hint attention-hint" id="connectHint" hidden></p>
@@ -80,31 +89,32 @@
 
         <section class="panel missions-panel collapsible-panel" id="missionsPanel">
           <div class="panel-heading">
-            <h2>Missions</h2>
+            <h2>Items</h2>
             <div class="action-row">
-              <button class="button ghost compact" id="openAllButton" type="button">Open all due</button>
-              <button class="button ghost compact" id="catalogLauncherButton" type="button">Search catalog</button>
-              <button class="button secondary compact" id="bulkImportButton" type="button">Bulk import</button>
+              <button class="button ghost compact" id="openAllButton" type="button">Open due pages</button>
+              <span class="add-products-label">Add products:</span>
+              <button class="button ghost compact" id="catalogLauncherButton" type="button">From catalog</button>
+              <button class="button secondary compact" id="bulkImportButton" type="button">Import links</button>
               <button class="button secondary compact" id="planEditButton" type="button" aria-pressed="false">Edit plan</button>
-              <button class="button primary compact" id="newMissionButton" type="button">+ New mission</button>
+              <button class="button primary compact" id="newMissionButton" type="button">+ Add item</button>
               <button class="button ghost compact panel-toggle" type="button" aria-controls="missionsPanelBody" aria-expanded="true">Minimize</button>
             </div>
           </div>
           <div class="panel-content" id="missionsPanelBody">
-            <div class="mission-toolbar" aria-label="Mission filters">
+            <div class="mission-toolbar" aria-label="Item filters">
               <label class="mission-search-field">
-                <span class="sr-only">Search missions</span>
-                <input id="missionSearch" type="search" maxlength="100" autocomplete="off" spellcheck="false" placeholder="Search name or item ID">
+                <span class="sr-only">Search items</span>
+                <input id="missionSearch" type="search" maxlength="100" autocomplete="off" spellcheck="false" placeholder="Search item, store, or ID">
               </label>
               <label>
-                <span class="sr-only">Filter missions by group</span>
-                <select id="missionGroupFilter" aria-label="Filter missions by group">
+                <span class="sr-only">Filter items by group</span>
+                <select id="missionGroupFilter" aria-label="Filter items by group">
                   <option value="all">All groups</option>
                 </select>
               </label>
               <label>
-                <span class="sr-only">Filter missions by retailer</span>
-                <select id="missionRetailerFilter" aria-label="Filter missions by retailer">
+                <span class="sr-only">Filter items by retailer</span>
+                <select id="missionRetailerFilter" aria-label="Filter items by retailer">
                   <option value="all">All retailers</option>
                   <option value="target">Target</option>
                   <option value="walmart">Walmart</option>
@@ -112,36 +122,41 @@
                 </select>
               </label>
               <label>
-                <span class="sr-only">Filter missions by status</span>
-                <select id="missionActiveFilter" aria-label="Filter missions by status">
+                <span class="sr-only">Filter items by status</span>
+                <select id="missionActiveFilter" aria-label="Filter items by status">
                   <option value="all">On + Off</option>
                   <option value="active">On</option>
                   <option value="inactive">Off</option>
+                  <option value="problem">Needs attention</option>
                 </select>
               </label>
               <button class="button secondary compact" id="newMissionGroupButton" type="button">+ Group</button>
               <span class="mission-filter-count" id="missionFilterCount" aria-live="polite"></span>
             </div>
-            <section class="mission-plan-tools" id="missionPlanTools" aria-label="Bulk mission plan tools" hidden>
+            <section class="mission-plan-tools" id="missionPlanTools" aria-label="Bulk item plan tools" hidden>
               <div class="mission-plan-tools-heading">
                 <div>
                   <strong>Edit the plan</strong>
                   <span id="bulkMissionSelectionCount">0 selected</span>
+                  <small id="planChangeCount">No plan changes yet</small>
                 </div>
                 <div class="action-row">
+                  <button class="button ghost compact" id="planUndoButton" type="button" disabled>Undo</button>
+                  <button class="button ghost compact" id="planRevertButton" type="button" disabled>Revert all</button>
                   <button class="button ghost compact" id="bulkMissionSelectAllButton" type="button">Select visible</button>
                   <button class="button ghost compact" id="bulkMissionSelectNoneButton" type="button">Clear selection</button>
                   <button class="button secondary compact" id="bulkEnableMissionsButton" type="button">Turn on</button>
                   <button class="button ghost compact" id="bulkDisableMissionsButton" type="button">Turn off</button>
+                  <button class="button secondary compact" id="combineSelectedItemsButton" type="button" disabled>Combine stores</button>
                 </div>
               </div>
               <div class="bulk-profile-actions">
-                <select id="bulkItemProfile" aria-label="Profile for selected missions"></select>
+                <select id="bulkItemProfile" aria-label="Template for selected items"></select>
                 <button class="button primary compact" id="applyBulkItemProfileButton" type="button">Apply profile</button>
                 <button class="button secondary compact" id="copySelectedMissionListButton" type="button">Copy list</button>
               </div>
               <div class="bulk-group-actions">
-                <select id="bulkMissionGroup" aria-label="Group for selected missions"><option value="">Ungrouped</option></select>
+                <select id="bulkMissionGroup" aria-label="Group for selected items"><option value="">Ungrouped</option></select>
                 <button class="button secondary compact" id="applyBulkMissionGroupButton" type="button">Move to group</button>
               </div>
               <div class="bulk-schedule-actions">
@@ -152,7 +167,7 @@
                 <button class="button primary compact" id="scheduleCandidateMissionsButton" type="button">Set shared time</button>
                 <button class="button ghost compact" id="clearSelectedMissionSchedulesButton" type="button">Clear selected times</button>
               </div>
-              <small class="bulk-schedule-help">Selection follows the filters above. A shared time keeps each mission calendar-gated and applies the bounded 15-minute candidate traffic setup; prices, quantities, and purchase actions do not change.</small>
+              <small class="bulk-schedule-help">Selection follows the filters above. A shared time keeps each item calendar-gated and applies the bounded 15-minute candidate traffic setup; prices, quantities, and purchase actions do not change.</small>
             </section>
             <p class="step-hint worst-case" id="worstCase"></p>
             <div class="mission-list" id="missionList"></div>
@@ -210,15 +225,15 @@
               <div class="action-row">
                 <button class="button ghost compact" id="catalogSelectAllButton" type="button">Select all</button>
                 <button class="button ghost compact" id="catalogSelectNoneButton" type="button">Select none</button>
-                <button class="button secondary compact" id="catalogAddButton" type="button">Add selected to Missions</button>
+                <button class="button secondary compact" id="catalogAddButton" type="button">Add selected to Items</button>
               </div>
             </div>
             <div class="catalog-import-defaults">
               <label class="field">
-                <span>Apply item profile</span>
+                  <span>Apply item template</span>
                 <select id="catalogItemProfile"></select>
               </label>
-              <p class="catalog-safety">The selected profile applies its saved action and fulfillment. A mission turns On only when its title matches an approved retailer MSRP; otherwise it stays Off for price review.</p>
+              <p class="catalog-safety">The selected template applies its saved action and fulfillment. An item turns On only when its title matches an approved retailer MSRP; otherwise it stays Off for price review.</p>
             </div>
             <div class="catalog-import-defaults">
               <label class="field">
@@ -226,7 +241,7 @@
                 <input id="catalogWalmartPrepOpenAt" type="datetime-local">
               </label>
               <button class="button secondary compact" id="catalogWalmartPrepButton" type="button">Monitor selected for Walmart prep</button>
-              <p class="catalog-safety">Selected exact Walmart items must have an approved MSRP/profile. Lightweight public-page changes add them to Missions, but their calendar gate prevents browser action before this time.</p>
+              <p class="catalog-safety">Selected exact Walmart items must have an approved MSRP/template. Lightweight public-page changes add them to Items, but their calendar gate prevents browser action before this time.</p>
             </div>
             <div class="catalog-list" id="walmartPrepList"></div>
             <div class="catalog-list" id="catalogList">
@@ -239,7 +254,7 @@
           <div class="panel-heading">
             <div>
               <span class="eyebrow">One setup, reusable defaults</span>
-              <h2>Item defaults</h2>
+              <h2>Reusable item templates &amp; caps</h2>
             </div>
             <button class="button ghost compact panel-toggle" type="button" aria-controls="itemDefaultsPanelBody" aria-expanded="false">Expand</button>
           </div>
@@ -263,7 +278,7 @@
             <div class="defaults-block">
               <div class="defaults-heading">
                 <div>
-                  <strong>Mission profiles</strong>
+                  <strong>Item templates</strong>
                   <p>Create a reusable quantity, action, fulfillment, and alert setup, then apply it while importing or in bulk.</p>
                 </div>
                 <label class="field defaults-default-profile">
@@ -308,7 +323,7 @@
         </section>
 
         <details class="advanced-box" id="settingsBox">
-          <summary>Speed and traffic settings (optional)</summary>
+          <summary>Checking speed preset (optional)</summary>
           <div class="settings-explainer">
             <strong>Not sure what to choose?</strong>
             <span>Use <b>Recommended</b>. Profiles change only the checking speed, page spacing, overload rest time, and fast-load switch. They never change products, price caps, quantities, or purchase actions.</span>
@@ -316,7 +331,7 @@
           <section class="configuration-profiles" aria-labelledby="configurationProfilesTitle">
             <div class="configuration-profile-heading">
               <div>
-                <span class="control-title" id="configurationProfilesTitle">Saved setups</span>
+                <span class="control-title" id="configurationProfilesTitle">Checking presets</span>
                 <p>Pick a ready-made setup, or save the numbers below with your own name.</p>
               </div>
               <div class="configuration-profile-picker">
@@ -337,9 +352,9 @@
               <span class="control-title">Combined order per store</span>
               <span class="toggle-row">
                 <input id="combinedOrder" type="checkbox">
-                <span>Auto-buy missions check out together</span>
+                <span>Auto-buy items check out together</span>
               </span>
-              <small>On: each store's auto-submit missions first all validate, in-stock items are carted and held, then one checkout submits every line as a single order (capped at the sum of the included missions' caps). Off: each mission checks out on its own as before.</small>
+              <small>On: each store's auto-submit items first all validate, in-stock items are carted and held, then one checkout submits every line as a single order (capped at the sum of the included store-route caps). Off: each item checks out on its own.</small>
             </label>
             <label class="control-card">
               <span class="control-title">Load less page media</span>
@@ -363,7 +378,7 @@
                 <input id="watcherIntervalSeconds" type="number" min="30" max="3600" step="1" inputmode="numeric" required>
                 <span>seconds</span>
               </span>
-              <small>How long an authenticated mission tab waits between normal reloads. Tabless Target/Walmart background missions separately schedule every product at a randomized 45–90 seconds. Recommended: 60 seconds.</small>
+              <small>How long an authenticated item tab waits between normal reloads. Tabless Target/Walmart background items separately schedule every store route at a randomized 45–90 seconds. Recommended: 60 seconds.</small>
             </label>
             <label class="control-card field compact-field">
               <span class="control-title">Scheduled-drop error wait</span>
@@ -403,7 +418,7 @@
                 <input id="scheduledBlitzDurationSeconds" type="number" min="15" max="900" step="1" inputmode="numeric" required>
                 <span>seconds</span>
               </span>
-              <small>Maximum time any scheduled mission uses faster release cadence. At expiry it returns to regular watcher cadence without disabling the mission.</small>
+              <small>Maximum time any scheduled item uses faster release cadence. At expiry it returns to regular watcher cadence without disabling the item.</small>
             </label>
             <label class="control-card field compact-field">
               <span class="control-title">Gap between store page moves</span>
@@ -449,19 +464,23 @@
           <p class="readiness-summary" id="readinessSummary"></p>
           <div class="readiness-metrics">
             <div><span>Chrome</span><strong id="readinessConnection">—</strong></div>
-            <div><span>Missions on</span><strong id="readinessEnabled">0</strong></div>
+            <div><span>Items on</span><strong id="readinessEnabled">0</strong></div>
             <div><span>Scheduled</span><strong id="readinessScheduled">0</strong></div>
             <div><span>Maximum exposure</span><strong id="readinessExposure">$0</strong></div>
           </div>
           <div class="readiness-note" id="readinessNote"></div>
-          <button class="button ghost compact" id="readinessReviewButton" type="button">Review missions</button>
+          <button class="button ghost compact" id="readinessReviewButton" type="button">Review items</button>
         </section>
 
         <section class="panel" id="schedulePanel" hidden>
           <div class="panel-heading">
-            <h2>Drop calendar</h2>
+            <div>
+              <h2>Schedule agenda</h2>
+              <small>Times shown in <span id="scheduleTimezone">local time</span></small>
+            </div>
             <div class="action-row">
               <span class="schedule-coverage" id="scheduleCoverage"></span>
+              <button class="button ghost compact" id="clearMissedSchedulesButton" type="button" hidden>Clear missed</button>
               <button class="button ghost compact" id="enableScheduledButton" type="button" hidden>Enable all scheduled</button>
             </div>
           </div>
@@ -549,7 +568,7 @@
   <dialog class="bulk-import-dialog" id="bulkImportDialog" aria-labelledby="bulkImportTitle">
     <div class="dialog-heading">
       <div>
-        <span class="eyebrow">Mission tools</span>
+        <span class="eyebrow">Item tools</span>
         <h2 id="bulkImportTitle">Bulk import product links</h2>
       </div>
       <button class="button ghost compact" id="bulkImportCancelButton" type="button">Close</button>
@@ -559,17 +578,35 @@
     <p class="bulk-import-safety">URL imports use the default item profile. A title that matches an approved store MSRP can be ready immediately; otherwise it stays <strong>Off</strong> with a $0 cap until price review.</p>
     <div class="bulk-import-result" id="bulkImportResult" role="status" aria-live="polite"></div>
     <div class="dialog-actions">
-      <button class="button primary" id="bulkImportSubmitButton" type="button">Import URLs</button>
+      <button class="button primary" id="bulkImportSubmitButton" type="button">Preview import</button>
+    </div>
+  </dialog>
+
+  <dialog class="run-review-dialog" id="runReviewDialog" aria-labelledby="runReviewTitle">
+    <div class="dialog-heading">
+      <div>
+        <span class="eyebrow">One clear start point</span>
+        <h2 id="runReviewTitle">Review this run</h2>
+      </div>
+      <button class="button ghost compact" id="runReviewCloseButton" type="button">Close</button>
+    </div>
+    <p id="runReviewSummary"></p>
+    <div class="run-review-metrics" id="runReviewMetrics"></div>
+    <ul class="run-review-issues" id="runReviewIssues"></ul>
+    <p class="run-review-safety">Store options are alternatives for one item. The first selected store to reach the protected purchase boundary claims that item for this run; sibling stores cannot buy it again.</p>
+    <div class="dialog-actions run-review-actions">
+      <button class="button secondary" id="runReviewMonitorButton" type="button">Start monitoring only</button>
+      <button class="button primary" id="runReviewAutopilotButton" type="button">Start Autopilot</button>
     </div>
   </dialog>
 
   <template id="missionViewTemplate">
     <article class="mission-card">
-      <div class="mission-order-actions" aria-label="Reorder mission">
+      <div class="mission-order-actions" aria-label="Reorder item">
         <button class="mission-icon-button mission-move-up" type="button">↑</button>
         <button class="mission-icon-button mission-move-down" type="button">↓</button>
       </div>
-      <label class="toggle-row mission-enabled" title="Only enabled missions run">
+      <label class="toggle-row mission-enabled" title="Only enabled items run">
         <input data-view="enabled" type="checkbox">
       </label>
       <div class="mission-main">
@@ -598,16 +635,16 @@
   <template id="missionEditTemplate">
     <article class="product-row mission-edit-card">
       <div class="product-row-top">
-        <label class="toggle-row row-enabled" title="Only enabled missions run">
+        <label class="toggle-row row-enabled" title="Only enabled items run">
           <input data-field="enabled" type="checkbox">
           <span>On</span>
         </label>
-        <select class="retailer-select" data-field="retailer" aria-label="Store">
+        <select class="retailer-select" data-field="retailer" aria-label="Active store option" hidden>
           <option value="target">Target</option>
           <option value="walmart">Walmart</option>
           <option value="amazon">Amazon</option>
         </select>
-        <input class="title-input" data-field="title" type="text" maxlength="80" autocomplete="off" spellcheck="false" placeholder="Name this mission (auto-filled from the link)" aria-label="Mission name">
+        <input class="title-input" data-field="title" type="text" maxlength="80" autocomplete="off" spellcheck="false" placeholder="Name this item (auto-filled from the link)" aria-label="Item name">
         <div class="row-actions">
           <button class="button primary compact mission-done" type="button">Done</button>
           <button class="button ghost compact mission-cancel" type="button">Cancel</button>
@@ -632,10 +669,10 @@
           <select data-field="itemProfileId"></select>
         </label>
         <label class="field">
-          <span>Mission group</span>
+          <span>Item group</span>
           <select data-field="groupId"></select>
         </label>
-        <small>Changing the profile immediately applies its reusable settings and matching store MSRP. If no approved price matches, this mission stays Off.</small>
+        <small>Changing the template immediately applies its reusable settings and matching store MSRP. If no approved price matches, this item stays Off.</small>
         <input data-field="msrpRecordId" type="hidden">
         <input data-field="priceSource" type="hidden">
       </div>
@@ -716,7 +753,7 @@
             </span>
           </label>
         </div>
-        <small class="row-help">Direct purchase entries are accepted only for the mission’s exact SKU and still require fresh in-browser seller, price, quantity, cart, fulfillment, and final-total verification. The item ID fills in automatically from the product link.</small>
+        <small class="row-help">Direct purchase entries are accepted only for this store option’s exact SKU and still require fresh in-browser seller, price, quantity, cart, fulfillment, and final-total verification. The item ID fills in automatically from the product link.</small>
       </details>
     </article>
   </template>
@@ -728,6 +765,7 @@
 
   <script src="../lib/config-profiles.js"></script>
   <script src="../lib/item-defaults.js"></script>
+  <script src="../lib/item-missions.js"></script>
   <script src="renderer.js"></script>
 </body>
 </html>

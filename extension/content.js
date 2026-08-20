@@ -422,7 +422,7 @@
     await send("automation-blocked", product, {
       reason: "quantity-limit",
       quantity: product.quantity,
-      message: `${adapter.label} limits this item to ${effectiveLimit}, below configured quantity ${product.quantity}. Cart Confirm will not silently lower the mission or click Add to cart.`
+      message: `${adapter.label} limits this item to ${effectiveLimit}, below configured quantity ${product.quantity}. Cart Confirm will not silently lower the quantity or click Add to cart.`
     }, `quantity-limit:${product.id}:${product.quantity}:${effectiveLimit}`, Number.MAX_SAFE_INTEGER);
     return false;
   }
@@ -581,7 +581,7 @@
       await send("automation-blocked", product, {
         reason: "manual-action-required",
         message: result.reason === "target-persistence-exhausted"
-          ? `Target's bounded ${kind} persistence window ended after ${result.attempts || 0} actions. The mission stopped instead of continuing an unbounded request loop.`
+          ? `Target's bounded ${kind} persistence window ended after ${result.attempts || 0} actions. This store option stopped instead of continuing an unbounded request loop.`
           : `Target persistence could not reserve the ${kind} action (${result.reason || "unknown state error"}).`
       }, `target-persistence-blocked:${product.id}:${kind}:${result.reason}`, Number.MAX_SAFE_INTEGER);
     }
@@ -831,7 +831,7 @@
     fulfillmentSelectAttempts.set(attemptKey, (fulfillmentSelectAttempts.get(attemptKey) || 0) + 1);
     if (!await clickAction(control, product)) return false;
     await send("automation-status", product, {
-      message: `Selected this mission's configured ${product.fulfillmentMode} option; store, zip, and location choices are never made automatically.`
+      message: `Selected this item's configured ${product.fulfillmentMode} option; store, zip, and location choices are never made automatically.`
     }, `fulfillment-select:${attemptKey}:${fulfillmentSelectAttempts.get(attemptKey)}`, 0);
     scheduleScan(1_500);
     return true;
@@ -1194,12 +1194,12 @@
         });
         if (memberProduct && completedMember.ok) {
           await send("order-confirmed", memberProduct, {
-            message: `Included in the combined ${adapter.label} order confirmed by the batch captain mission.`
+            message: `Included in the combined ${adapter.label} order confirmed by the batch checkout.`
           }, `combined-order-confirmed:${member.id}`, Number.MAX_SAFE_INTEGER);
         } else if (memberProduct) {
           await send("automation-blocked", memberProduct, {
             reason: "manual-action-required",
-            message: `This mission's line was part of the confirmed combined order, but its completion could not be recorded (${completedMember.reason || "unknown"}). Verify it in the store's order history.`
+            message: `This item's line was part of the confirmed combined order, but its completion could not be recorded (${completedMember.reason || "unknown"}). Verify it in the store's order history.`
           }, `combined-member-complete-failed:${member.id}`, Number.MAX_SAFE_INTEGER);
         }
       }
@@ -1241,7 +1241,7 @@
         await send("automation-status", product, {
           message: addPhase === "clicked"
             ? `${adapter.label} Add to cart is already in flight. Cart Confirm is waiting to verify the cart without clicking again.`
-            : `${adapter.label} Add to cart is reserved by this mission. Duplicate page scans will not click it again.`
+            : `${adapter.label} Add to cart is reserved by this store option. Duplicate page scans will not click it again.`
         }, `add-in-flight:${product.id}:${addPhase}`, Number.MAX_SAFE_INTEGER);
         return;
       }
@@ -1309,7 +1309,7 @@
       ? !config.automationEnabled
         ? `${adapter.label} verified an eligible first-party offer at $${offer.price.toFixed(2)}. Test mode is observation-only, so no purchase action was attempted.`
         : product.action === "watch"
-          ? `${adapter.label} verified an eligible first-party offer at $${offer.price.toFixed(2)}. This mission is Watch & alert only, so no purchase action was attempted.`
+          ? `${adapter.label} verified an eligible first-party offer at $${offer.price.toFixed(2)}. This item is Watch & alert only, so no purchase action was attempted.`
           : `${adapter.label} verified an eligible first-party offer at $${offer.price.toFixed(2)}. Autopilot is starting the ${product.action === "cart" ? "add-to-cart" : product.action === "review" ? "checkout-review" : "auto-buy"} workflow.`
       : "";
     const offerReport = send("offer-observed", product, {
@@ -1328,13 +1328,13 @@
     if (!state.ok) {
       await send("automation-blocked", product, {
         reason: "manual-action-required",
-        message: `Autopilot could not read this mission's durable state (${state.reason || "unknown state error"}). Its store lane was released so the remaining missions can continue.`
+        message: `Autopilot could not read this store option's durable state (${state.reason || "unknown state error"}). Its store lane was released so the remaining items can continue.`
       }, `product-state-error:${product.id}:${state.reason}`, 30_000);
       return;
     }
     if (state.completed) {
       await send("automation-status", product, {
-        message: "This mission is already complete for the current Autopilot run, so Cart Confirm will not purchase it twice."
+        message: "This item is already complete for the current Autopilot run, so Cart Confirm will not purchase it twice."
       }, `already-completed:${product.id}:${config.automationRunId}`, Number.MAX_SAFE_INTEGER);
       return;
     }
@@ -1370,7 +1370,7 @@
         : watcherIntervalSeconds();
       await scheduleRetry(
         product,
-        `Waiting for an eligible ${adapter.label} first-party offer. ${adapter.label} is checking this ${isBlitz(product) ? "blitz" : "watcher"} mission every ${waitingSeconds} seconds.`,
+        `Waiting for an eligible ${adapter.label} first-party offer. ${adapter.label} is checking this ${isBlitz(product) ? "scheduled" : "watcher"} store option every ${waitingSeconds} seconds.`,
         "reload",
         false,
         "eligibility"
@@ -1427,8 +1427,13 @@
         }, `claim-uncertain:${product.id}`, 60_000);
       } else if (prepared.reason === "completed") {
         await send("automation-status", product, {
-          message: "This mission completed in another tab during the current Autopilot run, so no duplicate action was taken."
+          message: "This store option completed in another tab during the current Autopilot run, so no duplicate action was taken."
         }, `claim-completed:${product.id}:${config.automationRunId}`, Number.MAX_SAFE_INTEGER);
+      } else if (prepared.reason === "item-completed") {
+        await offerReport;
+        await send("automation-status", product, {
+          message: `This item was already secured through another selected store (${prepared.activeProductId || "store option"}), so this store option was skipped.`
+        }, `claim-item-completed:${product.itemId}:${config.automationRunId}`, Number.MAX_SAFE_INTEGER);
       } else if (["add-in-flight", "cart-confirmed"].includes(prepared.reason)) {
         await offerReport;
         await send("automation-status", product, {
@@ -1438,7 +1443,7 @@
             ? `The exact item is already confirmed in the ${adapter.label} cart; it will not be added twice.`
             : `${adapter.label} Add to cart is already in flight; duplicate page scans will not click it again.`
         }, `claim-add-state:${product.id}:${prepared.reason}`, Number.MAX_SAFE_INTEGER);
-      } else if (["store-busy", "product-busy"].includes(prepared.reason) && prepared.held) {
+      } else if (["store-busy", "product-busy", "item-busy"].includes(prepared.reason) && prepared.held) {
         await offerReport;
         await send("automation-blocked", product, {
           eligible: true,
@@ -1447,11 +1452,13 @@
           message: `${adapter.label}'s purchase lane is held by ${prepared.activeProductId || "another configured item"} after a possible cart mutation (${prepared.blockingPhase || "held state"}). Autopilot will not preempt it; this verified offer stays on the page and re-checks the lane automatically.`
         }, `claim-held:${product.id}:${prepared.activeProductId}:${prepared.blockingPhase}`, Number.MAX_SAFE_INTEGER);
         await scheduleClaimRetry(product, `${adapter.label}'s purchase lane is finishing ${prepared.activeProductId || "another configured item"} first.`);
-      } else if (["store-busy", "product-busy"].includes(prepared.reason)) {
+      } else if (["store-busy", "product-busy", "item-busy"].includes(prepared.reason)) {
         await offerReport;
         await scheduleClaimRetry(product, prepared.reason === "store-busy"
           ? `${adapter.label} is processing another configured product in this store.`
-          : "Another tab is already processing this configured product.");
+          : prepared.reason === "item-busy"
+            ? "Another selected store is already processing this item."
+            : "Another tab is already processing this configured product.");
       } else if (["disarmed", "product-disabled"].includes(prepared.reason)) {
         // An operator Stop or mission removal between qualification and the
         // pre-click boundary is a state the desktop already displays. Every
@@ -1460,8 +1467,8 @@
         // A low-key status line keeps a breadcrumb without a dead-end.
         await send("automation-status", product, {
           message: prepared.reason === "disarmed"
-            ? `A qualified ${adapter.label} offer was not added because Autopilot is switched off. Arm Autopilot to let this mission continue.`
-            : `A qualified ${adapter.label} offer was not added because this mission is no longer enabled.`
+            ? `A qualified ${adapter.label} offer was not added because Autopilot is switched off. Arm Autopilot to let this item continue.`
+            : `A qualified ${adapter.label} offer was not added because this store option is no longer enabled.`
         }, `add-preparation-idle:${product.id}:${prepared.reason}`, 60_000);
         return;
       } else if (["desktop-unreachable", "extension-error"].includes(prepared.reason)) {
@@ -1473,7 +1480,7 @@
       } else {
         await send("automation-blocked", product, {
           reason: "manual-action-required",
-          message: `Autopilot could not prepare this mission's add-to-cart boundary (${prepared.reason || "unknown state error"}). Its pre-click store lane was released so the remaining missions can continue.`
+          message: `Autopilot could not prepare this store option's add-to-cart boundary (${prepared.reason || "unknown state error"}). Its pre-click store lane was released so the remaining items can continue.`
         }, `add-preparation-error:${product.id}:${prepared.reason}`, 30_000);
       }
       return;
@@ -1668,7 +1675,7 @@
     // ready to complete the order without waiting for full confirmation.
     if (["cart", "review", "checkout"].includes(product.action)) {
       void send("cart-reached", product, {
-        message: `${adapter.label}'s cart page is open for this mission. Get ready to complete the purchase.`
+        message: `${adapter.label}'s cart page is open for this item. Get ready to complete the purchase.`
       }, `cart-reached:${product.id}`, 60_000);
     }
 
@@ -1787,7 +1794,7 @@
           eligible: false,
           reason: "quantity-limit",
           quantity: product.quantity,
-          message: `${adapter.label} limits this item to ${effectiveLimit}, below configured quantity ${product.quantity}. The item may already be in the cart, so the mission remains held for deliberate operator review; Cart Confirm did not silently reduce it.`
+          message: `${adapter.label} limits this item to ${effectiveLimit}, below configured quantity ${product.quantity}. The item may already be in the cart, so its store option remains held for deliberate operator review; Cart Confirm did not silently reduce it.`
         }, `cart-quantity-limit:${product.id}:${product.quantity}:${effectiveLimit}`, Number.MAX_SAFE_INTEGER);
         return;
       }
@@ -1902,7 +1909,7 @@
       }
       if (gate.captainProductId !== product.id) {
         await send("automation-status", product, {
-          message: `Combined order ready — the batch captain mission is completing one ${adapter.label} checkout for ${gate.cartedCount} item line${gate.cartedCount === 1 ? "" : "s"}.`
+          message: `Combined order ready — the batch checkout is completing one ${adapter.label} order for ${gate.cartedCount} item line${gate.cartedCount === 1 ? "" : "s"}.`
         }, `combined-cart-captain-wait:${product.id}`, 60_000);
         scheduleScan(15_000, { replace: false });
         return;
@@ -2059,14 +2066,14 @@
     const gate = await refreshedCombinedGate(product) || gateHint;
     if (!gate?.ready) {
       await send("automation-status", product, {
-        message: `Combined order: waiting at ${adapter.label} checkout until every mission has a validated status (${gate?.cartedCount ?? 0} carted, ${gate?.pendingCount ?? 0} still validating).`
+        message: `Combined order: waiting at ${adapter.label} checkout until every item has a validated status (${gate?.cartedCount ?? 0} carted, ${gate?.pendingCount ?? 0} still validating).`
       }, `combined-checkout-wait:${product.id}`, 30_000);
       scheduleScan(7_000, { replace: false });
       return;
     }
     if (gate.captainProductId !== product.id) {
       await send("automation-status", product, {
-        message: `Combined order ready — the batch captain mission is completing one ${adapter.label} checkout for ${gate.cartedCount} item line${gate.cartedCount === 1 ? "" : "s"}.`
+        message: `Combined order ready — the batch checkout is completing one ${adapter.label} order for ${gate.cartedCount} item line${gate.cartedCount === 1 ? "" : "s"}.`
       }, `combined-captain-wait:${product.id}`, 60_000);
       scheduleScan(15_000, { replace: false });
       return;
@@ -2150,7 +2157,7 @@
         firstParty: true,
         eligible: true,
         reason: "eligible",
-        message: `Combined ${adapter.label} order submitted: ${verified.members.length} mission line${verified.members.length === 1 ? "" : "s"}, ${verified.batchProduct.quantity} unit${verified.batchProduct.quantity === 1 ? "" : "s"}, total $${verified.orderTotal.toFixed(2)}.`
+        message: `Combined ${adapter.label} order submitted: ${verified.members.length} item line${verified.members.length === 1 ? "" : "s"}, ${verified.batchProduct.quantity} unit${verified.batchProduct.quantity === 1 ? "" : "s"}, total $${verified.orderTotal.toFixed(2)}.`
       }, `combined-order-submit:${product.id}:${attempt}`, 0);
       scheduleScan(2_000);
     } else if (intentCreated) {
@@ -2221,10 +2228,10 @@
     }
     const product = activeProduct();
     if (!product || !product.enabled || product.action !== "checkout") {
-      return { ok: false, reason: "product-disabled", error: "Open the checkout page for one enabled auto-submit mission." };
+      return { ok: false, reason: "product-disabled", error: "Open the checkout page for one enabled auto-submit item." };
     }
     if (adapter.pageKind(location.href, document, product) !== "checkout") {
-      return { ok: false, reason: "checkout-page-required", error: "Open this mission's final checkout review page first." };
+      return { ok: false, reason: "checkout-page-required", error: "Open this item's final checkout review page first." };
     }
     if (adapter.securityChallenge(document)) {
       return { ok: false, reason: "manual-action-required", error: "Complete the store security challenge manually first." };
@@ -2242,7 +2249,7 @@
     }
     const orderTotal = adapter.orderTotal(document);
     if (!Number.isFinite(orderTotal) || orderTotal <= 0 || orderTotal > product.maxOrderTotal) {
-      return { ok: false, reason: Number.isFinite(orderTotal) ? "over-total" : "total-unavailable", error: "The final order total is missing or above this mission's cap." };
+      return { ok: false, reason: Number.isFinite(orderTotal) ? "over-total" : "total-unavailable", error: "The final order total is missing or above this store option's cap." };
     }
     const unsafeChoices = adapter.unsafeOrderChoices(document);
     if (unsafeChoices.length) {
@@ -2449,7 +2456,7 @@
             : blockReason === "checkout-evidence-changed"
                 ? "The destination, payment set, substitution state, cart count, quantity, SKU, or total differs from the approved preflight. Automatic submission stopped."
             : blockReason === "checkout-trust-required"
-                ? "This store has no approved checkout profile yet. Switch Autopilot off, open one auto-submit mission's final review, and lock the checkout preflight once."
+                ? "This store has no approved checkout profile yet. Switch Autopilot off, open one auto-submit item's final review, and lock the checkout preflight once."
             : blockReason === "checkout-trust-changed"
                 ? "The live destination or payment set differs from the approved checkout profile for this store. Automatic submission stopped."
                 : "Final order review could not verify the live destination or pickup store, complete payment set, disabled substitutions, exact cart, SKU, first-party offer, unit cap, quantity, fulfillment, and capped total."
@@ -2630,7 +2637,7 @@
             : "membership or invitation prompt";
         await send("automation-blocked", product, {
           reason: "manual-action-required",
-          message: `${adapter.label} requires a manual ${label}. Cart Confirm will not sign in, fill codes, choose a location, join a membership, or bypass eligibility. ${postMutation ? "Because the cart may already have changed, this mission keeps the store lane until you resolve it." : "No cart mutation was recorded, so the store lane may be released."}`
+          message: `${adapter.label} requires a manual ${label}. Cart Confirm will not sign in, fill codes, choose a location, join a membership, or bypass eligibility. ${postMutation ? "Because the cart may already have changed, this item keeps the store lane until you resolve it." : "No cart mutation was recorded, so the store lane may be released."}`
         }, `interactive-page:${product.id}:${interactiveState}:${pageAddress()}`, 60_000);
         return;
       }
@@ -2666,8 +2673,8 @@
         await send("automation-blocked", product, {
           reason: "manual-action-required",
           message: kind === "auth"
-            ? `${adapter.label} requires a manual sign-in or account check at ${safePath}. ${postMutation ? "Because the cart may already have changed, this mission keeps the store lane until you resolve it." : "No cart mutation was recorded, so the store lane may be released."}`
-            : `${adapter.label} redirected this workflow to the unrecognized path ${safePath}. ${postMutation ? "Because the cart may already have changed, this mission keeps the store lane until you resolve it." : "No cart mutation was recorded, so the store lane may be released."}`
+            ? `${adapter.label} requires a manual sign-in or account check at ${safePath}. ${postMutation ? "Because the cart may already have changed, this item keeps the store lane until you resolve it." : "No cart mutation was recorded, so the store lane may be released."}`
+            : `${adapter.label} redirected this workflow to the unrecognized path ${safePath}. ${postMutation ? "Because the cart may already have changed, this item keeps the store lane until you resolve it." : "No cart mutation was recorded, so the store lane may be released."}`
         }, `unexpected-page:${product.id}:${pageAddress()}`, 60_000);
       }
     } finally {
