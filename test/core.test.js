@@ -176,7 +176,7 @@ test("normalizes a multi-store buy list and preserves a private token", () => {
   assert.equal(result.products[2].signalAutoOpen, true);
 });
 
-test("accepts 100 missions and rejects a 101st", () => {
+test("accepts 100 store options and rejects a 101st", () => {
   const products = Array.from({ length: MAX_PRODUCTS + 1 }, (_, index) => {
     const sku = String(1011209000 + index);
     return {
@@ -189,7 +189,31 @@ test("accepts 100 missions and rejects a 101st", () => {
     };
   });
   assert.equal(normalizeSettings({ products: products.slice(0, MAX_PRODUCTS) }).products.length, 100);
-  assert.throws(() => normalizeSettings({ products }), /at most 100 products/);
+  assert.throws(() => normalizeSettings({ products }), /at most 100 store options/);
+});
+
+test("store options for one item require one shared purchase intent", () => {
+  const target = {
+    retailer: "target",
+    productUrl: "https://www.target.com/p/item/-/A-1011960739",
+    sku: "1011960739",
+    itemId: "item:console",
+    title: "Console",
+    quantity: 1,
+    action: "cart",
+    fulfillmentMode: "shipping",
+    maxPrice: 499,
+    enabled: true
+  };
+  const walmart = {
+    ...target,
+    retailer: "walmart",
+    productUrl: "https://www.walmart.com/ip/123456789",
+    sku: "123456789",
+    maxPrice: 489
+  };
+  assert.equal(normalizeSettings({ products: [target, walmart] }).products.length, 2);
+  assert.throws(() => normalizeSettings({ products: [target, { ...walmart, quantity: 2 }] }), /share the same name, quantity/i);
 });
 
 test("normalizes persisted mission groups and clears unknown product assignments", () => {

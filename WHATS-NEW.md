@@ -6,6 +6,13 @@ update dialog shows exactly these bullets. Keep every entry short, plain, and
 about what the user will notice — one bullet per change, no internals.
 Publishing fails if the version being released has no section here.
 
+## 3.7.6
+- Products now appear once as items, with Target, Walmart, and Amazon as store options; the first store that secures an item stops its alternatives for that run
+- Each item row shows its captured product thumbnail, opens a larger preview on hover or keyboard focus, and keeps direct Open controls and store-specific prices beneath one item name
+- Search, filters, groups, 25-row paging, bulk changes, Undo, and Revert plan make plans up to 100 items easier to review and change safely
+- Review this run now summarizes readiness, schedules, action mix, blockers, and maximum exposure, while the persistent run banner always shows whether the app is stopped, monitoring, or using Autopilot
+- Link imports now preview ready, unpriced, invalid, duplicate, and over-capacity entries before saving; the schedule agenda adds timezone, same-time cohorts, direct editing, and missed-time recovery
+
 ## 3.7.5
 - New: Run readiness now summarizes Chrome connection, enabled and scheduled missions, action mix, blockers, and maximum exposure before you start
 - Editing a running plan pauses it once and keeps it paused while you make several mission, catalog, or default changes; Finish editing resumes once, while Stop everything cancels the run without erasing mission schedules

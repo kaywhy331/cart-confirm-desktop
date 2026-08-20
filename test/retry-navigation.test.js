@@ -26,7 +26,7 @@ test("out-of-stock product pages use the normal monitoring retry path", () => {
   const productPage = section("async function handleProductPage", "async function handleCartPage");
   assert.match(productPage, /if \(error && error !== "out-of-stock"\)/);
   assert.match(productPage, /scheduleRetry\([\s\S]*?"eligibility"[\s\S]*?\);/);
-  assert.match(productPage, /checking this \$\{isBlitz\(product\) \? "blitz" : "watcher"\} mission every/);
+  assert.match(productPage, /checking this \$\{isBlitz\(product\) \? "scheduled" : "watcher"\} store option every/);
 });
 
 test("only pre-eligibility retries request the rapid navigation cadence", () => {
@@ -48,9 +48,9 @@ test("continuous watchers requeue after rolling-budget or overload gates", () =>
 test("a qualified purchase cancels stale refresh traffic and retries a busy claim in place", () => {
   const productPage = section("async function handleProductPage", "async function handleCartPage");
   assert.match(productPage, /clearNavigationRetry\(\)[\s\S]*?prepareAddAction\(product, offer\)/);
-  assert.match(productPage, /\["store-busy", "product-busy"\][\s\S]*?scheduleClaimRetry/);
+  assert.match(productPage, /\["store-busy", "product-busy", "item-busy"\][\s\S]*?scheduleClaimRetry/);
   assert.doesNotMatch(
-    productPage.match(/\["store-busy", "product-busy"\][\s\S]*?return;/)?.[0] || "",
+    productPage.match(/\["store-busy", "product-busy", "item-busy"\][\s\S]*?return;/)?.[0] || "",
     /scheduleRetry\(/
   );
   assert.match(source, /CART_CONFIRM_CANCEL_NAVIGATION/);
@@ -326,7 +326,7 @@ test("Stop everything and re-arming clear quiet-lane residue and held lanes retr
   // A verified offer facing a held purchase lane keeps re-checking instead of
   // standing down forever, and the heartbeat fires overdue claim retries in
   // hidden tabs so back-to-back ready products recover automatically.
-  const heldBranch = section('&& prepared.held) {', '} else if (["store-busy", "product-busy"].includes(prepared.reason)) {');
+  const heldBranch = section('&& prepared.held) {', '} else if (["store-busy", "product-busy", "item-busy"].includes(prepared.reason)) {');
   assert.match(heldBranch, /scheduleClaimRetry\(product, /);
   assert.match(source, /function fireOverdueClaimRetry\(graceMs = 1_000\)/);
   const tick = section('if (message?.type === "CART_CONFIRM_BACKGROUND_TICK")', 'if (message?.type === "CART_CONFIRM_QUEUE_CAPTURE_CHANGED")');

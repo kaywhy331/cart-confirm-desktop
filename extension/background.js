@@ -915,7 +915,7 @@ async function postQuickAddMission(product) {
       ok: response.ok,
       ...result,
       reason: result.reason || (response.ok ? "" : "quick-add-failed"),
-      error: result.error || (response.ok ? "" : "Quick add could not create the mission.")
+      error: result.error || (response.ok ? "" : "Quick add could not create the item.")
     };
   } catch {
     cached = null;
@@ -936,7 +936,7 @@ async function postCheckoutPreflight(productId, evidence) {
     && candidate.action === "checkout"
   ));
   if (!product) {
-    return { ok: false, reason: "product-disabled", error: "This tab is not tied to an enabled auto-submit mission." };
+    return { ok: false, reason: "product-disabled", error: "This tab is not tied to an enabled auto-submit item." };
   }
 
   const send = () => fetchWithTimeout(`${config.baseUrl}/missions/checkout-preflight`, {
@@ -1093,7 +1093,13 @@ function combinedMemberIdsFor(config, retailer) {
 async function readAutomationState(config) {
   const stored = await chrome.storage.local.get(AUTOMATION_STATE_KEY);
   const runId = String(config.automationRunId || "");
-  return AutomationState.normalizeState(stored[AUTOMATION_STATE_KEY], runId, Date.now(), combinedMembersByStore(config));
+  return AutomationState.normalizeState(
+    stored[AUTOMATION_STATE_KEY],
+    runId,
+    Date.now(),
+    combinedMembersByStore(config),
+    config.products
+  );
 }
 
 async function writeAutomationState(state) {
@@ -1138,7 +1144,7 @@ function queueCaptureForConfiguredProduct(config, product) {
 function healStrandedCartHold(state, config, claimResult, now) {
   if (
     claimResult.ok
-    || !["store-busy", "product-busy"].includes(claimResult.reason)
+    || !["store-busy", "product-busy", "item-busy"].includes(claimResult.reason)
     || claimResult.held !== true
     || claimResult.blockingPhase !== "cart-confirmed"
   ) return false;
@@ -1380,7 +1386,7 @@ async function resolveProductKnownNoOrder(input, sender) {
       sku: binding.product.sku,
       page: binding.product.productUrl,
       timestamp: new Date().toISOString(),
-      message: "Operator checked retailer order history, confirmed no order exists, and deliberately abandoned the held mission."
+      message: "Operator checked retailer order history, confirmed no order exists, and deliberately released the held item."
     });
   }
   return result;

@@ -2,11 +2,23 @@
 
 const ConfigProfiles = globalThis.CartConfirmConfigProfiles;
 const ItemDefaults = globalThis.CartConfirmItemDefaults;
+const ItemMissions = globalThis.ItemMissions;
 const MAX_MISSIONS = 100;
 const elements = {
   autopilotToggle: document.getElementById("autopilotToggle"),
   autopilotState: document.getElementById("autopilotState"),
   disarmButton: document.getElementById("disarmButton"),
+  runStateBanner: document.getElementById("runStateBanner"),
+  runStateTitle: document.getElementById("runStateTitle"),
+  runStateDetail: document.getElementById("runStateDetail"),
+  runReviewOpenButton: document.getElementById("runReviewOpenButton"),
+  runReviewDialog: document.getElementById("runReviewDialog"),
+  runReviewCloseButton: document.getElementById("runReviewCloseButton"),
+  runReviewSummary: document.getElementById("runReviewSummary"),
+  runReviewMetrics: document.getElementById("runReviewMetrics"),
+  runReviewIssues: document.getElementById("runReviewIssues"),
+  runReviewMonitorButton: document.getElementById("runReviewMonitorButton"),
+  runReviewAutopilotButton: document.getElementById("runReviewAutopilotButton"),
   updateNotice: document.getElementById("updateNotice"),
   updateAvailableText: document.getElementById("updateAvailableText"),
   updateButton: document.getElementById("updateButton"),
@@ -22,7 +34,9 @@ const elements = {
   connectState: document.getElementById("connectState"),
   connectHint: document.getElementById("connectHint"),
   showExtensionButton: document.getElementById("showExtensionButton"),
+  openChromeExtensionsButton: document.getElementById("openChromeExtensionsButton"),
   copyExtensionButton: document.getElementById("copyExtensionButton"),
+  testConnectionButton: document.getElementById("testConnectionButton"),
   portBadge: document.getElementById("portBadge"),
   missionList: document.getElementById("missionList"),
   missionSearch: document.getElementById("missionSearch"),
@@ -32,6 +46,9 @@ const elements = {
   missionFilterCount: document.getElementById("missionFilterCount"),
   missionPlanTools: document.getElementById("missionPlanTools"),
   planEditButton: document.getElementById("planEditButton"),
+  planUndoButton: document.getElementById("planUndoButton"),
+  planRevertButton: document.getElementById("planRevertButton"),
+  planChangeCount: document.getElementById("planChangeCount"),
   catalogLauncherButton: document.getElementById("catalogLauncherButton"),
   missionViewTemplate: document.getElementById("missionViewTemplate"),
   missionEditTemplate: document.getElementById("missionEditTemplate"),
@@ -98,6 +115,7 @@ const elements = {
   bulkMissionSelectionCount: document.getElementById("bulkMissionSelectionCount"),
   bulkEnableMissionsButton: document.getElementById("bulkEnableMissionsButton"),
   bulkDisableMissionsButton: document.getElementById("bulkDisableMissionsButton"),
+  combineSelectedItemsButton: document.getElementById("combineSelectedItemsButton"),
   bulkItemProfile: document.getElementById("bulkItemProfile"),
   applyBulkItemProfileButton: document.getElementById("applyBulkItemProfileButton"),
   bulkMissionGroup: document.getElementById("bulkMissionGroup"),
@@ -156,6 +174,8 @@ const elements = {
   scheduleNext: document.getElementById("scheduleNext"),
   scheduleCoverage: document.getElementById("scheduleCoverage"),
   enableScheduledButton: document.getElementById("enableScheduledButton"),
+  clearMissedSchedulesButton: document.getElementById("clearMissedSchedulesButton"),
+  scheduleTimezone: document.getElementById("scheduleTimezone"),
   scheduleWeek: document.getElementById("scheduleWeek"),
   eventList: document.getElementById("eventList"),
   eventFilterButton: document.getElementById("eventFilterButton"),
@@ -235,6 +255,7 @@ for (const toggle of document.querySelectorAll(".panel-toggle")) {
 let currentSnapshot = null;
 let messageTimer = null;
 let openRunInFlight = false;
+let runReviewApproved = false;
 let updateOperationInFlight = false;
 let updateButtonMode = "check";
 let availableUpdateVersion = "";
@@ -243,14 +264,20 @@ let editingId = null; // null | product id | "new"
 let editCardNode = null;
 let planEditMode = false;
 let resumeAutopilotAfterPlanEdit = false;
+let planEditBaseline = null;
+let planEditUndoStack = [];
+let restoringPlanSnapshot = false;
 let awaySince = 0;
 let settingsSaveTimer = null;
 let selectedConfigurationProfileId = "built-in:recommended";
 let eventFilterProductId = null;
 let bulkImportInFlight = false;
+let bulkImportPreviewText = "";
 let catalogSearchInFlight = false;
 let catalogImportInFlight = false;
 let renderedCatalogSearchId = "";
+let lastReadinessIssueItemIds = new Set();
+let missionVisibleLimit = 25;
 const catalogSelectedIds = new Set();
 const catalogSeenIds = new Set();
 const bulkMissionSelectedIds = new Set();
@@ -504,6 +531,30 @@ function savedProducts() {
   return currentSnapshot?.settings?.products || [];
 }
 
+function savedItems(products = savedProducts()) {
+  return ItemMissions.groupProductsByItem(products);
+}
+
+function itemForProduct(product) {
+  if (!product) return null;
+  if (Array.isArray(product.variants)) return product;
+  const itemId = ItemMissions.itemIdForProduct(product);
+  return savedItems().find((item) => item.id === itemId)
+    || ItemMissions.groupProductsByItem([product])[0]
+    || null;
+}
+
+function itemLabel(item) {
+  const primary = item?.primary || item?.variants?.[0];
+  return item?.title || (primary ? productLabel(primary) : "Item");
+}
+
+function selectedRouteIds() {
+  return savedProducts()
+    .filter((product) => bulkMissionSelectedIds.has(ItemMissions.itemIdForProduct(product)))
+    .map((product) => product.id);
+}
+
 function savedMissionGroups() {
   return currentSnapshot?.settings?.missionGroups || [];
 }
@@ -679,15 +730,31 @@ function applyProfileToEditor(card) {
   const profileId = field(card, "itemProfileId").value;
   const profile = ItemDefaults.itemProfileById(profileId, currentSnapshot?.settings?.itemProfiles || []);
   if (!profile) throw new Error("Choose an item profile.");
-  const applied = ItemDefaults.applyItemProfile(
-    profileSeedFromFields(card),
-    profile,
-    currentSnapshot?.settings?.msrpCatalog || [],
-    {
-      storeOrderAllowances: currentSnapshot?.settings?.storeOrderAllowances,
-      orderTaxPercent: currentSnapshot?.settings?.orderTaxPercent
-    }
-  );
+  captureActiveStoreDraft(card);
+  const options = {
+    storeOrderAllowances: currentSnapshot?.settings?.storeOrderAllowances,
+    orderTaxPercent: currentSnapshot?.settings?.orderTaxPercent
+  };
+  const title = field(card, "title").value;
+  const appliedRoutes = [...card.__routeDrafts.entries()].map(([retailer, draft]) => {
+    const appliedRoute = ItemDefaults.applyItemProfile(
+      { ...draft, retailer, title },
+      profile,
+      currentSnapshot?.settings?.msrpCatalog || [],
+      options
+    );
+    card.__routeDrafts.set(retailer, {
+      ...draft,
+      maxPrice: appliedRoute.maxPrice,
+      maxOrderTotal: appliedRoute.maxOrderTotal,
+      msrpRecordId: appliedRoute.msrpRecordId,
+      priceSource: appliedRoute.priceSource
+    });
+    return appliedRoute;
+  });
+  const applied = appliedRoutes.find((route) => route.retailer === card.__activeRetailer)
+    || ItemDefaults.applyItemProfile(profileSeedFromFields(card), profile, currentSnapshot?.settings?.msrpCatalog || [], options);
+  loadActiveStoreDraft(card, card.__activeRetailer);
   field(card, "maxPrice").value = String(applied.maxPrice || 0);
   field(card, "maxOrderTotal").value = String(applied.maxOrderTotal || 0);
   field(card, "quantity").value = String(applied.quantity);
@@ -695,11 +762,12 @@ function applyProfileToEditor(card) {
   field(card, "alertLevel").value = applied.alertLevel;
   field(card, "fulfillmentMode").value = applied.fulfillmentMode;
   field(card, "signalAutoOpen").checked = applied.signalAutoOpen;
-  field(card, "enabled").checked = applied.enabled;
+  const readyStores = appliedRoutes.filter((route) => route.enabled).length;
+  field(card, "enabled").checked = readyStores === appliedRoutes.length;
   field(card, "msrpRecordId").value = applied.msrpRecordId || "";
   field(card, "priceSource").value = applied.priceSource || "";
   field(card, "action").dispatchEvent(new Event("change", { bubbles: true }));
-  return applied;
+  return { ...applied, enabled: readyStores === appliedRoutes.length, readyStores, storeCount: appliedRoutes.length };
 }
 
 function renderConfigurationProfiles(settings) {
@@ -726,7 +794,7 @@ function renderConfigurationProfiles(settings) {
 }
 
 function globalSettings(products, overrides = {}) {
-  return {
+  const current = {
     products,
     missionGroups: overrides.missionGroups ?? savedMissionGroups(),
     automationEnabled: isArmed(),
@@ -755,11 +823,57 @@ function globalSettings(products, overrides = {}) {
     discordChannelId: currentSnapshot?.settings?.discordChannelId || "",
     discordAutoOpen: currentSnapshot?.settings?.discordAutoOpen !== false
   };
+  return {
+    ...current,
+    ...overrides,
+    products,
+    missionGroups: overrides.missionGroups ?? current.missionGroups,
+    automationEnabled: isArmed()
+  };
+}
+
+function clonePlan(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
+const PLAN_CONFIGURATION_FIELDS = Object.freeze([
+  "fastMode",
+  "combinedOrderEnabled",
+  "watcherIntervalSeconds",
+  "retryIntervalSeconds",
+  "eligibilityRefreshIntervalSeconds",
+  "blitzRetryDelayMs",
+  "blitzWindowSeconds",
+  "scheduledBlitzDurationSeconds",
+  "walmartQueueCaptureReloads",
+  "storeNavigationIntervalSeconds",
+  "overloadCooldownSeconds"
+]);
+
+function capturePlanSnapshot() {
+  const settings = currentSnapshot?.settings || {};
+  return clonePlan({
+    products: savedProducts(),
+    missionGroups: savedMissionGroups(),
+    ...Object.fromEntries(PLAN_CONFIGURATION_FIELDS.map((key) => [key, settings[key]]))
+  });
+}
+
+function recordPlanChange(before) {
+  if (!before || !planEditMode || restoringPlanSnapshot) return;
+  if (JSON.stringify(before) === JSON.stringify(capturePlanSnapshot())) return;
+  planEditUndoStack.push(before);
+  renderPlanHistoryControls();
 }
 
 async function saveMissionList(products, overrides = {}) {
+  const before = planEditMode && !restoringPlanSnapshot
+    ? capturePlanSnapshot()
+    : null;
   const next = await window.cartAssist.saveSettings(globalSettings(products, overrides));
   render(next);
+  recordPlanChange(before);
+  renderPlanHistoryControls();
   return next;
 }
 
@@ -784,7 +898,7 @@ function autoSubmitArmingSummary(saved) {
 
 function liveVerificationWarning(count) {
   return count > 0
-    ? ` ${count} mission${count === 1 ? " has" : "s have"} no optional preflight and will use the freshly verified destination or pickup store and payment set visible when checkout opens.`
+    ? ` ${count} store option${count === 1 ? " has" : "s have"} no optional preflight and will use the freshly verified destination or pickup store and payment set visible when checkout opens.`
     : "";
 }
 
@@ -793,7 +907,7 @@ async function resumeAutopilot() {
   const autoSubmit = autoSubmitArmingSummary(saved);
   if (
     autoSubmit.count > 0
-    && !window.confirm(`${autoSubmit.count} enabled mission${autoSubmit.count === 1 ? "" : "s"} may submit a real order.${liveVerificationWarning(autoSubmit.liveVerificationCount)} Resuming starts a new run. Switch Autopilot back on?`)
+    && !window.confirm(`${autoSubmit.count} enabled store option${autoSubmit.count === 1 ? "" : "s"} may submit a real order.${liveVerificationWarning(autoSubmit.liveVerificationCount)} Resuming starts a new run. Switch Autopilot back on?`)
   ) {
     setMessage("Autopilot stayed off. Switch it on from the header when ready.", "warn");
     return false;
@@ -813,11 +927,14 @@ async function beginPlanEditSession() {
       resumeAutopilotAfterPlanEdit = true;
     }
     planEditMode = true;
+    planEditBaseline = capturePlanSnapshot();
+    planEditUndoStack = [];
     renderMissions();
+    renderPlanHistoryControls();
     setMessage(
       resumeAutopilotAfterPlanEdit
         ? "Autopilot paused once. Make every plan change, then choose Finish editing to start the updated run."
-        : "Plan editor open. Select filtered missions for bulk changes, or edit individual missions.",
+        : "Plan editor open. Select filtered items for bulk changes, or edit individual items.",
       "warn"
     );
     return true;
@@ -830,13 +947,15 @@ async function beginPlanEditSession() {
 async function finishPlanEditSession() {
   if (!planEditMode) return;
   if (editingId) {
-    setMessage("Finish the open mission editor first (Done or Cancel).", "error");
+    setMessage("Finish the open item editor first (Done or Cancel).", "error");
     return;
   }
   const shouldResume = resumeAutopilotAfterPlanEdit;
   const actionStopEpoch = stopUiEpoch;
   planEditMode = false;
   resumeAutopilotAfterPlanEdit = false;
+  planEditBaseline = null;
+  planEditUndoStack = [];
   bulkMissionSelectedIds.clear();
   renderMissions();
   if (!shouldResume || actionStopEpoch !== stopUiEpoch) {
@@ -851,12 +970,53 @@ async function finishPlanEditSession() {
   }
 }
 
+function renderPlanHistoryControls() {
+  if (!elements.planUndoButton || !elements.planRevertButton || !elements.planChangeCount) return;
+  const changes = planEditUndoStack.length;
+  elements.planUndoButton.disabled = !planEditMode || changes === 0;
+  elements.planRevertButton.disabled = !planEditMode || changes === 0 || !planEditBaseline;
+  elements.planChangeCount.textContent = changes
+    ? `${changes} saved change${changes === 1 ? "" : "s"} · undo or revert before finishing`
+    : "No plan changes yet";
+}
+
+async function restorePlanSnapshot(snapshot, message) {
+  if (!snapshot) return;
+  restoringPlanSnapshot = true;
+  try {
+    const next = await window.cartAssist.saveSettings(globalSettings(snapshot.products, snapshot));
+    render(next);
+    setMessage(message, "success");
+  } finally {
+    restoringPlanSnapshot = false;
+    renderPlanHistoryControls();
+  }
+}
+
+async function undoPlanChange() {
+  const previous = planEditUndoStack.pop();
+  if (!previous) return;
+  await restorePlanSnapshot(previous, "Last plan change undone.");
+}
+
+async function revertPlanChanges() {
+  if (!planEditBaseline || !planEditUndoStack.length) return;
+  if (!window.confirm("Revert every change made since you opened the plan editor?")) return;
+  const baseline = clonePlan(planEditBaseline);
+  planEditUndoStack = [];
+  await restorePlanSnapshot(baseline, "Plan reverted to the version from before this edit session.");
+}
+
 // Enabled changes join the current plan-edit session. When a run is active,
 // the first change pauses it and leaves it paused for the remaining edits.
 async function setMissionsEnabled(updates) {
   if (isArmed() && !await beginPlanEditSession()) return;
   await saveMissionList(savedProducts().map((product) => (
-    updates.has(product.id) ? { ...product, enabled: updates.get(product.id) } : product
+    updates.has(ItemMissions.itemIdForProduct(product))
+      ? { ...product, enabled: updates.get(ItemMissions.itemIdForProduct(product)) }
+      : updates.has(product.id)
+        ? { ...product, enabled: updates.get(product.id) }
+        : product
   )));
 }
 
@@ -947,18 +1107,27 @@ function setMissionButtonLabel(button, label) {
   button.setAttribute("aria-label", label);
 }
 
-async function moveMission(productId, direction) {
+async function moveMission(itemId, direction) {
   const products = [...savedProducts()];
-  const product = products.find((candidate) => candidate.id === productId);
-  if (!product) return;
-  const peers = products.filter((candidate) => (candidate.groupId || "") === (product.groupId || ""));
-  const peerIndex = peers.findIndex((candidate) => candidate.id === productId);
+  const items = savedItems(products);
+  const item = items.find((candidate) => candidate.id === itemId);
+  if (!item) return;
+  const peers = items.filter((candidate) => (candidate.groupId || "") === (item.groupId || ""));
+  const peerIndex = peers.findIndex((candidate) => candidate.id === itemId);
   const other = peers[peerIndex + direction];
   if (!other) return;
-  const from = products.findIndex((candidate) => candidate.id === productId);
-  const to = products.findIndex((candidate) => candidate.id === other.id);
-  [products[from], products[to]] = [products[to], products[from]];
-  await saveMissionList(products);
+  const orderedIds = items.map((candidate) => candidate.id);
+  const from = orderedIds.indexOf(itemId);
+  const to = orderedIds.indexOf(other.id);
+  [orderedIds[from], orderedIds[to]] = [orderedIds[to], orderedIds[from]];
+  const rank = new Map(orderedIds.map((id, index) => [id, index]));
+  await saveMissionList(products
+    .map((product, index) => ({ product, index }))
+    .sort((left, right) => (
+      rank.get(ItemMissions.itemIdForProduct(left.product)) - rank.get(ItemMissions.itemIdForProduct(right.product))
+      || left.index - right.index
+    ))
+    .map(({ product }) => product));
 }
 
 function defaultStatus() {
@@ -969,11 +1138,11 @@ function defaultStatus() {
     checkout: "not-started",
     order: "not-confirmed",
     lastEventAt: "",
-    lastMessage: "Waiting for this mission to be observed."
+    lastMessage: "Waiting for this store option to be observed."
   };
 }
 
-function buildViewCard(product, status) {
+function buildProductViewCard(product, status) {
   const card = elements.missionViewTemplate.content.firstElementChild.cloneNode(true);
   const stateClass = productStateClass(product, status);
   card.classList.add(stateClass || "idle");
@@ -1012,7 +1181,7 @@ function buildViewCard(product, status) {
     ? `\u26A0\uFE0F ${STORE_LABELS[product.retailer]}`
     : STORE_LABELS[product.retailer];
   storeView.title = missingAffiliate
-    ? "No affiliate link is attached to this mission; it opens the plain product page."
+    ? "No affiliate link is attached to this store option; it opens the plain product page."
     : "";
   view(card, "title").textContent = productLabel(product);
 
@@ -1147,9 +1316,283 @@ function buildViewCard(product, status) {
   return card;
 }
 
+function aggregateItemStatus(item, statuses = {}) {
+  const score = (status) => {
+    if (status.order === "confirmed") return 100;
+    if (BLOCKING_REASONS.has(status.reason)) return 90;
+    if (status.checkout === "review-ready") return 80;
+    if (status.checkout === "reached") return 70;
+    if (status.cart === "confirmed") return 60;
+    if (status.eligible) return 50;
+    if (status.reason === "retailer-queue") return 40;
+    return 0;
+  };
+  const activeVariants = item.variants.filter((variant) => variant.enabled !== false);
+  const candidates = (activeVariants.length ? activeVariants : item.variants)
+    .map((variant) => statuses[variant.id] || defaultStatus());
+  const winner = [...candidates].sort((left, right) => score(right) - score(left))[0] || defaultStatus();
+  const latestAt = candidates.map((status) => status.lastEventAt || "").sort().at(-1) || "";
+  return { ...winner, lastEventAt: latestAt };
+}
+
+function replaceMissionButton(card, selector, label, handler) {
+  const current = card.querySelector(selector);
+  const replacement = current.cloneNode(true);
+  current.replaceWith(replacement);
+  setMissionButtonLabel(replacement, label);
+  replacement.addEventListener("click", handler);
+  return replacement;
+}
+
+function buildViewCard(itemInput, statuses = {}) {
+  const item = Array.isArray(itemInput?.variants)
+    ? itemInput
+    : ItemMissions.groupProductsByItem([itemInput])[0];
+  const product = item.primary;
+  const statusMap = statuses && Object.prototype.hasOwnProperty.call(statuses, "eligible")
+    ? { [product.id]: statuses }
+    : (statuses || {});
+  const status = aggregateItemStatus(item, statusMap);
+  const card = buildProductViewCard({ ...product, enabled: item.enabled }, status);
+  card.dataset.itemId = item.id;
+  card.dataset.retailer = item.variants.map((variant) => variant.retailer).join(" ");
+  const main = card.querySelector(".mission-main");
+  const imageWrap = view(card, "imageWrap");
+  const titleRow = card.querySelector(".mission-title-row");
+  const storeView = view(card, "store");
+  const subView = view(card, "sub");
+  main.classList.add("item-first-main");
+  main.prepend(imageWrap);
+  storeView.remove();
+  main.insertBefore(storeView, subView);
+  titleRow.classList.add("item-title-row");
+  card.setAttribute("aria-label", `${itemLabel(item)}. Store options: ${item.variants.map((variant) => STORE_LABELS[variant.retailer]).join(", ")}. ${stateLabel({ ...product, enabled: item.enabled }, status)}.`);
+
+  const oldSelection = card.querySelector(".mission-bulk-select");
+  if (oldSelection) oldSelection.remove();
+  card.classList.remove("bulk-selected");
+  if (planEditMode) {
+    const selection = document.createElement("label");
+    selection.className = "mission-bulk-select";
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.checked = bulkMissionSelectedIds.has(item.id);
+    checkbox.setAttribute("aria-label", `Select ${itemLabel(item)} for a bulk plan change`);
+    checkbox.addEventListener("change", () => {
+      if (checkbox.checked) bulkMissionSelectedIds.add(item.id);
+      else bulkMissionSelectedIds.delete(item.id);
+      card.classList.toggle("bulk-selected", checkbox.checked);
+      renderBulkMissionControls(currentSnapshot.settings);
+    });
+    const selectionText = document.createElement("span");
+    selectionText.textContent = "Select";
+    selection.append(checkbox, selectionText);
+    card.prepend(selection);
+    card.classList.toggle("bulk-selected", checkbox.checked);
+  }
+
+  const enabledInput = view(card, "enabled");
+  const enabledReplacement = enabledInput.cloneNode(true);
+  enabledInput.replaceWith(enabledReplacement);
+  enabledReplacement.checked = item.enabled;
+  enabledReplacement.indeterminate = item.enabled && !item.allEnabled;
+  enabledReplacement.setAttribute("aria-label", `Turn ${itemLabel(item)} on or off at every selected store`);
+  enabledReplacement.addEventListener("change", () => void runAction(
+    () => setMissionsEnabled(new Map([[item.id, enabledReplacement.checked]])),
+    `${itemLabel(item)} turned ${enabledReplacement.checked ? "On" : "Off"} at every selected store.`
+  ));
+
+  view(card, "title").textContent = itemLabel(item);
+  storeView.className = "store-name item-store-options";
+  storeView.replaceChildren(...ItemMissions.RETAILERS.map((retailer) => {
+    const variant = item.stores[retailer];
+    const option = document.createElement("span");
+    option.className = `item-store-option${variant ? " selected" : ""}`;
+    const label = document.createElement("label");
+    const toggle = document.createElement("input");
+    toggle.type = "checkbox";
+    toggle.checked = Boolean(variant);
+    toggle.setAttribute("aria-label", `${variant ? "Remove" : "Add"} ${STORE_LABELS[retailer]} store option`);
+    const text = document.createElement("span");
+    text.textContent = `${variant && !variant.affiliateOpenUrl && !variant.affiliateUrl ? "⚠ " : ""}${STORE_LABELS[retailer]}`;
+    label.append(toggle, text);
+    toggle.addEventListener("change", () => {
+      toggle.checked = Boolean(variant);
+      if (!variant) {
+        void startEdit(item, null, retailer);
+        return;
+      }
+      if (item.variants.length === 1) {
+        setMessage("Every item needs at least one store option.", "error");
+        return;
+      }
+      if (!window.confirm(`Remove ${STORE_LABELS[retailer]} as a store option for “${itemLabel(item)}”?`)) return;
+      void runAction(async () => {
+        if (!planEditMode && !await beginPlanEditSession()) return;
+        await saveMissionList(savedProducts().filter((candidate) => candidate.id !== variant.id));
+      }, `${STORE_LABELS[retailer]} removed from ${itemLabel(item)}.`);
+    });
+    option.append(label);
+    if (variant) {
+      const open = document.createElement("button");
+      open.type = "button";
+      open.className = "item-store-open";
+      open.textContent = "↗";
+      setMissionButtonLabel(open, `Open ${STORE_LABELS[retailer]} option for ${itemLabel(item)}`);
+      open.addEventListener("click", () => void runAction(
+        () => window.cartAssist.openProduct(variant.id),
+        `${STORE_LABELS[retailer]} option opened in Chrome.`
+      ));
+      option.append(open);
+    }
+    return option;
+  }));
+
+  const prices = item.variants.map((variant) => Number(variant.maxPrice) || 0);
+  const minimumPrice = Math.min(...prices);
+  const maximumPrice = Math.max(...prices);
+  const priceView = view(card, "priceQuantity");
+  priceView.textContent = `${compactMissionPrice(minimumPrice)}${maximumPrice !== minimumPrice ? `–${compactMissionPrice(maximumPrice)}` : ""} ×${item.quantity}`;
+  priceView.title = item.variants.map((variant) => `${STORE_LABELS[variant.retailer]}: ${missionCapDescription(variant)}`).join(" · ");
+  priceView.setAttribute("aria-label", priceView.title);
+
+  const peers = savedItems().filter((candidate) => (candidate.groupId || "") === (item.groupId || ""));
+  const peerIndex = peers.findIndex((candidate) => candidate.id === item.id);
+  const up = replaceMissionButton(card, ".mission-move-up", `Move ${itemLabel(item)} up within its group`, () => void runAction(
+    () => moveMission(item.id, -1),
+    `${itemLabel(item)} moved up within its group.`
+  ));
+  const down = replaceMissionButton(card, ".mission-move-down", `Move ${itemLabel(item)} down within its group`, () => void runAction(
+    () => moveMission(item.id, 1),
+    `${itemLabel(item)} moved down within its group.`
+  ));
+  up.disabled = peerIndex <= 0 || Boolean(editingId);
+  down.disabled = peerIndex === -1 || peerIndex >= peers.length - 1 || Boolean(editingId);
+  replaceMissionButton(card, ".mission-open", `Open the primary ${STORE_LABELS[product.retailer]} option for ${itemLabel(item)}${product.affiliateOpenUrl ? " using its custom affiliate product link" : ""}`, () => void runAction(
+    () => window.cartAssist.openProduct(product.id),
+    `${itemLabel(item)} opened in Chrome.`
+  ));
+  const copy = replaceMissionButton(card, ".mission-copy-affiliate", `Copy campaign share link for ${itemLabel(item)}`, () => void runAction(
+    () => copyAffiliateProduct(product),
+    `${itemLabel(item)} retailer-domain campaign link copied.`
+  ));
+  copy.hidden = !product.affiliateUrl;
+  const issueVariant = item.variants.find((variant) => variant.enabled !== false && BLOCKING_REASONS.has(statusMap[variant.id]?.reason))
+    || item.variants.find((variant) => variant.enabled !== false && variant.action !== "watch" && Number(variant.maxPrice) <= 0)
+    || item.variants.find((variant) => variant.enabled !== false && variant.openAt && new Date(variant.openAt).getTime() < Date.now() - 120_000);
+  if (issueVariant) {
+    const fix = document.createElement("button");
+    fix.type = "button";
+    fix.className = "mission-icon-button mission-fix";
+    fix.textContent = "!";
+    const runtimeBlocked = BLOCKING_REASONS.has(statusMap[issueVariant.id]?.reason);
+    setMissionButtonLabel(fix, runtimeBlocked
+      ? `Open ${STORE_LABELS[issueVariant.retailer]} to resolve the blocking status for ${itemLabel(item)}`
+      : `Edit ${itemLabel(item)} to fix its cap or missed schedule`);
+    fix.addEventListener("click", () => {
+      if (runtimeBlocked) {
+        eventFilterProductId = issueVariant.id;
+        renderEvents(currentSnapshot?.events || []);
+        void runAction(() => window.cartAssist.openProduct(issueVariant.id), `${STORE_LABELS[issueVariant.retailer]} opened for recovery.`);
+      } else {
+        void startEdit(item, null, issueVariant.retailer);
+      }
+    });
+    card.querySelector(".row-actions").prepend(fix);
+  }
+  replaceMissionButton(card, ".mission-edit", `Edit ${itemLabel(item)} and its store options`, () => void startEdit(item));
+  replaceMissionButton(card, ".mission-remove", `Remove ${itemLabel(item)}`, () => {
+    if (!window.confirm(`Remove “${itemLabel(item)}” and all selected store options?`)) return;
+    void runAction(async () => {
+      if (!planEditMode && !await beginPlanEditSession()) return;
+      await saveMissionList(savedProducts().filter((candidate) => ItemMissions.itemIdForProduct(candidate) !== item.id));
+    }, `${itemLabel(item)} removed.`);
+  });
+
+  card.addEventListener("dragstart", (event) => {
+    event.dataTransfer.setData("text/plain", item.id);
+  });
+  return card;
+}
+
+function blankStoreDraft(retailer, shared = {}) {
+  return {
+    ...shared,
+    id: "",
+    retailer,
+    productUrl: "",
+    affiliateOpenUrl: "",
+    affiliateUrl: "",
+    imageUrl: "",
+    sku: "",
+    maxPrice: 0,
+    maxOrderTotal: 0,
+    msrpRecordId: "",
+    priceSource: "",
+    signalEntry: "product",
+    checkoutPreflightApproved: false,
+    checkoutPreflightCapturedAt: ""
+  };
+}
+
+function captureActiveStoreDraft(card) {
+  const retailer = card.__activeRetailer;
+  if (!retailer) return;
+  const previous = card.__routeDrafts.get(retailer) || blankStoreDraft(retailer);
+  card.__routeDrafts.set(retailer, {
+    ...previous,
+    retailer,
+    productUrl: field(card, "productUrl").value.trim(),
+    affiliateOpenUrl: field(card, "affiliateOpenUrl").value.trim(),
+    imageUrl: field(card, "imageUrl").value,
+    sku: retailer === "amazon" ? field(card, "sku").value.trim().toUpperCase() : field(card, "sku").value.trim(),
+    maxPrice: Number(field(card, "maxPrice").value),
+    maxOrderTotal: ItemDefaults.calculateOrderTotalCap({
+      retailer,
+      maxPrice: Number(field(card, "maxPrice").value),
+      quantity: Number(field(card, "quantity").value),
+      action: field(card, "action").value
+    }, currentSnapshot?.settings?.storeOrderAllowances, currentSnapshot?.settings?.orderTaxPercent),
+    msrpRecordId: field(card, "msrpRecordId").value,
+    priceSource: field(card, "priceSource").value || (Number(field(card, "maxPrice").value) > 0 ? "manual" : ""),
+    signalEntry: field(card, "signalEntry").value
+  });
+}
+
+function loadActiveStoreDraft(card, retailer) {
+  const draft = card.__routeDrafts.get(retailer) || blankStoreDraft(retailer);
+  card.__activeRetailer = retailer;
+  field(card, "retailer").value = retailer;
+  field(card, "productUrl").value = draft.productUrl || "";
+  field(card, "affiliateOpenUrl").value = draft.affiliateOpenUrl || "";
+  field(card, "imageUrl").value = draft.imageUrl || "";
+  field(card, "sku").value = draft.sku || "";
+  field(card, "maxPrice").value = Number(draft.maxPrice || 0) > 0 ? String(Number(draft.maxPrice)) : "";
+  field(card, "maxOrderTotal").value = String(Number(draft.maxOrderTotal || 0));
+  field(card, "msrpRecordId").value = draft.msrpRecordId || "";
+  field(card, "priceSource").value = draft.priceSource || "";
+  field(card, "signalEntry").value = draft.signalEntry || "product";
+  updateEditStore(card);
+  updateMissionOrderTotal(card);
+  card.__validateAffiliateOpenUrl?.();
+}
+
 function buildEditCard(product, options = {}) {
+  const item = itemForProduct(product);
+  const sharedProduct = item?.primary || product || {};
+  const requestedRetailer = options.preferredRetailer || sharedProduct.retailer || "target";
+  const routeDrafts = new Map((item?.variants || (product ? [product] : []))
+    .map((variant) => [variant.retailer, { ...variant }]));
+  if (!routeDrafts.size) routeDrafts.set(requestedRetailer, blankStoreDraft(requestedRetailer, sharedProduct));
+  if (!routeDrafts.has(requestedRetailer)) {
+    routeDrafts.set(requestedRetailer, blankStoreDraft(requestedRetailer, sharedProduct));
+  }
+  product = { ...sharedProduct, ...routeDrafts.get(requestedRetailer), retailer: requestedRetailer };
   const card = elements.missionEditTemplate.content.firstElementChild.cloneNode(true);
-  const retailer = product?.retailer || "target";
+  card.__routeDrafts = routeDrafts;
+  card.__activeRetailer = requestedRetailer;
+  card.__itemId = item?.id || `item:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 10)}`;
+  const retailer = requestedRetailer;
   const initialProfile = ItemDefaults.itemProfileById(
     product?.itemProfileId || currentSnapshot?.settings?.defaultItemProfileId || ItemDefaults.DEFAULT_ITEM_PROFILE_ID,
     currentSnapshot?.settings?.itemProfiles || []
@@ -1177,9 +1620,71 @@ function buildEditCard(product, options = {}) {
   field(card, "msrpRecordId").value = product?.msrpRecordId || "";
   field(card, "priceSource").value = product?.priceSource || "";
   field(card, "openAt").value = toLocalInputValue(product?.openAt);
-  field(card, "enabled").checked = product ? product.enabled !== false : false;
+  field(card, "enabled").checked = options.isNew ? false : product.enabled !== false;
   updateEditStore(card);
   updateMissionOrderTotal(card);
+
+  const storePicker = document.createElement("fieldset");
+  storePicker.className = "item-store-picker";
+  const storeLegend = document.createElement("legend");
+  storeLegend.textContent = "Store options";
+  const storeHelp = document.createElement("small");
+  storeHelp.textContent = "Choose every store that can fulfill this item. They share one quantity, schedule, and action; the first store to secure it stops the others for that run.";
+  const storeChoices = document.createElement("div");
+  storeChoices.className = "item-store-picker-choices";
+  storePicker.append(storeLegend, storeHelp, storeChoices);
+  card.querySelector(".product-url-field").before(storePicker);
+
+  const renderStorePicker = () => {
+    for (const option of field(card, "retailer").options) {
+      option.disabled = !card.__routeDrafts.has(option.value);
+    }
+    field(card, "retailer").title = "Store option currently being edited. Use the toggles below to add or remove stores.";
+    storeChoices.replaceChildren(...ItemMissions.RETAILERS.map((store) => {
+      const option = document.createElement("div");
+      option.className = `item-store-picker-option${card.__activeRetailer === store ? " active" : ""}`;
+      const label = document.createElement("label");
+      const checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.checked = card.__routeDrafts.has(store);
+      checkbox.setAttribute("aria-label", `${checkbox.checked ? "Remove" : "Add"} ${STORE_LABELS[store]} store option`);
+      const name = document.createElement("span");
+      name.textContent = STORE_LABELS[store];
+      const edit = document.createElement("button");
+      edit.type = "button";
+      edit.className = "item-store-picker-edit";
+      edit.textContent = card.__activeRetailer === store ? "Editing" : "Edit";
+      edit.disabled = !checkbox.checked || card.__activeRetailer === store;
+      edit.addEventListener("click", (event) => {
+        event.preventDefault();
+        captureActiveStoreDraft(card);
+        loadActiveStoreDraft(card, store);
+        renderStorePicker();
+      });
+      checkbox.addEventListener("change", () => {
+        captureActiveStoreDraft(card);
+        if (checkbox.checked) {
+          card.__routeDrafts.set(store, blankStoreDraft(store, sharedProduct));
+          loadActiveStoreDraft(card, store);
+        } else {
+          if (card.__routeDrafts.size === 1) {
+            checkbox.checked = true;
+            setMessage("Every item needs at least one store option.", "error");
+            return;
+          }
+          card.__routeDrafts.delete(store);
+          if (card.__activeRetailer === store) {
+            loadActiveStoreDraft(card, card.__routeDrafts.keys().next().value);
+          }
+        }
+        renderStorePicker();
+      });
+      label.append(checkbox, name);
+      option.append(label, edit);
+      return option;
+    }));
+  };
+  renderStorePicker();
 
   const validateAffiliateOpenUrl = () => {
     const input = field(card, "affiliateOpenUrl");
@@ -1201,11 +1706,12 @@ function buildEditCard(product, options = {}) {
         && actualSku === expectedSku;
       input.setCustomValidity(valid
         ? ""
-        : "Use a direct HTTPS product link for this mission’s exact store and item ID.");
+        : "Use a direct HTTPS product link for this store option’s exact store and item ID.");
     } catch {
       input.setCustomValidity("Enter a valid direct HTTPS product link.");
     }
   };
+  card.__validateAffiliateOpenUrl = validateAffiliateOpenUrl;
   validateAffiliateOpenUrl();
 
   const advanced = card.querySelector(".advanced-fields");
@@ -1227,17 +1733,27 @@ function buildEditCard(product, options = {}) {
   validateFulfillmentSelection();
 
   field(card, "retailer").addEventListener("change", () => {
-    updateEditStore(card);
-    updateMissionOrderTotal(card);
-    validateAffiliateOpenUrl();
+    const nextRetailer = field(card, "retailer").value;
+    captureActiveStoreDraft(card);
+    if (!card.__routeDrafts.has(nextRetailer)) {
+      card.__routeDrafts.set(nextRetailer, blankStoreDraft(nextRetailer, sharedProduct));
+    }
+    loadActiveStoreDraft(card, nextRetailer);
+    renderStorePicker();
   });
   field(card, "productUrl").addEventListener("change", () => {
     const url = field(card, "productUrl").value;
     const detected = detectRetailer(url);
     if (detected) {
-      field(card, "retailer").value = detected;
-      updateEditStore(card);
-      updateMissionOrderTotal(card);
+      if (detected !== card.__activeRetailer) {
+        const previousUrl = card.__routeDrafts.get(card.__activeRetailer)?.productUrl || "";
+        field(card, "productUrl").value = previousUrl;
+        captureActiveStoreDraft(card);
+        if (!card.__routeDrafts.has(detected)) card.__routeDrafts.set(detected, blankStoreDraft(detected, sharedProduct));
+        loadActiveStoreDraft(card, detected);
+        field(card, "productUrl").value = url;
+        renderStorePicker();
+      }
       const detectedSku = extractSku(detected, url);
       if (detectedSku) field(card, "sku").value = detectedSku;
       // A pasted link that carries tracking parameters is a full affiliate
@@ -1290,8 +1806,8 @@ function buildEditCard(product, options = {}) {
     try {
       const applied = applyProfileToEditor(card);
       setMessage(applied.enabled
-        ? `Profile applied immediately with a $${applied.maxPrice.toFixed(2)} approved MSRP cap.`
-        : "Profile applied immediately. No approved MSRP matched, so the mission remains Off until you set or approve a price.",
+        ? `Template applied immediately to ${applied.storeCount} store option${applied.storeCount === 1 ? "" : "s"}; every selected store has a positive cap.`
+        : `Template applied to every selected store. ${applied.readyStores} of ${applied.storeCount} store option${applied.storeCount === 1 ? " has" : "s have"} a positive cap, so the item remains Off until the rest are priced or removed.`,
       applied.enabled ? "success" : "warn");
     } catch (error) {
       setMessage(error.message || "The item profile could not be applied.", "error");
@@ -1370,38 +1886,70 @@ function updateMissionOrderTotal(card, options = {}) {
   }
 }
 
-function collectMission(card) {
-  const retailer = field(card, "retailer").value;
-  const sku = field(card, "sku").value.trim();
+function allowedSignalEntry(retailer, action, requested) {
+  if (requested === "walmart-buy-now" && retailer === "walmart" && ["review", "checkout"].includes(action)) return requested;
+  if (requested === "amazon-atc" && retailer === "amazon" && action !== "watch") return requested;
+  if (requested === "amazon-buy-now" && retailer === "amazon" && ["review", "checkout"].includes(action)) return requested;
+  return "product";
+}
+
+function collectMissions(card) {
+  captureActiveStoreDraft(card);
   const openAtValue = field(card, "openAt").value;
-  const existing = editingId && editingId !== "new"
-    ? savedProducts().find((candidate) => candidate.id === editingId)
-    : null;
-  return {
-    retailer,
+  const shared = {
+    itemId: card.__itemId,
     title: field(card, "title").value.trim(),
-    imageUrl: field(card, "imageUrl").value,
     openAt: openAtValue ? new Date(openAtValue).toISOString() : "",
-    productUrl: field(card, "productUrl").value.trim(),
-    affiliateOpenUrl: field(card, "affiliateOpenUrl").value.trim(),
-    sku: retailer === "amazon" ? sku.toUpperCase() : sku,
-    maxPrice: Number(field(card, "maxPrice").value),
-    maxOrderTotal: missionOrderTotalFromCard(card),
     quantity: Number(field(card, "quantity").value),
     action: field(card, "action").value,
     alertLevel: field(card, "alertLevel").value,
     fulfillmentMode: field(card, "fulfillmentMode").value,
     itemProfileId: field(card, "itemProfileId").value,
-    msrpRecordId: field(card, "msrpRecordId").value,
-    priceSource: field(card, "priceSource").value || (Number(field(card, "maxPrice").value) > 0 ? "manual" : ""),
     groupId: field(card, "groupId").value,
     signalAutoOpen: field(card, "signalAutoOpen").checked,
     acceptPartial: field(card, "acceptPartial").checked,
-    signalEntry: field(card, "signalEntry").value,
-    enabled: field(card, "enabled").checked,
-    checkoutPreflightApproved: existing?.checkoutPreflightApproved === true,
-    checkoutPreflightCapturedAt: existing?.checkoutPreflightCapturedAt || ""
+    enabled: field(card, "enabled").checked
   };
+  return [...card.__routeDrafts.values()].map((draft) => {
+    if (!draft.productUrl) throw new Error(`Paste the ${STORE_LABELS[draft.retailer]} product link or turn that store option off.`);
+    let parsedRetailer = "";
+    let parsedSku = "";
+    try {
+      parsedRetailer = detectRetailer(draft.productUrl);
+      parsedSku = extractSku(parsedRetailer, draft.productUrl);
+    } catch {
+      // The normal settings validator returns the detailed URL error below.
+    }
+    if (parsedRetailer && parsedRetailer !== draft.retailer) {
+      throw new Error(`${STORE_LABELS[draft.retailer]} is selected, but its product link belongs to ${STORE_LABELS[parsedRetailer] || "another store"}.`);
+    }
+    const sku = draft.retailer === "amazon"
+      ? String(draft.sku || parsedSku).toUpperCase()
+      : String(draft.sku || parsedSku);
+    const maxPrice = Number(draft.maxPrice || 0);
+    const route = {
+      ...draft,
+      ...shared,
+      retailer: draft.retailer,
+      productUrl: draft.productUrl,
+      affiliateOpenUrl: draft.affiliateOpenUrl || "",
+      imageUrl: draft.imageUrl || "",
+      sku,
+      maxPrice,
+      maxOrderTotal: ItemDefaults.calculateOrderTotalCap({
+        retailer: draft.retailer,
+        maxPrice,
+        quantity: shared.quantity,
+        action: shared.action
+      }, currentSnapshot?.settings?.storeOrderAllowances, currentSnapshot?.settings?.orderTaxPercent),
+      msrpRecordId: draft.msrpRecordId || "",
+      priceSource: draft.priceSource || (maxPrice > 0 ? "manual" : ""),
+      signalEntry: allowedSignalEntry(draft.retailer, shared.action, draft.signalEntry),
+      checkoutPreflightApproved: draft.checkoutPreflightApproved === true,
+      checkoutPreflightCapturedAt: draft.checkoutPreflightCapturedAt || ""
+    };
+    return route;
+  });
 }
 
 async function finishEdit(card) {
@@ -1411,14 +1959,25 @@ async function finishEdit(card) {
       return;
     }
   }
-  const mission = collectMission(card);
+  let missions;
+  try {
+    missions = collectMissions(card);
+  } catch (error) {
+    setMessage(error.message || "Review the selected store options.", "error");
+    return;
+  }
   const existing = savedProducts();
-  const products = editingId === "new"
-    ? [...existing, mission]
-    : existing.map((candidate) => (candidate.id === editingId ? mission : candidate));
+  let products;
+  if (editingId === "new") {
+    products = [...existing, ...missions];
+  } else {
+    const firstIndex = existing.findIndex((candidate) => ItemMissions.itemIdForProduct(candidate) === editingId);
+    products = existing.filter((candidate) => ItemMissions.itemIdForProduct(candidate) !== editingId);
+    products.splice(firstIndex < 0 ? products.length : firstIndex, 0, ...missions);
+  }
   const saved = await runAction(
     () => saveMissionList(products),
-    "Mission saved. The browser companion picks it up within a few seconds."
+    `Item saved with ${missions.length} store option${missions.length === 1 ? "" : "s"}. The browser companion picks it up within a few seconds.`
   );
   if (saved) {
     editingId = null;
@@ -1427,14 +1986,15 @@ async function finishEdit(card) {
   }
 }
 
-async function startEdit(product, seed = null) {
+async function startEdit(product, seed = null, preferredRetailer = "") {
   if (editingId) {
-    setMessage("Finish the open mission editor first (Done or Cancel).", "error");
+    setMessage("Finish the open item editor first (Done or Cancel).", "error");
     return;
   }
   if (isArmed() && !await beginPlanEditSession()) return;
-  editingId = product ? product.id : "new";
-  editCardNode = buildEditCard(product || seed, { isNew: !product });
+  const item = itemForProduct(product);
+  editingId = item ? item.id : "new";
+  editCardNode = buildEditCard(item || seed, { isNew: !item, preferredRetailer });
   renderMissions();
   editCardNode.querySelector("[data-field='productUrl']").focus();
 }
@@ -1448,15 +2008,19 @@ function closeBulkImportDialog() {
   if (bulkImportInFlight) return;
   if (typeof elements.bulkImportDialog.close === "function") elements.bulkImportDialog.close();
   else elements.bulkImportDialog.removeAttribute("open");
+  bulkImportPreviewText = "";
+  elements.bulkImportSubmitButton.textContent = "Preview import";
 }
 
 async function openBulkImportDialog() {
   if (editingId) {
-    setMessage("Finish the open mission editor before importing URLs.", "error");
+    setMessage("Finish the open item editor before importing URLs.", "error");
     return;
   }
   if (isArmed() && !await beginPlanEditSession()) return;
   elements.bulkImportText.value = "";
+  bulkImportPreviewText = "";
+  elements.bulkImportSubmitButton.textContent = "Preview import";
   setBulkImportResult("");
   if (typeof elements.bulkImportDialog.showModal === "function") elements.bulkImportDialog.showModal();
   else elements.bulkImportDialog.setAttribute("open", "");
@@ -1465,12 +2029,12 @@ async function openBulkImportDialog() {
 
 function bulkImportSummaryText(summary = {}) {
   const parts = [];
-  if (summary.imported) parts.push(`${summary.imported} imported with the default profile`);
+  if (summary.imported) parts.push(`${summary.imported} imported with the default template`);
   if (summary.ready) parts.push(`${summary.ready} ready with approved MSRP`);
   if (summary.needsPrice) parts.push(`${summary.needsPrice} left Off pending price approval`);
   if (summary.duplicates) parts.push(`${summary.duplicates} duplicate${summary.duplicates === 1 ? "" : "s"} skipped`);
   if (summary.invalid) parts.push(`${summary.invalid} invalid line${summary.invalid === 1 ? "" : "s"}`);
-  if (summary.overCapacity) parts.push(`${summary.overCapacity} over the ${MAX_MISSIONS}-mission limit`);
+  if (summary.overCapacity) parts.push(`${summary.overCapacity} over the ${MAX_MISSIONS}-store-option safety limit`);
   return parts.join(" · ") || "No product URLs were found.";
 }
 
@@ -1488,14 +2052,26 @@ async function submitBulkImport() {
   elements.bulkImportCancelButton.disabled = true;
   setBulkImportResult("Validating and deduplicating URLs…");
   try {
+    if (window.cartAssist.previewBulkImport && bulkImportPreviewText !== text) {
+      const preview = await window.cartAssist.previewBulkImport(text);
+      const summaryText = bulkImportSummaryText(preview.summary);
+      const issueText = (preview.issues || []).map((issue) => `Line ${issue.line}: ${issue.reason}`).join(" ");
+      setBulkImportResult(`Preview: ${summaryText}.${issueText ? ` ${issueText}` : ""} Nothing has been added yet.`, preview.summary?.imported ? "success" : "warn");
+      bulkImportPreviewText = text;
+      elements.bulkImportSubmitButton.textContent = preview.summary?.imported ? "Confirm import" : "Preview again";
+      return;
+    }
+    const before = planEditMode ? capturePlanSnapshot() : null;
     const result = await window.cartAssist.bulkImportMissions(text);
     render(result.snapshot);
+    if (result.summary?.imported > 0) recordPlanChange(before);
     const summaryText = bulkImportSummaryText(result.summary);
     const issueText = (result.issues || []).map((issue) => `Line ${issue.line}: ${issue.reason}`).join(" ");
     if (result.summary?.imported > 0) {
+      bulkImportPreviewText = "";
       bulkImportInFlight = false;
       closeBulkImportDialog();
-      setMessage(`${summaryText}. Review each imported mission before enabling it.`, "success");
+      setMessage(`${summaryText}. Review each imported item before enabling it.`, "success");
       return;
     }
     setBulkImportResult(`${summaryText}${issueText ? ` ${issueText}` : ""}`, "error");
@@ -1627,7 +2203,7 @@ function renderCatalog(catalog = {}) {
     price.className = "catalog-result-price";
     price.textContent = item.price === null ? "Not shown" : money(item.price);
     const note = document.createElement("small");
-    note.textContent = missionIds.has(item.id) ? "Already in Missions" : prepIds.has(item.id) ? "Prep monitor" : "listing only";
+    note.textContent = missionIds.has(item.id) ? "Already in Items" : prepIds.has(item.id) ? "Prep monitor" : "listing only";
     price.append(note);
     card.append(checkbox, main, price);
     elements.catalogList.append(card);
@@ -1644,8 +2220,8 @@ function renderCatalog(catalog = {}) {
   elements.catalogItemProfile.disabled = busy || isArmed();
   elements.catalogAddButton.disabled = busy || isArmed() || catalogSelectedIds.size === 0;
   elements.catalogAddButton.textContent = catalogSelectedIds.size
-    ? `Add selected (${catalogSelectedIds.size}) to Missions`
-    : "Add selected to Missions";
+    ? `Add selected (${catalogSelectedIds.size}) to Items`
+    : "Add selected to Items";
   const walmartSelected = [...catalogSelectedIds].filter((id) => id.startsWith("walmart:"));
   elements.catalogWalmartPrepButton.disabled = busy || isArmed() || walmartSelected.length === 0;
   elements.catalogWalmartPrepOpenAt.disabled = busy || isArmed();
@@ -1920,7 +2496,7 @@ function renderMsrpCatalog(settings) {
       const next = await window.cartAssist.acceptMsrpSuggestion(suggestion.id);
       render(next);
       return next;
-    }, `${STORE_LABELS[suggestion.retailer]} ${money(suggestion.price)} approved as MSRP. Existing mission caps were not changed.`));
+    }, `${STORE_LABELS[suggestion.retailer]} ${money(suggestion.price)} approved as MSRP. Existing item caps were not changed.`));
     const dismiss = document.createElement("button");
     dismiss.type = "button";
     dismiss.className = "button ghost compact";
@@ -1938,11 +2514,13 @@ function renderMsrpCatalog(settings) {
 
 function filteredMissionProducts() {
   const filters = missionFilterValues();
-  return savedProducts().filter((product) => missionMatchesFilters(product, filters));
+  return savedItems().filter((item) => missionMatchesFilters(item, filters));
 }
 
 function renderBulkMissionControls(settings) {
-  const currentIds = new Set(settings.products.map((product) => product.id));
+  renderPlanHistoryControls();
+  const currentItems = savedItems(settings.products);
+  const currentIds = new Set(currentItems.map((item) => item.id));
   for (const id of [...bulkMissionSelectedIds]) if (!currentIds.has(id)) bulkMissionSelectedIds.delete(id);
   elements.missionPlanTools.hidden = !planEditMode;
   elements.planEditButton.textContent = planEditMode ? "Finish editing" : "Edit plan";
@@ -1951,23 +2529,24 @@ function renderBulkMissionControls(settings) {
   elements.planEditButton.setAttribute("aria-pressed", String(planEditMode));
   if (!planEditMode) return;
 
-  elements.missionPlanTools.classList.toggle("is-empty", !settings.products.length);
+  elements.missionPlanTools.classList.toggle("is-empty", !currentItems.length);
   const selectedGroupId = elements.bulkMissionGroup.value;
   missionGroupOptions(elements.bulkMissionGroup, selectedGroupId);
   const visible = filteredMissionProducts();
   const selected = bulkMissionSelectedIds.size;
-  elements.bulkMissionSelectionCount.textContent = settings.products.length
-    ? `${selected} selected · ${visible.length} shown`
-    : "No missions yet — create or import one to build the plan.";
+  elements.bulkMissionSelectionCount.textContent = currentItems.length
+    ? `${selected} item${selected === 1 ? "" : "s"} selected · ${visible.length} shown · ${settings.products.length} store route${settings.products.length === 1 ? "" : "s"}`
+    : "No items yet — create or import one to build the plan.";
   elements.applyBulkItemProfileButton.disabled = !bulkMissionSelectedIds.size || isArmed();
   elements.applyBulkMissionGroupButton.disabled = !bulkMissionSelectedIds.size;
   elements.copySelectedMissionListButton.disabled = !bulkMissionSelectedIds.size;
   elements.bulkEnableMissionsButton.disabled = !bulkMissionSelectedIds.size;
   elements.bulkDisableMissionsButton.disabled = !bulkMissionSelectedIds.size;
+  elements.combineSelectedItemsButton.disabled = bulkMissionSelectedIds.size < 2 || isArmed();
   elements.bulkMissionOpenAt.disabled = !bulkMissionSelectedIds.size || isArmed();
   elements.scheduleCandidateMissionsButton.disabled = !bulkMissionSelectedIds.size || isArmed();
   elements.clearSelectedMissionSchedulesButton.disabled = isArmed() || !settings.products.some((product) => (
-    bulkMissionSelectedIds.has(product.id) && product.openAt
+    bulkMissionSelectedIds.has(ItemMissions.itemIdForProduct(product)) && product.openAt
   ));
   elements.bulkMissionSelectAllButton.disabled = !visible.length;
   elements.bulkMissionSelectAllButton.textContent = visible.length ? `Select shown (${visible.length})` : "Select shown";
@@ -2038,11 +2617,11 @@ async function submitCatalogSearch() {
 async function addSelectedCatalogMissions() {
   if (catalogSearchInFlight || catalogImportInFlight) return;
   if (editingId) {
-    setMessage("Finish the open mission editor before importing catalog results.", "error");
+    setMessage("Finish the open item editor before importing catalog results.", "error");
     return;
   }
   if (isArmed()) {
-    setMessage("Switch Autopilot off before adding catalog results to Missions.", "error");
+    setMessage("Switch Autopilot off before adding catalog results to Items.", "error");
     return;
   }
   const selectedIds = [...catalogSelectedIds];
@@ -2050,18 +2629,20 @@ async function addSelectedCatalogMissions() {
   catalogImportInFlight = true;
   renderCatalog(currentSnapshot?.catalog || {});
   try {
+    const before = planEditMode ? capturePlanSnapshot() : null;
     const result = await window.cartAssist.addCatalogMissions(selectedIds, elements.catalogItemProfile.value);
     render(result.snapshot);
+    if (result.summary?.imported > 0) recordPlanChange(before);
     const summary = result.summary || {};
     const extras = [];
     if (summary.duplicates) extras.push(`${summary.duplicates} duplicate${summary.duplicates === 1 ? "" : "s"} skipped`);
-    if (summary.overCapacity) extras.push(`${summary.overCapacity} over the ${MAX_MISSIONS}-mission limit`);
+    if (summary.overCapacity) extras.push(`${summary.overCapacity} over the ${MAX_MISSIONS}-store-option safety limit`);
     if (summary.missing) extras.push(`${summary.missing} no longer available`);
     if (summary.ready) extras.push(`${summary.ready} ready with approved MSRP`);
     if (summary.needsPrice) extras.push(`${summary.needsPrice} left Off pending price approval`);
     setMessage(
       summary.imported
-        ? `${summary.imported} catalog mission${summary.imported === 1 ? "" : "s"} added with the selected profile.${extras.length ? ` ${extras.join(" · ")}.` : ""}`
+        ? `${summary.imported} catalog item${summary.imported === 1 ? "" : "s"} added with the selected template.${extras.length ? ` ${extras.join(" · ")}.` : ""}`
         : extras.join(" · ") || "No selected catalog results were imported.",
       summary.imported ? "success" : "warn"
     );
@@ -2136,7 +2717,7 @@ function renderMissionFilterOptions() {
   elements.newMissionGroupButton.disabled = savedMissionGroups().length >= MAX_MISSION_GROUPS;
   elements.newMissionGroupButton.title = elements.newMissionGroupButton.disabled
     ? `The ${MAX_MISSION_GROUPS}-group limit has been reached.`
-    : "Create a named mission group";
+    : "Create a named item group";
 }
 
 function missionFilterValues() {
@@ -2148,19 +2729,30 @@ function missionFilterValues() {
   };
 }
 
-function missionMatchesFilters(product, filters) {
-  if (filters.groupId === UNGROUPED_FILTER_VALUE && product.groupId) return false;
-  if (!["all", UNGROUPED_FILTER_VALUE].includes(filters.groupId) && product.groupId !== filters.groupId) return false;
-  if (filters.retailer !== "all" && product.retailer !== filters.retailer) return false;
-  if (filters.active === "active" && product.enabled === false) return false;
-  if (filters.active === "inactive" && product.enabled !== false) return false;
+function missionMatchesFilters(item, filters) {
+  if (filters.groupId === UNGROUPED_FILTER_VALUE && item.groupId) return false;
+  if (!["all", UNGROUPED_FILTER_VALUE].includes(filters.groupId) && item.groupId !== filters.groupId) return false;
+  if (filters.retailer !== "all" && !item.variants.some((variant) => variant.retailer === filters.retailer)) return false;
+  if (filters.active === "active" && !item.enabled) return false;
+  if (filters.active === "inactive" && item.enabled) return false;
+  if (filters.active === "problem") {
+    const statuses = currentSnapshot?.productStatuses || {};
+    const hasProblem = item.variants.some((variant) => variant.enabled !== false && (
+      BLOCKING_REASONS.has(statuses[variant.id]?.reason)
+      || (variant.action !== "watch" && Number(variant.maxPrice) <= 0)
+      || (variant.openAt && new Date(variant.openAt).getTime() < Date.now() - 120_000)
+    ));
+    if (!hasProblem) return false;
+  }
   if (filters.query) {
     const haystack = [
-      product.title,
-      product.sku,
-      product.retailer,
-      STORE_LABELS[product.retailer],
-      product.productUrl
+      item.title,
+      ...item.variants.flatMap((variant) => [
+        variant.sku,
+        variant.retailer,
+        STORE_LABELS[variant.retailer],
+        variant.productUrl
+      ])
     ].join(" ").toLowerCase();
     if (!haystack.includes(filters.query)) return false;
   }
@@ -2204,18 +2796,18 @@ function buildMissionGroupSection(group, members, visibleMembers, statuses) {
   enabledLabel.className = "mission-group-enabled";
   const enabled = document.createElement("input");
   enabled.type = "checkbox";
-  const enabledCount = members.filter((product) => product.enabled !== false).length;
+  const enabledCount = members.filter((item) => item.enabled).length;
   enabled.checked = Boolean(members.length) && enabledCount === members.length;
   enabled.indeterminate = enabledCount > 0 && enabledCount < members.length;
   enabled.disabled = !members.length;
-  enabled.setAttribute("aria-label", `Turn every mission in ${group.name} on or off`);
+  enabled.setAttribute("aria-label", `Turn every item in ${group.name} on or off`);
   const enabledText = document.createElement("span");
   enabledText.textContent = enabled.indeterminate ? "Mixed" : enabled.checked ? "On" : "Off";
-  enabledLabel.title = `Activate or deactivate all ${members.length} mission${members.length === 1 ? "" : "s"} in ${group.name}`;
+  enabledLabel.title = `Activate or deactivate all ${members.length} item${members.length === 1 ? "" : "s"} in ${group.name}`;
   enabledLabel.append(enabled, enabledText);
   enabled.addEventListener("change", () => void runAction(
-    () => setMissionsEnabled(new Map(members.map((product) => [product.id, enabled.checked]))),
-    `${group.name} missions turned ${enabled.checked ? "On" : "Off"}.`
+    () => setMissionsEnabled(new Map(members.map((item) => [item.id, enabled.checked]))),
+    `${group.name} items turned ${enabled.checked ? "On" : "Off"}.`
   ));
 
   const actions = document.createElement("div");
@@ -2227,7 +2819,7 @@ function buildMissionGroupSection(group, members, visibleMembers, statuses) {
     rename.textContent = "✎";
     setMissionButtonLabel(rename, `Rename ${group.name}`);
     rename.addEventListener("click", () => {
-      const nextName = window.prompt("Rename mission group", group.name);
+      const nextName = window.prompt("Rename item group", group.name);
       if (nextName === null) return;
       void runAction(async () => {
         const cleaned = nextName.replace(/\s+/g, " ").trim().slice(0, 40);
@@ -2238,16 +2830,16 @@ function buildMissionGroupSection(group, members, visibleMembers, statuses) {
           ))
         });
         return cleaned;
-      }, (cleaned) => `Mission group renamed to ${cleaned}.`);
+      }, (cleaned) => `Item group renamed to ${cleaned}.`);
     });
 
     const remove = document.createElement("button");
     remove.type = "button";
     remove.className = "mission-icon-button";
     remove.textContent = "✕";
-    setMissionButtonLabel(remove, `Delete ${group.name} and move its missions to Ungrouped`);
+    setMissionButtonLabel(remove, `Delete ${group.name} and move its items to Ungrouped`);
     remove.addEventListener("click", () => {
-      if (!window.confirm(`Delete the group "${group.name}"? Its missions will move to Ungrouped and keep all purchase settings.`)) return;
+      if (!window.confirm(`Delete the group "${group.name}"? Its items will move to Ungrouped and keep all purchase settings.`)) return;
       void runAction(async () => {
         if (elements.missionGroupFilter.value === group.id) elements.missionGroupFilter.value = "all";
         await saveMissionList(savedProducts().map((product) => (
@@ -2255,7 +2847,7 @@ function buildMissionGroupSection(group, members, visibleMembers, statuses) {
         )), {
           missionGroups: savedMissionGroups().filter((candidate) => candidate.id !== group.id)
         });
-      }, `${group.name} deleted; its missions are now Ungrouped.`);
+      }, `${group.name} deleted; its items are now Ungrouped.`);
     });
     actions.append(rename, remove);
 
@@ -2277,15 +2869,15 @@ function buildMissionGroupSection(group, members, visibleMembers, statuses) {
   body.id = `mission-group-${String(group.id || "ungrouped").replace(/[^a-zA-Z0-9_-]/g, "-")}`;
   collapse.setAttribute("aria-controls", body.id);
   if (visibleMembers.length) {
-    body.append(...visibleMembers.map((product) => (
-      editingId === product.id && editCardNode
+    body.append(...visibleMembers.map((item) => (
+      editingId === item.id && editCardNode
         ? editCardNode
-        : buildViewCard(product, statuses[product.id] || defaultStatus())
+        : buildViewCard(item, statuses)
     )));
   } else {
     const empty = document.createElement("div");
     empty.className = "mission-group-empty";
-    empty.textContent = members.length ? "No missions in this group match the current filters." : "No missions in this group yet.";
+    empty.textContent = members.length ? "No items in this group match the current filters." : "No items in this group yet.";
     body.append(empty);
   }
   section.append(header, body);
@@ -2297,6 +2889,7 @@ function clearMissionFilters() {
   elements.missionGroupFilter.value = "all";
   elements.missionRetailerFilter.value = "all";
   elements.missionActiveFilter.value = "all";
+  missionVisibleLimit = 25;
   renderMissions();
 }
 
@@ -2311,35 +2904,37 @@ function renderMissions() {
   renderMissionFilterOptions();
   renderBulkMissionControls(currentSnapshot?.settings || { products: [] });
   const statuses = currentSnapshot?.productStatuses || {};
-  const products = savedProducts();
+  const items = savedItems();
   const filters = missionFilterValues();
-  const matchingProducts = products.filter((product) => missionMatchesFilters(product, filters));
+  const matchingItems = items.filter((item) => missionMatchesFilters(item, filters));
+  const shownMatchingItems = matchingItems.slice(0, missionVisibleLimit);
   elements.missionFilterCount.textContent = missionFiltersActive(filters)
-    ? `${matchingProducts.length} of ${products.length}`
-    : `${products.length} mission${products.length === 1 ? "" : "s"}`;
+    ? `${matchingItems.length} of ${items.length}`
+    : `${items.length} item${items.length === 1 ? "" : "s"}`;
   const nodes = [];
   if (editingId === "new" && editCardNode) nodes.push(editCardNode);
 
   const groups = savedMissionGroups();
   if (groups.length) {
-    const forceProduct = editingId && editingId !== "new"
-      ? products.find((product) => product.id === editingId)
+    const forceItem = editingId && editingId !== "new"
+      ? items.find((item) => item.id === editingId)
       : null;
     for (const group of groups) {
-      if (!["all", group.id].includes(filters.groupId) && forceProduct?.groupId !== group.id) continue;
-      const members = products.filter((product) => product.groupId === group.id);
-      const visibleMembers = members.filter((product) => matchingProducts.includes(product));
-      if (forceProduct?.groupId === group.id && !visibleMembers.includes(forceProduct)) visibleMembers.push(forceProduct);
+      if (!["all", group.id].includes(filters.groupId) && forceItem?.groupId !== group.id) continue;
+      const members = items.filter((item) => item.groupId === group.id);
+      const visibleMembers = members.filter((item) => shownMatchingItems.includes(item));
+      if (forceItem?.groupId === group.id && !visibleMembers.includes(forceItem)) visibleMembers.push(forceItem);
+      if (!visibleMembers.length && members.length && forceItem?.groupId !== group.id) continue;
       if (!visibleMembers.length && (missionFiltersActive(filters) || filters.groupId !== "all") && filters.groupId !== group.id) continue;
       if (!visibleMembers.length && missionFiltersActive(filters) && filters.groupId === "all") continue;
       nodes.push(buildMissionGroupSection(group, members, visibleMembers, statuses));
     }
-    const ungroupedMembers = products.filter((product) => !product.groupId);
-    const visibleUngrouped = ungroupedMembers.filter((product) => matchingProducts.includes(product));
-    if (forceProduct && !forceProduct.groupId && !visibleUngrouped.includes(forceProduct)) visibleUngrouped.push(forceProduct);
+    const ungroupedMembers = items.filter((item) => !item.groupId);
+    const visibleUngrouped = ungroupedMembers.filter((item) => shownMatchingItems.includes(item));
+    if (forceItem && !forceItem.groupId && !visibleUngrouped.includes(forceItem)) visibleUngrouped.push(forceItem);
     if (
       ["all", UNGROUPED_FILTER_VALUE].includes(filters.groupId)
-      && (visibleUngrouped.length || (!missionFiltersActive(filters) && ungroupedMembers.length) || filters.groupId === UNGROUPED_FILTER_VALUE)
+      && (visibleUngrouped.length || filters.groupId === UNGROUPED_FILTER_VALUE)
     ) {
       nodes.push(buildMissionGroupSection(
         { id: "", name: "Ungrouped", collapsed: false },
@@ -2349,32 +2944,44 @@ function renderMissions() {
       ));
     }
   } else {
-    for (const product of products) {
-      if (!matchingProducts.includes(product) && editingId !== product.id) continue;
-      nodes.push(editingId === product.id && editCardNode
+    for (const item of items) {
+      if (!shownMatchingItems.includes(item) && editingId !== item.id) continue;
+      nodes.push(editingId === item.id && editCardNode
         ? editCardNode
-        : buildViewCard(product, statuses[product.id] || defaultStatus()));
+        : buildViewCard(item, statuses));
     }
   }
+  if (matchingItems.length > shownMatchingItems.length && !editingId) {
+    const more = document.createElement("button");
+    more.type = "button";
+    more.className = "button secondary mission-load-more";
+    const remaining = matchingItems.length - shownMatchingItems.length;
+    more.textContent = `Show ${Math.min(25, remaining)} more · ${remaining} remaining`;
+    more.addEventListener("click", () => {
+      missionVisibleLimit += 25;
+      renderMissions();
+    });
+    nodes.push(more);
+  }
 
-  if (!products.length && editingId !== "new") {
+  if (!items.length && editingId !== "new") {
     const empty = document.createElement("div");
     empty.className = "empty-state mission-empty";
     const line = document.createElement("p");
-    line.textContent = "Watch or buy anything on Target, Walmart, or Amazon.";
+    line.textContent = "Add an item once, then choose Target, Walmart, and Amazon as store options.";
     const cta = document.createElement("button");
     cta.type = "button";
     cta.className = "button primary";
-    cta.textContent = "+ Create your first mission";
+    cta.textContent = "+ Create your first item";
     cta.addEventListener("click", () => startEdit(null));
     empty.append(line, cta);
     nodes.push(empty);
-  } else if (!matchingProducts.length && !editingId) {
+  } else if (!matchingItems.length && !editingId) {
     nodes.length = 0;
     const empty = document.createElement("div");
     empty.className = "empty-state mission-filter-empty";
     const line = document.createElement("p");
-    line.textContent = "No missions match the current filters.";
+    line.textContent = "No items match the current filters.";
     const clear = document.createElement("button");
     clear.type = "button";
     clear.className = "button ghost compact";
@@ -2394,17 +3001,11 @@ function updateStatusAges() {
 }
 
 function missionMaximumExposure(products = savedProducts()) {
-  let total = 0;
-  let autoBuyCount = 0;
-  for (const product of products) {
-    if (!product.enabled) continue;
-    if (product.action === "checkout") autoBuyCount += 1;
-    if (product.action === "watch") continue;
-    total += ["review", "checkout"].includes(product.action)
-      ? Number(product.maxOrderTotal) || 0
-      : (Number(product.maxPrice) || 0) * (Number(product.quantity) || 1);
-  }
-  return { total, autoBuyCount };
+  const items = savedItems(products);
+  return {
+    total: ItemMissions.maximumItemExposure(products),
+    autoBuyCount: items.filter((item) => item.enabled && item.action === "checkout").length
+  };
 }
 
 // The hard ceiling: what everything hitting at once could cost.
@@ -2416,11 +3017,11 @@ function updateWorstCase() {
   }
   const { total, autoBuyCount } = missionMaximumExposure(products);
   const exposure = total > 0
-    ? `Worst case if every enabled mission hits its cap: $${Math.round(total)}.`
-    : "No spending exposure: only watch-only missions are enabled.";
+    ? `Maximum exposure if every enabled item reaches its highest selected-store cap: $${Math.round(total)}.`
+    : "No spending exposure: only watch-only items are enabled.";
   const liveNote = isArmed()
     ? autoBuyCount > 0
-      ? ` Autopilot is ON — ${autoBuyCount} auto-buy mission${autoBuyCount === 1 ? "" : "s"} can place real orders.`
+      ? ` Autopilot is ON — ${autoBuyCount} auto-buy item${autoBuyCount === 1 ? "" : "s"} can place a real order through its first successful store.`
       : " Autopilot is ON."
     : "";
   elements.worstCase.textContent = `${exposure}${liveNote}`;
@@ -2428,12 +3029,13 @@ function updateWorstCase() {
 
 function renderReadiness(settings, status, productStatuses = {}) {
   const products = settings.products || [];
-  const enabled = products.filter((product) => product.enabled !== false);
-  const scheduled = products.filter((product) => product.openAt);
+  const items = savedItems(products);
+  const enabled = items.filter((item) => item.enabled);
+  const scheduled = items.filter((item) => item.openAt);
   const { total, autoBuyCount } = missionMaximumExposure(products);
   const actionCounts = Object.fromEntries(Object.keys(ACTION_LABELS).map((action) => [
     action,
-    enabled.filter((product) => product.action === action).length
+    enabled.filter((item) => item.action === action).length
   ]));
   const actionSummary = [
     actionCounts.watch && `${actionCounts.watch} watch`,
@@ -2443,42 +3045,120 @@ function renderReadiness(settings, status, productStatuses = {}) {
   ].filter(Boolean).join(" · ");
 
   const disconnected = status.companion !== "connected";
-  const unpriced = enabled.filter((product) => product.action !== "watch" && Number(product.maxPrice) <= 0);
-  const missed = enabled.filter((product) => {
-    if (!product.openAt) return false;
-    const at = new Date(product.openAt).getTime();
+  const unpriced = enabled.filter((item) => item.action !== "watch" && item.variants.some((variant) => (
+    variant.enabled !== false && Number(variant.maxPrice) <= 0
+  )));
+  const missed = enabled.filter((item) => {
+    if (!item.openAt) return false;
+    const at = new Date(item.openAt).getTime();
     return Number.isFinite(at) && at < Date.now() - 120_000;
   });
-  const blocked = enabled.filter((product) => BLOCKING_REASONS.has(productStatuses[product.id]?.reason));
+  const blocked = enabled.filter((item) => item.variants.some((variant) => (
+    variant.enabled !== false && BLOCKING_REASONS.has(productStatuses[variant.id]?.reason)
+  )));
   const issues = [];
-  if (!products.length) issues.push("Add at least one mission.");
-  else if (!enabled.length) issues.push("Turn on at least one mission.");
+  if (!items.length) issues.push("Add at least one item.");
+  else if (!enabled.length) issues.push("Turn on at least one item.");
   if (disconnected) issues.push("Connect the Chrome companion.");
-  if (unpriced.length) issues.push(`${unpriced.length} active mission${unpriced.length === 1 ? " needs" : "s need"} a positive price cap.`);
+  if (unpriced.length) issues.push(`${unpriced.length} active item${unpriced.length === 1 ? " needs" : "s need"} a positive cap at every selected store.`);
   if (missed.length) issues.push(`${missed.length} scheduled time${missed.length === 1 ? " has" : "s have"} passed and must be cleared or replaced.`);
-  if (blocked.length) issues.push(`${blocked.length} active mission${blocked.length === 1 ? " has" : "s have"} a blocking status.`);
+  if (blocked.length) issues.push(`${blocked.length} active item${blocked.length === 1 ? " has" : "s have"} a blocking status.`);
+  lastReadinessIssueItemIds = new Set([...unpriced, ...missed, ...blocked].map((item) => item.id));
 
   const running = Boolean(settings.automationEnabled);
   const ready = !issues.length;
-  elements.readinessState.textContent = running ? "Running" : ready ? "Ready" : products.length ? "Needs review" : "No plan";
-  elements.readinessState.classList.toggle("ready", ready || running);
-  elements.readinessState.classList.toggle("attention", !ready && !running);
+  elements.readinessState.textContent = running
+    ? ready ? "Autopilot running" : "Running · action needed"
+    : ready ? "Ready" : items.length ? "Needs review" : "No plan";
+  elements.readinessState.classList.toggle("ready", ready);
+  elements.readinessState.classList.toggle("attention", !ready);
   elements.readinessConnection.textContent = disconnected ? "Needs connection" : "Connected";
-  elements.readinessEnabled.textContent = `${enabled.length} / ${products.length}`;
+  elements.readinessEnabled.textContent = `${enabled.length} / ${items.length}`;
   elements.readinessScheduled.textContent = String(scheduled.length);
   elements.readinessExposure.textContent = total > 0 ? compactMissionPrice(total) : "$0";
   elements.readinessSummary.textContent = enabled.length
-    ? `${enabled.length} mission${enabled.length === 1 ? " is" : "s are"} On${actionSummary ? ` · ${actionSummary}` : ""}.`
-    : products.length
-      ? `${products.length} mission${products.length === 1 ? " is" : "s are"} saved, but all are Off.`
-      : "Build a reusable mission plan, review it here, then start one run.";
+    ? `${enabled.length} item${enabled.length === 1 ? " is" : "s are"} On across ${products.filter((product) => product.enabled !== false).length} selected store route${products.filter((product) => product.enabled !== false).length === 1 ? "" : "s"}${actionSummary ? ` · ${actionSummary}` : ""}.`
+    : items.length
+      ? `${items.length} item${items.length === 1 ? " is" : "s are"} saved, but all are Off.`
+      : "Build a reusable item plan, review it here, then start one run.";
   elements.readinessNote.textContent = issues.length
     ? issues.join(" ")
     : autoBuyCount
-      ? `${autoBuyCount} mission${autoBuyCount === 1 ? " can" : "s can"} submit a real order after live verification. Every cap is included above.`
+      ? `${autoBuyCount} item${autoBuyCount === 1 ? " can" : "s can"} submit one real order through the first successful store after live verification.`
       : "No blockers found. Starting Autopilot will use the saved plan as shown.";
   elements.readinessNote.classList.toggle("attention", Boolean(issues.length));
-  elements.readinessReviewButton.textContent = issues.length ? "Review issues in Missions" : "Review missions";
+  elements.readinessReviewButton.textContent = issues.length ? `Review ${lastReadinessIssueItemIds.size || "run"} issue${lastReadinessIssueItemIds.size === 1 ? "" : "s"}` : "Review & start";
+}
+
+function runReviewModel() {
+  const settings = currentSnapshot?.settings || { products: [] };
+  const status = currentSnapshot?.status || {};
+  const statuses = currentSnapshot?.productStatuses || {};
+  const items = savedItems(settings.products);
+  const enabled = items.filter((item) => item.enabled);
+  const due = enabled.filter((item) => !item.openAt || new Date(item.openAt).getTime() <= Date.now() + 120_000);
+  const scheduled = enabled.filter((item) => item.openAt && new Date(item.openAt).getTime() > Date.now() + 120_000);
+  const unpriced = enabled.filter((item) => item.action !== "watch" && item.variants.some((variant) => (
+    variant.enabled !== false && Number(variant.maxPrice) <= 0
+  )));
+  const missed = enabled.filter((item) => item.openAt && new Date(item.openAt).getTime() < Date.now() - 120_000);
+  const blocked = enabled.filter((item) => item.variants.some((variant) => (
+    variant.enabled !== false && BLOCKING_REASONS.has(statuses[variant.id]?.reason)
+  )));
+  const hardIssues = [];
+  const warnings = [];
+  if (!items.length) hardIssues.push("Add at least one item.");
+  else if (!enabled.length) hardIssues.push("Turn on at least one item.");
+  if (unpriced.length) hardIssues.push(`${unpriced.length} purchase item${unpriced.length === 1 ? " needs" : "s need"} a cap at every selected store.`);
+  if (missed.length) hardIssues.push(`${missed.length} item${missed.length === 1 ? " has" : "s have"} a missed schedule.`);
+  if (status.companion !== "connected") warnings.push("Chrome is not connected yet; starting will open one safe item page to connect it.");
+  if (blocked.length) warnings.push(`${blocked.length} item${blocked.length === 1 ? " currently has" : "s currently have"} a blocking store status; unaffected items can continue.`);
+  const exposure = missionMaximumExposure(settings.products);
+  return { items, enabled, due, scheduled, unpriced, missed, blocked, hardIssues, warnings, exposure };
+}
+
+function closeRunReview() {
+  if (typeof elements.runReviewDialog.close === "function") elements.runReviewDialog.close();
+  else elements.runReviewDialog.removeAttribute("open");
+}
+
+function openRunReview() {
+  const model = runReviewModel();
+  const routes = model.enabled.reduce((count, item) => count + item.variants.filter((variant) => variant.enabled !== false).length, 0);
+  elements.runReviewSummary.textContent = model.enabled.length
+    ? `${model.enabled.length} item${model.enabled.length === 1 ? "" : "s"} will run across ${routes} selected store option${routes === 1 ? "" : "s"}. ${model.due.length} ${model.due.length === 1 ? "is" : "are"} due now; ${model.scheduled.length} will wait for the schedule.`
+    : "Nothing is ready to run yet.";
+  const metrics = [
+    ["Items on", `${model.enabled.length} / ${model.items.length}`],
+    ["Due now", String(model.due.length)],
+    ["Auto-buy", String(model.exposure.autoBuyCount)],
+    ["Maximum exposure", compactMissionPrice(model.exposure.total)]
+  ];
+  elements.runReviewMetrics.replaceChildren(...metrics.map(([label, value]) => {
+    const node = document.createElement("div");
+    const name = document.createElement("span");
+    name.textContent = label;
+    const strong = document.createElement("strong");
+    strong.textContent = value;
+    node.append(name, strong);
+    return node;
+  }));
+  const issueEntries = [
+    ...model.hardIssues.map((text) => ({ text, hard: true })),
+    ...model.warnings.map((text) => ({ text, hard: false }))
+  ];
+  elements.runReviewIssues.replaceChildren(...(issueEntries.length ? issueEntries : [{ text: "No run blockers found.", hard: false }]).map((issue) => {
+    const row = document.createElement("li");
+    row.className = issue.hard ? "hard" : "";
+    row.textContent = issue.text;
+    return row;
+  }));
+  elements.runReviewMonitorButton.disabled = model.enabled.length === 0 || openRunInFlight || isArmed();
+  elements.runReviewMonitorButton.textContent = isArmed() ? "Stop Autopilot before monitoring only" : "Start monitoring only";
+  elements.runReviewAutopilotButton.disabled = model.hardIssues.length > 0 || openRunInFlight || isArmed();
+  elements.runReviewAutopilotButton.textContent = isArmed() ? "Autopilot already active" : "Start Autopilot";
+  if (typeof elements.runReviewDialog.showModal === "function") elements.runReviewDialog.showModal();
+  else elements.runReviewDialog.setAttribute("open", "");
 }
 
 // --- Companion connection card ---
@@ -2514,7 +3194,7 @@ function companionStepState() {
     return {
       done: false,
       label: "Waiting for Chrome",
-      hint: "Nothing from Chrome has reached this app yet. Starting Autopilot or choosing Monitor only opens a mission page in Chrome and waits for the companion automatically. If that connection fails, confirm the extension was loaded once from the folder shown by “Show companion folder”; its badge explains the problem: IDLE/ARM = connected · OFF = desktop unreachable · UPD = reload needed · PAIR = pairing issue."
+      hint: "Nothing from Chrome has reached this app yet. Starting Autopilot or choosing Monitor only opens one item page in Chrome and waits for the companion automatically. If that connection fails, confirm the extension was loaded once from the folder shown by “Show companion folder”; its badge explains the problem: IDLE/ARM = connected · OFF = desktop unreachable · UPD = reload needed · PAIR = pairing issue."
     };
   }
   if (hello.reason === "version-mismatch") {
@@ -2534,18 +3214,18 @@ function companionStepState() {
   return {
     done: false,
     label: "Open a store tab",
-    hint: "Extension loaded ✓. Starting Autopilot or choosing Monitor only will open a Target, Walmart, or Amazon mission page and finish this connection automatically."
+    hint: "Extension loaded ✓. Starting Autopilot or choosing Monitor only will open a Target, Walmart, or Amazon item page and finish this connection automatically."
   };
 }
 
 // --- Schedule agenda ---
 
 function scheduledProducts(includeDisabled = false) {
-  return savedProducts()
-    .filter((product) => product.openAt && (includeDisabled || product.enabled))
-    .map((product) => ({ ...product, openAtMs: new Date(product.openAt).getTime() }))
-    .filter((product) => Number.isFinite(product.openAtMs))
-    .sort((a, b) => a.openAtMs - b.openAtMs);
+  return savedItems()
+    .filter((item) => item.openAt && (includeDisabled || item.enabled))
+    .map((item) => ({ ...item, openAtMs: new Date(item.openAt).getTime() }))
+    .filter((item) => Number.isFinite(item.openAtMs))
+    .sort((left, right) => left.openAtMs - right.openAtMs);
 }
 
 function formatRemaining(ms) {
@@ -2570,8 +3250,8 @@ function updateScheduleNext() {
   const item = items[0];
   const remaining = item.openAtMs - Date.now();
   elements.scheduleNext.textContent = remaining <= 0
-    ? `${productLabel(item)}: opening now`
-    : `Next: ${productLabel(item)} in ${formatRemaining(remaining)}`;
+    ? `${itemLabel(item)}: scheduled time passed`
+    : `Next: ${itemLabel(item)} in ${formatRemaining(remaining)}`;
 }
 
 function renderSchedule() {
@@ -2581,45 +3261,58 @@ function renderSchedule() {
   const enabledCount = items.filter((item) => item.enabled).length;
   elements.scheduleCoverage.textContent = `${enabledCount}/${items.length} enabled`;
   elements.enableScheduledButton.hidden = enabledCount === items.length;
-  const dayStart = new Date();
-  dayStart.setHours(0, 0, 0, 0);
-  const weekStart = dayStart.getTime();
-  const cells = [];
-  for (let dayOffset = 0; dayOffset < 7; dayOffset += 1) {
-    const start = weekStart + dayOffset * 86_400_000;
-    const end = start + 86_400_000;
-    const cell = document.createElement("div");
-    cell.className = dayOffset === 0 ? "schedule-day today" : "schedule-day";
-    const head = document.createElement("span");
-    head.className = "day-head";
-    head.textContent = new Date(start).toLocaleDateString([], { weekday: "short", day: "numeric" });
-    cell.append(head);
-    for (const item of items.filter((candidate) => candidate.openAtMs >= start && candidate.openAtMs < end)) {
-      const chip = document.createElement("span");
-      chip.className = item.enabled ? "schedule-chip" : "schedule-chip off";
-      chip.dataset.retailer = item.retailer;
-      chip.textContent = `${new Date(item.openAtMs).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })} · ${productLabel(item)}`;
-      chip.title = `${STORE_LABELS[item.retailer]} · ${productLabel(item)} — click to ${item.enabled ? "disable" : "enable"}`;
-      chip.addEventListener("click", () => {
-        void runAction(
-          () => setMissionsEnabled(new Map([[item.id, !item.enabled]])),
-          `${productLabel(item)} ${item.enabled ? "disabled" : "enabled"}.`
-        );
-      });
-      cell.append(chip);
+  const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || "local time";
+  elements.scheduleTimezone.textContent = timezone;
+  const missedCount = items.filter((item) => item.openAtMs < Date.now() - 120_000).length;
+  elements.clearMissedSchedulesButton.hidden = missedCount === 0;
+  elements.clearMissedSchedulesButton.textContent = `Clear ${missedCount} missed`;
+
+  const cohorts = new Map();
+  for (const item of items) {
+    const key = new Date(item.openAtMs).toISOString();
+    if (!cohorts.has(key)) cohorts.set(key, []);
+    cohorts.get(key).push(item);
+  }
+  const rows = [...cohorts.entries()].map(([key, cohortItems]) => {
+    const time = new Date(key);
+    const missed = time.getTime() < Date.now() - 120_000;
+    const row = document.createElement("section");
+    row.className = `schedule-agenda-row${missed ? " missed" : ""}`;
+    const when = document.createElement("div");
+    when.className = "schedule-agenda-when";
+    const date = document.createElement("strong");
+    date.textContent = time.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" });
+    const clock = document.createElement("span");
+    clock.textContent = time.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    const state = document.createElement("small");
+    state.textContent = missed ? "Missed — update or clear" : cohortItems.length > 1 ? `${cohortItems.length} items at once` : "1 item";
+    when.append(date, clock, state);
+    const list = document.createElement("div");
+    list.className = "schedule-agenda-items";
+    for (const item of cohortItems) {
+      const entry = document.createElement("div");
+      entry.className = `schedule-agenda-item${item.enabled ? "" : " off"}`;
+      const toggle = document.createElement("input");
+      toggle.type = "checkbox";
+      toggle.checked = item.enabled;
+      toggle.setAttribute("aria-label", `Turn ${itemLabel(item)} ${item.enabled ? "off" : "on"}`);
+      toggle.addEventListener("change", () => void runAction(
+        () => setMissionsEnabled(new Map([[item.id, toggle.checked]])),
+        `${itemLabel(item)} turned ${toggle.checked ? "On" : "Off"}.`
+      ));
+      const details = document.createElement("button");
+      details.type = "button";
+      details.className = "schedule-agenda-item-details";
+      details.textContent = itemLabel(item);
+      details.title = `${item.variants.map((variant) => STORE_LABELS[variant.retailer]).join(" + ")} · edit schedule`;
+      details.addEventListener("click", () => void startEdit(item));
+      entry.append(toggle, details);
+      list.append(entry);
     }
-    cells.push(cell);
-  }
-  const later = items.filter((item) => item.openAtMs >= weekStart + 7 * 86_400_000);
-  if (later.length) {
-    const div = document.createElement("div");
-    div.className = "schedule-later";
-    div.textContent = `Later: ${later.map((item) => (
-      `${productLabel(item)} — ${new Date(item.openAtMs).toLocaleString([], { dateStyle: "medium", timeStyle: "short" })}`
-    )).join(" · ")}`;
-    cells.push(div);
-  }
-  elements.scheduleWeek.replaceChildren(...cells);
+    row.append(when, list);
+    return row;
+  });
+  elements.scheduleWeek.replaceChildren(...rows);
   updateScheduleNext();
 }
 
@@ -2696,12 +3389,12 @@ function renderEvents(allEvents) {
     : allEvents;
   elements.eventFilterButton.hidden = !eventFilterProductId;
   if (eventFilterProductId) {
-    elements.eventFilterButton.textContent = `Showing ${productTitle(eventFilterProductId) || "one mission"} — show all`;
+    elements.eventFilterButton.textContent = `Showing ${productTitle(eventFilterProductId) || "one item"} — show all`;
   }
   if (!events.length) {
     const empty = document.createElement("div");
     empty.className = "empty-state";
-    empty.textContent = eventFilterProductId ? "No activity for this mission yet." : "No activity yet.";
+    empty.textContent = eventFilterProductId ? "No activity for this item yet." : "No activity yet.";
     elements.eventList.replaceChildren(empty);
     return;
   }
@@ -2880,13 +3573,13 @@ function buildSignalCard(signal) {
       : ["review", "checkout"].includes(desiredProduct?.action);
     button.disabled = !directAllowed || !sellerAllowed || !actionAllowed;
     button.title = button.disabled
-      ? "Direct entry requires a desired mission, Autopilot ON, a signal under two minutes old and under its cap, plus Amazon.com seller proof for Amazon."
+      ? "Direct entry requires a desired item/store match, Autopilot ON, a signal under two minutes old and under its cap, plus Amazon.com seller proof for Amazon."
       : "Uses the sanitized exact-SKU link; the browser still re-verifies every purchase condition.";
     button.addEventListener("click", () => void runAction(
       () => window.cartAssist.openSignal(signal.id, entry),
       (result) => result?.directFallback
         ? "Browser context was unavailable, so the canonical product page opened safely instead."
-        : `${label} opened with durable mission context.`
+        : `${label} opened with durable item/store context.`
     ));
     actions.append(button);
   }
@@ -2997,6 +3690,16 @@ function render(snapshot) {
   const paused = Boolean(settings.monitoringPaused);
   elements.autopilotToggle.classList.toggle("on", armed);
   elements.autopilotState.textContent = armed ? "ON" : paused ? "STOPPED" : "OFF";
+  elements.runStateBanner.dataset.mode = armed ? "autopilot" : paused ? "stopped" : "monitor";
+  elements.runStateTitle.textContent = armed ? "Autopilot active" : paused ? "Stopped" : "Monitoring only";
+  elements.runStateDetail.textContent = armed
+    ? "Purchase actions are enabled. Item-level locks ensure only the first successful selected store can secure each item."
+    : paused
+      ? "Monitoring is paused, queued openings are cancelled, and purchase actions are off. Your plan and schedule remain saved."
+      : "Store pages may keep checking and alerting, but nothing can be added or purchased.";
+  elements.testButton.textContent = paused ? "Start monitoring" : "Refresh monitoring";
+  elements.disarmButton.textContent = armed || !paused ? "Stop" : "Stopped";
+  elements.disarmButton.disabled = paused && !armed;
 
   populateSettingsInputs(settings);
   renderConfigurationProfiles(settings);
@@ -3019,11 +3722,25 @@ function render(snapshot) {
 
 elements.autopilotToggle.addEventListener("click", async () => {
   if (openRunInFlight) return;
+  if (!currentSnapshot?.settings?.automationEnabled && !runReviewApproved) {
+    if (editingId) {
+      setMessage("Finish the open item editor first (Done or Cancel).", "error");
+      return;
+    }
+    if (planEditMode) {
+      setMessage("Choose Finish editing before starting Autopilot.", "error");
+      return;
+    }
+    openRunReview();
+    return;
+  }
   setMissionOpenBusy(true);
   try {
     await runAction(async () => {
       if (!currentSnapshot) throw new Error("Settings have not loaded yet.");
-      if (editingId) throw new Error("Finish the open mission editor first (Done or Cancel).");
+      const approvedFromReview = runReviewApproved;
+      runReviewApproved = false;
+      if (editingId) throw new Error("Finish the open item editor first (Done or Cancel).");
       if (planEditMode) throw new Error("Choose Finish editing before starting Autopilot.");
       const saved = currentSnapshot.settings;
       if (saved.automationEnabled) {
@@ -3034,13 +3751,14 @@ elements.autopilotToggle.addEventListener("click", async () => {
       const autoSubmit = autoSubmitArmingSummary(saved);
       if (
         autoSubmit.count > 0
-        && !window.confirm(`${autoSubmit.count} enabled mission${autoSubmit.count === 1 ? "" : "s"} may submit a real order.${liveVerificationWarning(autoSubmit.liveVerificationCount)} Re-arming starts a new run. If the companion is disconnected, one mission page opens first to connect Chrome automatically. Every remaining eligible, tabless Target and Walmart mission gets its own randomized 45–90 second public-page check and opens Chrome after a likely stock signal; Amazon must open now. Scheduled missions wait for their exact time. Verify retailer order history first. "Prepare checkout, I submit" is safer. Switch Autopilot on anyway?`)
+        && !approvedFromReview
+        && !window.confirm(`${autoSubmit.count} enabled store option${autoSubmit.count === 1 ? "" : "s"} may submit a real order.${liveVerificationWarning(autoSubmit.liveVerificationCount)} Re-arming starts a new run. If the companion is disconnected, one item page opens first to connect Chrome automatically. Every remaining eligible, tabless Target and Walmart store option gets its own randomized 45–90 second public-page check and opens Chrome after a likely stock signal; Amazon must open now. Scheduled items wait for their exact time. Verify retailer order history first. "Prepare checkout, I submit" is safer. Switch Autopilot on anyway?`)
       ) {
         throw new Error("Autopilot was not switched on.");
       }
       const next = await window.cartAssist.saveSettings({ ...saved, automationEnabled: true });
       render(next);
-      setMessage("Autopilot ON. Connecting the Chrome companion automatically, then starting every due mission…");
+      setMessage("Autopilot ON. Connecting the Chrome companion automatically, then starting every due item…");
       try {
         const launch = await window.cartAssist.openBuyList({ backgroundFirst: true });
         return { armed: true, ...launch };
@@ -3062,14 +3780,14 @@ elements.autopilotToggle.addEventListener("click", async () => {
       const parts = ["Autopilot ON"];
       if (result.connectionOpened) {
         parts.push(result.connectionProductId
-          ? "Chrome companion connected automatically on one mission page"
+          ? "Chrome companion connected automatically on one item page"
           : "Chrome companion connected automatically");
       }
       if (background) {
         parts.push(`${background} Target/Walmart watcher${background === 1 ? "" : "s"} armed background-first`);
       }
-      if (count) parts.push(`${count} browser-required mission page${count === 1 ? "" : "s"} opened`);
-      if (!background && !count && !scheduled && !prepMonitoring) parts.push("no due missions needed a browser page");
+      if (count) parts.push(`${count} browser-required store page${count === 1 ? "" : "s"} opened`);
+      if (!background && !count && !scheduled && !prepMonitoring) parts.push("no due items needed a browser page");
       if (result.reused) parts.push(`${result.reused} reused an existing Chrome tab`);
       if (result.deduped) parts.push(`${result.deduped} already queued`);
       if (scheduled) parts.push(`${scheduled} waiting for ${scheduled === 1 ? "its" : "their"} calendar time`);
@@ -3080,7 +3798,7 @@ elements.autopilotToggle.addEventListener("click", async () => {
       const watcherNote = background
         ? " Every eligible quiet watcher is checked independently on a randomized 45–90 second target and opens in Chrome after a likely stock signal."
         : "";
-      return `${parts.join(", ")}.${watcherNote} Every open mission performs authoritative browser validation before its configured action. Review missions remain on checkout review; a successful auto-submit remains on Target's confirmation page.${browserNote}`;
+      return `${parts.join(", ")}.${watcherNote} Every open store option performs authoritative browser validation before its configured action. Review items remain on checkout review; a successful auto-submit remains on Target's confirmation page.${browserNote}`;
     });
   } finally {
     setMissionOpenBusy(false);
@@ -3091,6 +3809,8 @@ elements.disarmButton.addEventListener("click", () => {
   stopUiEpoch += 1;
   resumeAutopilotAfterPlanEdit = false;
   planEditMode = false;
+  planEditBaseline = null;
+  planEditUndoStack = [];
   bulkMissionSelectedIds.clear();
   clearTimeout(settingsSaveTimer);
   settingsSaveTimer = null;
@@ -3107,6 +3827,11 @@ elements.planEditButton.addEventListener("click", () => {
   if (planEditMode) void finishPlanEditSession();
   else void beginPlanEditSession();
 });
+elements.planUndoButton.addEventListener("click", () => void runAction(
+  undoPlanChange,
+  "Last plan change undone."
+));
+elements.planRevertButton.addEventListener("click", () => void revertPlanChanges());
 elements.catalogLauncherButton.addEventListener("click", async () => {
   if (isArmed() && !await beginPlanEditSession()) return;
   const panel = document.getElementById("catalogPanel");
@@ -3116,32 +3841,63 @@ elements.catalogLauncherButton.addEventListener("click", async () => {
   setTimeout(() => elements.catalogQuery.focus(), 250);
 });
 elements.readinessReviewButton.addEventListener("click", () => {
+  if (!lastReadinessIssueItemIds.size && runReviewModel().hardIssues.length === 0) {
+    openRunReview();
+    return;
+  }
   const panel = document.getElementById("missionsPanel");
   const toggle = panel?.querySelector(".panel-toggle");
   if (toggle) setPanelExpanded(toggle, true);
   clearMissionFilters();
+  if (lastReadinessIssueItemIds.size) {
+    elements.missionActiveFilter.value = "problem";
+    renderMissions();
+  }
   panel?.scrollIntoView?.({ behavior: "smooth", block: "start" });
+});
+elements.runReviewOpenButton.addEventListener("click", openRunReview);
+elements.runReviewCloseButton.addEventListener("click", closeRunReview);
+elements.runReviewMonitorButton.addEventListener("click", () => {
+  closeRunReview();
+  elements.testButton.click();
+});
+elements.runReviewAutopilotButton.addEventListener("click", () => {
+  runReviewApproved = true;
+  closeRunReview();
+  elements.autopilotToggle.click();
+});
+elements.testConnectionButton.addEventListener("click", () => {
+  elements.testButton.click();
 });
 elements.newMissionButton.addEventListener("click", () => void startEdit(null));
 elements.newMissionGroupButton.addEventListener("click", () => {
-  const requested = window.prompt("Name this mission group", "New group");
+  const requested = window.prompt("Name this item group", "New group");
   if (requested === null) return;
   void runAction(async () => {
     if (savedMissionGroups().length >= MAX_MISSION_GROUPS) {
-      throw new Error(`You can save up to ${MAX_MISSION_GROUPS} mission groups.`);
+      throw new Error(`You can save up to ${MAX_MISSION_GROUPS} item groups.`);
     }
     const name = requested.replace(/\s+/g, " ").trim().slice(0, 40);
     if (!name) throw new Error("Enter a group name.");
     const group = { id: newCustomId("group"), name, collapsed: false };
     await saveMissionList(savedProducts(), { missionGroups: [...savedMissionGroups(), group] });
     return group;
-  }, (group) => `${group.name} group created. Assign missions from an individual edit or the plan tools.`);
+  }, (group) => `${group.name} group created. Assign items from an individual edit or the plan tools.`);
 });
-elements.missionSearch.addEventListener("input", renderMissions);
-elements.missionGroupFilter.addEventListener("change", renderMissions);
-elements.missionRetailerFilter.addEventListener("change", renderMissions);
-elements.missionActiveFilter.addEventListener("change", renderMissions);
+const resetMissionPageAndRender = () => {
+  missionVisibleLimit = 25;
+  renderMissions();
+};
+elements.missionSearch.addEventListener("input", resetMissionPageAndRender);
+elements.missionGroupFilter.addEventListener("change", resetMissionPageAndRender);
+elements.missionRetailerFilter.addEventListener("change", resetMissionPageAndRender);
+elements.missionActiveFilter.addEventListener("change", resetMissionPageAndRender);
 elements.bulkImportButton.addEventListener("click", () => void openBulkImportDialog());
+elements.bulkImportText.addEventListener("input", () => {
+  if (elements.bulkImportText.value.trim() === bulkImportPreviewText) return;
+  bulkImportPreviewText = "";
+  elements.bulkImportSubmitButton.textContent = "Preview import";
+});
 elements.bulkImportSubmitButton.addEventListener("click", () => void submitBulkImport());
 elements.bulkImportCancelButton.addEventListener("click", closeBulkImportDialog);
 elements.bulkImportDialog.addEventListener("cancel", (event) => {
@@ -3240,7 +3996,7 @@ elements.itemProfileForm.addEventListener("submit", (event) => {
     const profile = ItemDefaults.normalizeCustomItemProfile({
       id: editingItemProfileId || newCustomId("custom"),
       name,
-      description: "Custom reusable mission defaults.",
+      description: "Custom reusable item defaults.",
       settings: {
         quantity: elements.itemProfileQuantity.value,
         action: elements.itemProfileAction.value,
@@ -3265,8 +4021,9 @@ elements.itemProfileForm.addEventListener("submit", (event) => {
       ? currentSnapshot.settings.products.filter((product) => product.itemProfileId === profile.id)
       : [];
     const updateLinked = linkedProducts.length > 0 && window.confirm(
-      `${linkedProducts.length} mission${linkedProducts.length === 1 ? " uses" : "s use"} this profile. Apply the updated quantity, action, fulfillment, alerts, and approved MSRP caps to ${linkedProducts.length === 1 ? "it" : "them"} now?`
+      `${linkedProducts.length} store option${linkedProducts.length === 1 ? " uses" : "s use"} this template. Apply the updated quantity, action, fulfillment, alerts, and approved MSRP caps to ${linkedProducts.length === 1 ? "it" : "them"} now?`
     );
+    const before = updateLinked && planEditMode ? capturePlanSnapshot() : null;
     const products = updateLinked
       ? currentSnapshot.settings.products.map((product) => (
           product.itemProfileId === profile.id
@@ -3288,10 +4045,11 @@ elements.itemProfileForm.addEventListener("submit", (event) => {
       products
     });
     render(next);
+    recordPlanChange(before);
     fillItemProfileForm(profile);
     renderItemProfilePickers(next.settings);
     return { name: profile.name, updated: updateLinked ? linkedProducts.length : 0 };
-  }, ({ name, updated }) => `${name} item profile saved.${updated ? ` ${updated} linked mission${updated === 1 ? " was" : "s were"} updated in the same change.` : ""}`);
+  }, ({ name, updated }) => `${name} item template saved.${updated ? ` ${updated} linked store option${updated === 1 ? " was" : "s were"} updated in the same change.` : ""}`);
 });
 
 elements.itemProfileResetButton.addEventListener("click", () => {
@@ -3375,7 +4133,7 @@ elements.msrpResearchEnabled.addEventListener("change", () => void runAction(asy
 }, (enabled) => enabled ? "Monthly cited MSRP research enabled." : "Monthly MSRP research disabled."));
 
 elements.bulkMissionSelectAllButton.addEventListener("click", () => {
-  for (const product of filteredMissionProducts()) bulkMissionSelectedIds.add(product.id);
+  for (const item of filteredMissionProducts()) bulkMissionSelectedIds.add(item.id);
   renderMissions();
 });
 elements.bulkMissionSelectNoneButton.addEventListener("click", () => {
@@ -3384,22 +4142,33 @@ elements.bulkMissionSelectNoneButton.addEventListener("click", () => {
 });
 elements.bulkEnableMissionsButton.addEventListener("click", () => void runAction(
   () => setMissionsEnabled(new Map([...bulkMissionSelectedIds].map((id) => [id, true]))),
-  `${bulkMissionSelectedIds.size} selected mission${bulkMissionSelectedIds.size === 1 ? "" : "s"} turned On.`
+  `${bulkMissionSelectedIds.size} selected item${bulkMissionSelectedIds.size === 1 ? "" : "s"} turned On.`
 ));
 elements.bulkDisableMissionsButton.addEventListener("click", () => void runAction(
   () => setMissionsEnabled(new Map([...bulkMissionSelectedIds].map((id) => [id, false]))),
-  `${bulkMissionSelectedIds.size} selected mission${bulkMissionSelectedIds.size === 1 ? "" : "s"} turned Off.`
+  `${bulkMissionSelectedIds.size} selected item${bulkMissionSelectedIds.size === 1 ? "" : "s"} turned Off.`
 ));
 elements.copySelectedMissionListButton.addEventListener("click", () => void runAction(
-  () => window.cartAssist.copyMissionList([...bulkMissionSelectedIds]),
-  ({ count }) => `${count} selected mission${count === 1 ? "" : "s"} copied as a consolidated list.`
+  () => window.cartAssist.copyMissionList(selectedRouteIds()),
+  ({ count }) => `${bulkMissionSelectedIds.size} selected item${bulkMissionSelectedIds.size === 1 ? "" : "s"} (${count} store route${count === 1 ? "" : "s"}) copied as a consolidated list.`
 ));
+elements.combineSelectedItemsButton.addEventListener("click", () => void runAction(async () => {
+  if (isArmed()) throw new Error("Stop Autopilot before combining items.");
+  const selected = [...bulkMissionSelectedIds];
+  const products = ItemMissions.combineItems(savedProducts(), selected);
+  const combinedItemId = ItemMissions.itemIdForProduct(products.find((product) => selected.includes(ItemMissions.itemIdForProduct(product))) || {});
+  await saveMissionList(products);
+  bulkMissionSelectedIds.clear();
+  if (combinedItemId) bulkMissionSelectedIds.add(combinedItemId);
+  renderMissions();
+  return selected.length;
+}, (count) => `${count} store-specific entries combined into one item. Its stores now act as alternatives, and the first successful store stops the others.`));
 elements.applyBulkItemProfileButton.addEventListener("click", () => void runAction(async () => {
-  if (isArmed()) throw new Error("Switch Autopilot off before bulk updating missions.");
+  if (isArmed()) throw new Error("Switch Autopilot off before bulk updating items.");
   const profile = ItemDefaults.itemProfileById(elements.bulkItemProfile.value, currentSnapshot.settings.itemProfiles);
   if (!profile) throw new Error("Choose an item profile.");
   const products = savedProducts().map((product) => (
-    bulkMissionSelectedIds.has(product.id)
+    bulkMissionSelectedIds.has(ItemMissions.itemIdForProduct(product))
       ? ItemDefaults.applyItemProfile(
           product,
           profile,
@@ -3411,32 +4180,30 @@ elements.applyBulkItemProfileButton.addEventListener("click", () => void runActi
         )
       : product
   ));
-  const ready = products.filter((product) => bulkMissionSelectedIds.has(product.id) && product.enabled).length;
-  const next = await window.cartAssist.saveSettings({ ...currentSnapshot.settings, products });
-  render(next);
+  const ready = savedItems(products).filter((item) => bulkMissionSelectedIds.has(item.id) && item.enabled).length;
+  await saveMissionList(products);
   return { selected: bulkMissionSelectedIds.size, ready };
-}, ({ selected, ready }) => `${selected} mission${selected === 1 ? "" : "s"} updated; ${ready} now On with positive caps.`));
+}, ({ selected, ready }) => `${selected} item${selected === 1 ? "" : "s"} updated; ${ready} now On with positive caps.`));
 
 elements.applyBulkMissionGroupButton.addEventListener("click", () => void runAction(async () => {
-  if (!bulkMissionSelectedIds.size) throw new Error("Select at least one mission first.");
+  if (!bulkMissionSelectedIds.size) throw new Error("Select at least one item first.");
   const groupId = elements.bulkMissionGroup.value;
   if (groupId && !savedMissionGroups().some((group) => group.id === groupId)) {
-    throw new Error("Choose an existing mission group.");
+    throw new Error("Choose an existing item group.");
   }
   const products = savedProducts().map((product) => (
-    bulkMissionSelectedIds.has(product.id) ? { ...product, groupId } : product
+    bulkMissionSelectedIds.has(ItemMissions.itemIdForProduct(product)) ? { ...product, groupId } : product
   ));
-  const next = await window.cartAssist.saveSettings({ ...currentSnapshot.settings, products });
-  render(next);
+  await saveMissionList(products);
   return { count: bulkMissionSelectedIds.size, groupId };
 }, ({ count, groupId }) => {
   const group = savedMissionGroups().find((candidate) => candidate.id === groupId);
-  return `${count} selected mission${count === 1 ? "" : "s"} moved to ${group?.name || "Ungrouped"}.`;
+  return `${count} selected item${count === 1 ? "" : "s"} moved to ${group?.name || "Ungrouped"}.`;
 }));
 
 elements.scheduleCandidateMissionsButton.addEventListener("click", () => void runAction(async () => {
-  if (isArmed()) throw new Error("Switch Autopilot off before scheduling missions.");
-  if (!bulkMissionSelectedIds.size) throw new Error("Select at least one mission first.");
+  if (isArmed()) throw new Error("Switch Autopilot off before scheduling items.");
+  if (!bulkMissionSelectedIds.size) throw new Error("Select at least one item first.");
   if (!elements.bulkMissionOpenAt.checkValidity() || !elements.bulkMissionOpenAt.value) {
     elements.bulkMissionOpenAt.reportValidity();
     throw new Error("Choose a future candidate opening time.");
@@ -3448,30 +4215,24 @@ elements.scheduleCandidateMissionsButton.addEventListener("click", () => void ru
   const profile = ConfigProfiles.BUILT_IN_PROFILES.find((candidate) => candidate.id === "built-in:candidate-drop");
   if (!profile) throw new Error("The Midnight candidates setup is unavailable.");
   const products = savedProducts().map((product) => (
-    bulkMissionSelectedIds.has(product.id) ? { ...product, openAt: openAt.toISOString() } : product
+    bulkMissionSelectedIds.has(ItemMissions.itemIdForProduct(product)) ? { ...product, openAt: openAt.toISOString() } : product
   ));
   selectedConfigurationProfileId = profile.id;
-  const next = await window.cartAssist.saveSettings({
-    ...currentSnapshot.settings,
-    ...profile.configuration,
-    products
-  });
-  render(next);
+  await saveMissionList(products, profile.configuration);
   return { count: bulkMissionSelectedIds.size, openAt: openAt.toISOString() };
 }, ({ count, openAt }) => (
-  `${count} candidate mission${count === 1 ? "" : "s"} scheduled for ${new Date(openAt).toLocaleString()}; the bounded 15-minute candidate setup is active.`
+  `${count} candidate item${count === 1 ? "" : "s"} scheduled for ${new Date(openAt).toLocaleString()}; the bounded 15-minute candidate setup is active.`
 )));
 
 elements.clearSelectedMissionSchedulesButton.addEventListener("click", () => void runAction(async () => {
   if (isArmed()) throw new Error("Switch Autopilot off before clearing schedules.");
   const products = savedProducts().map((product) => (
-    bulkMissionSelectedIds.has(product.id) ? { ...product, openAt: "" } : product
+    bulkMissionSelectedIds.has(ItemMissions.itemIdForProduct(product)) ? { ...product, openAt: "" } : product
   ));
-  const cleared = savedProducts().filter((product) => bulkMissionSelectedIds.has(product.id) && product.openAt).length;
-  const next = await window.cartAssist.saveSettings({ ...currentSnapshot.settings, products });
-  render(next);
+  const cleared = savedItems().filter((item) => bulkMissionSelectedIds.has(item.id) && item.openAt).length;
+  await saveMissionList(products);
   return cleared;
-}, (cleared) => `${cleared} selected mission schedule${cleared === 1 ? "" : "s"} cleared.`));
+}, (cleared) => `${cleared} selected item schedule${cleared === 1 ? "" : "s"} cleared.`));
 
 elements.showDiscordButton.addEventListener("click", () => {
   elements.discordLauncher.hidden = true;
@@ -3543,32 +4304,34 @@ elements.missionList.addEventListener("drop", (event) => {
   const sourceId = event.dataTransfer.getData("text/plain");
   if (!sourceId || editingId) return;
   const products = [...savedProducts()];
-  const from = products.findIndex((candidate) => candidate.id === sourceId);
+  const items = savedItems(products);
+  const from = items.findIndex((candidate) => candidate.id === sourceId);
   if (from === -1) return;
   const targetCard = event.target instanceof Element ? event.target.closest(".mission-card") : null;
-  const targetId = targetCard?.dataset.productId || "";
+  const targetId = targetCard?.dataset.itemId || "";
   if (targetId === sourceId) return;
   const targetSection = event.target instanceof Element ? event.target.closest(".mission-group") : null;
-  const targetProduct = products.find((candidate) => candidate.id === targetId);
-  const destinationGroupId = targetProduct?.groupId ?? targetSection?.dataset.groupId;
-  const [source] = products.splice(from, 1);
+  const targetItem = items.find((candidate) => candidate.id === targetId);
+  const destinationGroupId = targetItem?.groupId ?? targetSection?.dataset.groupId;
+  const [source] = items.splice(from, 1);
   const moved = destinationGroupId === undefined
     ? source
-    : { ...source, groupId: destinationGroupId };
-  let to = products.length;
+    : { ...source, groupId: destinationGroupId, variants: source.variants.map((variant) => ({ ...variant, groupId: destinationGroupId })) };
+  let to = items.length;
   if (targetId) {
-    const targetIndex = products.findIndex((candidate) => candidate.id === targetId);
+    const targetIndex = items.findIndex((candidate) => candidate.id === targetId);
     if (targetIndex !== -1) to = targetIndex;
   } else if (destinationGroupId !== undefined) {
-    const lastGroupIndex = products.findLastIndex((candidate) => (
+    const lastGroupIndex = items.findLastIndex((candidate) => (
       (candidate.groupId || "") === destinationGroupId
     ));
     if (lastGroupIndex !== -1) to = lastGroupIndex + 1;
   }
-  products.splice(to, 0, moved);
-  void runAction(() => saveMissionList(products), destinationGroupId !== undefined && destinationGroupId !== source.groupId
-    ? "Mission moved to its new group."
-    : "Missions reordered.");
+  items.splice(to, 0, moved);
+  const reordered = items.flatMap((item) => item.variants);
+  void runAction(() => saveMissionList(reordered), destinationGroupId !== undefined && destinationGroupId !== source.groupId
+    ? "Item moved to its new group."
+    : "Items reordered.");
 });
 
 function setMissionOpenBusy(busy) {
@@ -3582,16 +4345,16 @@ function setMissionOpenBusy(busy) {
 elements.testButton.addEventListener("click", async () => {
   if (openRunInFlight) return;
   setMissionOpenBusy(true);
-  setMessage("Connecting the Chrome companion automatically, then checking every due enabled mission…");
+  setMessage("Connecting the Chrome companion automatically, then checking every due enabled item…");
   try {
     await runAction(async () => {
       if (isArmed()) {
-        throw new Error("Switch Autopilot off before Monitor only — it opens mission pages without buying anything.");
+        throw new Error("Switch Autopilot off before Monitor only — it opens item pages without buying anything.");
       }
       return window.cartAssist.testEvent();
     }, (result) => {
       const count = Number(result?.count || 0);
-      const parts = [`Monitor-only check started for ${count} enabled mission${count === 1 ? "" : "s"}`];
+      const parts = [`Monitor-only check started for ${count} enabled store option${count === 1 ? "" : "s"}`];
       if (result?.connectionOpened) parts.push("Chrome companion connected automatically");
       if (result?.reused) parts.push(`${result.reused} reused an existing Chrome tab`);
       if (result?.deduped) parts.push(`${result.deduped} already queued`);
@@ -3610,16 +4373,16 @@ elements.openAllButton.addEventListener("click", async () => {
   if (openRunInFlight) return;
   const actionStopEpoch = stopUiEpoch;
   setMissionOpenBusy(true);
-  setMessage("Opening due enabled missions… multiple opens are paced to respect store limits.");
+  setMessage("Opening due enabled items… multiple store pages are paced to respect store limits.");
   try {
     const result = await window.cartAssist.openBuyList();
     if (actionStopEpoch !== stopUiEpoch) return;
-    const parts = [`${result.count} mission page${result.count === 1 ? "" : "s"} opened`];
+    const parts = [`${result.count} store page${result.count === 1 ? "" : "s"} opened`];
     if (result.reused) parts.push(`${result.reused} reused an existing Chrome tab`);
     if (result.deduped) parts.push(`${result.deduped} already queued`);
     if (result.scheduled) parts.push(`${result.scheduled} waiting for ${result.scheduled === 1 ? "its" : "their"} calendar time`);
     const armNote = result.armed
-      ? "Autopilot is ON — missions act as each page loads."
+      ? "Autopilot is ON — items act as each store page loads."
       : "Autopilot is OFF — nothing will be added until you switch it on.";
     const browserNote = result.defaultBrowser
       ? " Chrome was not found, so your default browser was used — the companion only works inside Chrome."
@@ -3684,11 +4447,10 @@ elements.applyConfigurationProfileButton.addEventListener("click", () => void ru
   const profile = selectedConfigurationProfile();
   if (!profile) throw new Error("Choose a setup first.");
   clearTimeout(settingsSaveTimer);
-  const next = await window.cartAssist.saveSettings({
-    ...currentSnapshot.settings,
-    ...ConfigProfiles.normalizeConfiguration(profile.configuration)
-  });
-  render(next);
+  await saveMissionList(
+    savedProducts(),
+    ConfigProfiles.normalizeConfiguration(profile.configuration)
+  );
   return profile.name;
 }, (name) => `${name} applied. Products, caps, quantities, and purchase actions were not changed.`));
 
@@ -3764,6 +4526,10 @@ elements.copyExtensionButton.addEventListener("click", () => runAction(
   () => window.cartAssist.copyExtensionPath(),
   "Companion folder path copied."
 ));
+elements.openChromeExtensionsButton.addEventListener("click", () => runAction(
+  () => window.cartAssist.openChromeExtensions(),
+  "Chrome extensions opened. Turn on Developer mode, choose Load unpacked, then select the companion folder."
+));
 
 elements.clearEventsButton.addEventListener("click", () => runAction(async () => {
   const next = await window.cartAssist.clearEvents();
@@ -3777,9 +4543,19 @@ elements.enableScheduledButton.addEventListener("click", () => {
   if (!updates.size) return;
   void runAction(
     () => setMissionsEnabled(updates),
-    `${updates.size} scheduled mission${updates.size === 1 ? "" : "s"} enabled.`
+    `${updates.size} scheduled item${updates.size === 1 ? "" : "s"} enabled.`
   );
 });
+elements.clearMissedSchedulesButton.addEventListener("click", () => void runAction(async () => {
+  if (isArmed()) throw new Error("Stop Autopilot before clearing missed schedule times.");
+  const missedIds = new Set(scheduledProducts(true)
+    .filter((item) => item.openAtMs < Date.now() - 120_000)
+    .map((item) => item.id));
+  const next = await saveMissionList(savedProducts().map((product) => (
+    missedIds.has(ItemMissions.itemIdForProduct(product)) ? { ...product, openAt: "" } : product
+  )));
+  return { next, count: missedIds.size };
+}, ({ count }) => `${count} missed item schedule${count === 1 ? "" : "s"} cleared.`));
 
 // Morning digest: summarize what happened while the window was unfocused.
 const DIGEST_MIN_AWAY_MS = 10 * 60_000;

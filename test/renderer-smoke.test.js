@@ -9,6 +9,7 @@ const { JSDOM } = require("jsdom");
 const html = fs.readFileSync(path.join(__dirname, "..", "src", "index.html"), "utf8");
 const configProfilesSource = fs.readFileSync(path.join(__dirname, "..", "lib", "config-profiles.js"), "utf8");
 const itemDefaultsSource = fs.readFileSync(path.join(__dirname, "..", "lib", "item-defaults.js"), "utf8");
+const itemMissionsSource = fs.readFileSync(path.join(__dirname, "..", "lib", "item-missions.js"), "utf8");
 const rendererSource = fs.readFileSync(path.join(__dirname, "..", "src", "renderer.js"), "utf8");
 const stylesSource = fs.readFileSync(path.join(__dirname, "..", "src", "styles.css"), "utf8");
 
@@ -125,6 +126,7 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   const openBuyListInputs = [];
   let testEventCalls = 0;
   const savedSettingsInputs = [];
+  const bulkImportPreviewInputs = [];
   const bulkImportInputs = [];
   const catalogSearchInputs = [];
   const catalogAddInputs = [];
@@ -150,6 +152,13 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
         monitoringPaused: input.automationEnabled ? false : input.monitoringPaused
       };
       return next;
+    },
+    previewBulkImport: async (input) => {
+      bulkImportPreviewInputs.push(input);
+      return {
+        summary: { candidates: 2, imported: 2, ready: 0, needsPrice: 2, duplicates: 0, invalid: 0, overCapacity: 0 },
+        issues: []
+      };
     },
     bulkImportMissions: async (input) => {
       bulkImportInputs.push(input);
@@ -315,6 +324,7 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
 
   window.eval(configProfilesSource);
   window.eval(itemDefaultsSource);
+  window.eval(itemMissionsSource);
   window.eval(rendererSource);
   await new Promise((resolve) => setTimeout(resolve, 20));
   const doc = window.document;
@@ -329,7 +339,10 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   const storeName = card.querySelector("[data-view='store']");
   assert.equal(imageWrap.hidden, false);
   assert.equal(thumbnail.src, "https://target.scene7.com/is/image/Target/GUEST_booster");
-  assert.equal(storeName.previousElementSibling, imageWrap, "the product thumbnail precedes the store name");
+  assert.ok(
+    imageWrap.compareDocumentPosition(storeName) & window.Node.DOCUMENT_POSITION_FOLLOWING,
+    "the product thumbnail precedes the store options in the item identity block"
+  );
   assert.equal(thumbnail.getAttribute("referrerpolicy"), "no-referrer");
   card.dispatchEvent(new window.Event("mouseenter"));
   assert.equal(doc.getElementById("missionImagePreview").hidden, false);
@@ -371,7 +384,7 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
     doc.getElementById("testButton").closest(".topbar-controls"),
     "Test lives in the header next to Autopilot"
   );
-  assert.equal(doc.getElementById("testButton").textContent, "Monitor only");
+  assert.equal(doc.getElementById("testButton").textContent, "Start monitoring");
   // The updater control is always visible; without a pending update it
   // offers a manual check instead of hiding.
   assert.equal(doc.getElementById("updateNotice").hidden, false);
@@ -485,6 +498,60 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   assert.equal(doc.querySelector(".mission-card").dataset.productId, "amazon:B0ABC12345");
   retailerFilter.value = "all";
   retailerFilter.dispatchEvent(new window.Event("change", { bubbles: true }));
+
+  // Multiple store routes with one itemId render and edit as one item. Store
+  // choices are explicit toggles, while price remains store-specific.
+  const multiStore = JSON.parse(JSON.stringify(grouped));
+  for (const product of multiStore.settings.products.slice(0, 2)) {
+    product.itemId = "item:booster";
+    product.title = "Booster Box";
+    product.enabled = true;
+  }
+  multiStore.settings.products[1].maxPrice = 42;
+  pushUpdate(multiStore);
+  assert.equal(doc.querySelectorAll(".mission-card").length, 3);
+  const combinedCard = doc.querySelector('[data-item-id="item:booster"]');
+  assert.ok(combinedCard);
+  assert.equal(combinedCard.querySelectorAll(".item-store-option.selected").length, 2);
+  assert.match(combinedCard.querySelector(".mission-price-quantity").textContent, /\$40–\$42/);
+  combinedCard.querySelector(".mission-edit").click();
+  const multiStoreEditor = doc.querySelector(".mission-edit-card");
+  assert.equal([...multiStoreEditor.querySelectorAll(".item-store-picker-option input")].filter((input) => input.checked).length, 2);
+  const multiStoreTemplate = multiStoreEditor.querySelector("[data-field='itemProfileId']");
+  multiStoreTemplate.value = "built-in:shipping-review";
+  multiStoreTemplate.dispatchEvent(new window.Event("change", { bubbles: true }));
+  assert.match(doc.getElementById("message").textContent, /2 store options/);
+  multiStoreEditor.querySelector(".mission-done").click();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  const savedStoreOptions = savedSettingsInputs.at(-1).products.filter((product) => product.itemId === "item:booster");
+  assert.equal(savedStoreOptions.length, 2);
+  assert.deepEqual(savedStoreOptions.map((product) => product.action), ["review", "review"]);
+  assert.deepEqual(savedStoreOptions.map((product) => product.maxPrice), [40, 42]);
+  assert.ok(savedStoreOptions.every((product) => product.maxOrderTotal > product.maxPrice));
+
+  // A full 100-item plan renders in bounded pages instead of creating every
+  // row at once. The user can reveal the next page without changing filters.
+  const scalePlan = snapshotFixture();
+  scalePlan.settings.products = Array.from({ length: 100 }, (_, index) => {
+    const sku = String(1_010_000_000 + index);
+    return {
+      ...scalePlan.settings.products[0],
+      itemId: `item:scale:${index}`,
+      id: `target:${sku}`,
+      sku,
+      productUrl: `https://www.target.com/p/item/-/A-${sku}`,
+      title: `Scale item ${index + 1}`,
+      action: "watch",
+      openAt: ""
+    };
+  });
+  pushUpdate(scalePlan);
+  assert.equal(doc.querySelectorAll(".mission-card").length, 25);
+  assert.match(doc.querySelector(".mission-load-more").textContent, /25 more · 75 remaining/);
+  doc.querySelector(".mission-load-more").click();
+  assert.equal(doc.querySelectorAll(".mission-card").length, 50);
+  assert.match(doc.querySelector(".mission-load-more").textContent, /25 more · 50 remaining/);
+  pushUpdate(grouped);
 
   // Accessible arrows reorder inside the visible group and persist the same
   // underlying array used by drag-and-drop.
@@ -618,12 +685,13 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   assert.equal(savedSettingsInputs.at(-1).itemProfiles.length, 1);
   assert.equal(savedSettingsInputs.at(-1).itemProfiles[0].name, "Two shipped updated");
 
+  const planBaseline = structuredClone(savedSettingsInputs.at(-1));
   doc.getElementById("planEditButton").click();
   doc.getElementById("bulkMissionSelectAllButton").click();
   doc.getElementById("copySelectedMissionListButton").click();
   await new Promise((resolve) => setTimeout(resolve, 10));
   assert.deepEqual(copiedMissionSelections, [["target:95298172"]]);
-  assert.match(doc.getElementById("message").textContent, /1 selected mission copied as a consolidated list/);
+  assert.match(doc.getElementById("message").textContent, /1 selected item \(1 store route\) copied as a consolidated list/);
   doc.getElementById("bulkItemProfile").value = customItemProfile.id;
   doc.getElementById("applyBulkItemProfileButton").click();
   await new Promise((resolve) => setTimeout(resolve, 10));
@@ -638,7 +706,7 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   doc.getElementById("itemProfileForm").dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true }));
   await new Promise((resolve) => setTimeout(resolve, 10));
   assert.equal(savedSettingsInputs.at(-1).products[0].quantity, 3);
-  assert.match(doc.getElementById("message").textContent, /1 linked mission was updated/);
+  assert.match(doc.getElementById("message").textContent, /1 linked store option was updated/);
 
   // A pre-known candidate set gets one shared calendar gate and a sustained,
   // bounded setup without altering product price, quantity, or action fields.
@@ -656,10 +724,31 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   assert.equal(candidateSchedule.eligibilityRefreshIntervalSeconds, 10);
   assert.equal(candidateSchedule.storeNavigationIntervalSeconds, 10);
   assert.equal(profileSelect.value, "built-in:candidate-drop");
-  assert.match(doc.getElementById("message").textContent, /1 candidate mission scheduled/);
+  assert.match(doc.getElementById("message").textContent, /1 candidate item scheduled/);
   doc.getElementById("clearSelectedMissionSchedulesButton").click();
   await new Promise((resolve) => setTimeout(resolve, 10));
   assert.equal(savedSettingsInputs.at(-1).products[0].openAt, "");
+
+  // Every saved plan mutation is recoverable. Undo restores both the shared
+  // schedule and the candidate traffic setup; Revert returns to the session baseline.
+  assert.match(doc.getElementById("planChangeCount").textContent, /saved changes/);
+  doc.getElementById("planUndoButton").click();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(savedSettingsInputs.at(-1).products[0].openAt, new Date(candidateOpenAtValue).toISOString());
+  assert.equal(savedSettingsInputs.at(-1).scheduledBlitzDurationSeconds, 900);
+  doc.getElementById("planUndoButton").click();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(savedSettingsInputs.at(-1).products[0].openAt, "");
+  assert.equal(savedSettingsInputs.at(-1).watcherIntervalSeconds, planBaseline.watcherIntervalSeconds);
+  doc.getElementById("bulkDisableMissionsButton").click();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(savedSettingsInputs.at(-1).products[0].enabled, false);
+  doc.getElementById("planRevertButton").click();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(savedSettingsInputs.at(-1).products[0].enabled, planBaseline.products[0].enabled);
+  assert.equal(savedSettingsInputs.at(-1).products[0].quantity, planBaseline.products[0].quantity);
+  assert.equal(savedSettingsInputs.at(-1).products[0].action, planBaseline.products[0].action);
+  assert.equal(doc.getElementById("planChangeCount").textContent, "No plan changes yet");
   doc.getElementById("planEditButton").click();
 
   doc.getElementById("itemProfileDeleteButton").click();
@@ -735,15 +824,20 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   await new Promise((resolve) => setTimeout(resolve, 10));
   assert.equal(testEventCalls, 1, "an overlapping Test all click must not enqueue another sweep");
   assert.equal(openProductCalls, 0, "the backend owns the paced all-mission Test run as one atomic action");
-  assert.match(doc.getElementById("message").textContent, /Monitor-only check started for 1 enabled mission/);
+  assert.match(doc.getElementById("message").textContent, /Monitor-only check started for 1 enabled store option/);
   assert.match(doc.getElementById("message").textContent, /Chrome companion connected automatically/);
   assert.match(doc.getElementById("message").textContent, /nothing will be added/);
   assert.equal(doc.getElementById("testButton").disabled, false);
   assert.equal(doc.getElementById("openAllButton").disabled, false);
 
-  // Arming establishes Chrome automatically, then leaves the remaining
-  // Target/Walmart missions background-first without a separate Open all click.
+  // Starting Autopilot always passes through one structured review, then
+  // establishes Chrome automatically and leaves eligible watchers background-first.
   doc.getElementById("autopilotToggle").click();
+  assert.equal(doc.getElementById("runReviewDialog").hasAttribute("open"), true);
+  assert.equal(openBuyListCalls, 0, "reviewing a run does not start it");
+  assert.match(doc.getElementById("runReviewSummary").textContent, /1 item will run across 1 selected store option/);
+  assert.equal(doc.getElementById("runReviewMetrics").children.length, 4);
+  doc.getElementById("runReviewAutopilotButton").click();
   assert.equal(doc.getElementById("autopilotToggle").disabled, true);
   await new Promise((resolve) => setTimeout(resolve, 10));
   assert.equal(openBuyListCalls, 1);
@@ -771,6 +865,8 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
 
   openBuyListFailure = new Error("Chrome companion did not connect");
   doc.getElementById("autopilotToggle").click();
+  assert.equal(doc.getElementById("runReviewDialog").hasAttribute("open"), true);
+  doc.getElementById("runReviewAutopilotButton").click();
   await new Promise((resolve) => setTimeout(resolve, 10));
   assert.equal(openBuyListCalls, 3);
   assert.equal(savedSettingsInputs.at(-1).automationEnabled, false, "a failed automatic connection must disarm Autopilot again");
@@ -1017,7 +1113,7 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   scheduled.settings.products[0].openAt = new Date(Date.now() + 3_600_000).toISOString();
   pushUpdate(scheduled);
   assert.equal(doc.getElementById("schedulePanel").hidden, false);
-  assert.ok(doc.querySelector(".schedule-chip"));
+  assert.ok(doc.querySelector(".schedule-agenda-item"));
   assert.match(doc.getElementById("scheduleNext").textContent, /Next: Booster Box in/);
   assert.equal(doc.getElementById("scheduleCoverage").textContent, "1/1 enabled");
   assert.equal(doc.getElementById("enableScheduledButton").hidden, true);
@@ -1034,7 +1130,7 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   pushUpdate(uncovered);
   assert.equal(doc.getElementById("scheduleCoverage").textContent, "0/1 enabled");
   assert.equal(doc.getElementById("enableScheduledButton").hidden, false);
-  assert.match(doc.querySelector(".schedule-chip").className, /off/);
+  assert.match(doc.querySelector(".schedule-agenda-item").className, /off/);
 
   // Persisted eligible events do not replay as alarms. A genuinely new event
   // does, and Silence/Dismiss hide their bars at the CSS rendering layer.
@@ -1083,7 +1179,7 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   pushUpdate(emptySnapshot);
   assert.equal(doc.getElementById("worstCase").textContent, "");
   const cta = doc.querySelector(".mission-empty .button");
-  assert.match(cta.textContent, /first mission/);
+  assert.match(cta.textContent, /first item/);
   cta.click();
   const newEditor = doc.querySelector(".mission-edit-card");
   assert.ok(newEditor, "CTA opens the mission editor");
@@ -1102,11 +1198,18 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   ].join("\n");
   doc.getElementById("bulkImportSubmitButton").click();
   await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(bulkImportPreviewInputs.length, 1);
+  assert.equal(bulkImportInputs.length, 0, "preview does not mutate the item list");
+  assert.equal(bulkDialog.hasAttribute("open"), true);
+  assert.equal(doc.getElementById("bulkImportSubmitButton").textContent, "Confirm import");
+  assert.match(doc.getElementById("bulkImportResult").textContent, /Nothing has been added yet/);
+  doc.getElementById("bulkImportSubmitButton").click();
+  await new Promise((resolve) => setTimeout(resolve, 10));
   assert.equal(bulkImportInputs.length, 1);
   assert.equal(bulkDialog.hasAttribute("open"), false);
   assert.equal(doc.querySelectorAll(".mission-card").length, 2);
   assert.equal([...doc.querySelectorAll("[data-view='enabled']")].every((input) => !input.checked), true);
-  assert.match(doc.getElementById("message").textContent, /2 imported with the default profile/);
+  assert.match(doc.getElementById("message").textContent, /2 imported with the default template/);
   assert.match(doc.getElementById("message").textContent, /2 left Off pending price approval/);
 
   // A keyword search opens only selected official retailer searches, renders
@@ -1127,7 +1230,7 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   assert.deepEqual(Array.from(catalogAddInputs[0]), ["amazon:B0CAT12345"]);
   assert.equal(doc.querySelectorAll(".mission-card").length, 2);
   assert.equal([...doc.querySelectorAll(".mission-card")].at(-1).querySelector("[data-view='enabled']").checked, false);
-  assert.match(doc.getElementById("message").textContent, /selected profile/);
+  assert.match(doc.getElementById("message").textContent, /selected template/);
   doc.getElementById("catalogClearButton").click();
   await new Promise((resolve) => setTimeout(resolve, 10));
   assert.equal(catalogClearCalls, 1);

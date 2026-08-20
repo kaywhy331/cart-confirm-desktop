@@ -1,7 +1,7 @@
 "use strict";
 
 (() => {
-  const STATE_VERSION = 3;
+  const STATE_VERSION = 4;
   const PRE_CLICK_LEASE_MS = 15_000;
   // A plain claim has not crossed a cart boundary. Keep that lease short so a
   // crashed page cannot strand every other mission. Reserving Add below uses
@@ -71,6 +71,7 @@
       runStartedAt: now,
       locks: {},
       completed: {},
+      completedItems: {},
       products: {}
     };
   }
@@ -200,7 +201,7 @@
     };
   }
 
-  function normalizeState(input, runId, now = Date.now(), combinedMembersByStore = null) {
+  function normalizeState(input, runId, now = Date.now(), combinedMembersByStore = null, configuredProducts = []) {
     const expectedRunId = String(runId || "");
     // The storage key intentionally remains cartConfirmAutomationStateV3.
     // Accept older same-run objects and migrate them additively so a schema
@@ -211,7 +212,10 @@
     state.version = STATE_VERSION;
     state.locks ||= {};
     state.completed ||= {};
+    state.completedItems ||= {};
     state.products ||= {};
+    const configuredById = new Map((Array.isArray(configuredProducts) ? configuredProducts : [])
+      .map((product) => [String(product?.id || ""), product]));
     state.runStartedAt = Number.isFinite(Number(state.runStartedAt)) ? Number(state.runStartedAt) : now;
     for (const [key, lock] of Object.entries(state.locks)) {
       if (!lock || (!lock.hold && Number(lock.expiresAt || 0) <= now)) delete state.locks[key];
@@ -245,6 +249,13 @@
       }
       if (state.completed[productId]) {
         record.workflow = { ...record.workflow, phase: "confirmed" };
+        const completedProduct = configuredById.get(productId);
+        if (completedProduct?.itemId && completedProduct.action !== "watch") {
+          state.completedItems[completedProduct.itemId] ||= {
+            productId,
+            completedAt: String(state.completed[productId] || "")
+          };
+        }
         for (const [key, lock] of Object.entries(state.locks)) {
           if (lock?.productId === productId) delete state.locks[key];
         }
@@ -260,6 +271,10 @@
         const retailer = String(productId).split(":", 1)[0];
         if (["target", "walmart", "amazon"].includes(retailer)) {
           ensureHeldLock(state, `store:${retailer}`, productId, ownerId, combinedMembersByStore?.[retailer] || null);
+        }
+        const configuredProduct = configuredById.get(productId);
+        if (configuredProduct?.itemId && configuredProduct.action !== "watch") {
+          ensureHeldLock(state, `item:${configuredProduct.itemId}`, productId, ownerId);
         }
       }
     }
@@ -299,8 +314,23 @@
   // terminal outcome.
   function lockKeys(product) {
     const keys = [`product:${product.id}`];
-    if (product.action !== "watch") keys.push(`store:${product.retailer}`);
+    if (product.action !== "watch") {
+      keys.push(`store:${product.retailer}`);
+      if (product.itemId) keys.push(`item:${product.itemId}`);
+    }
     return keys;
+  }
+
+  function lockReason(key) {
+    if (key.startsWith("store:")) return "store-busy";
+    if (key.startsWith("item:")) return "item-busy";
+    return "product-busy";
+  }
+
+  function completedItem(state, product) {
+    return product.action !== "watch" && product.itemId
+      ? state.completedItems?.[product.itemId] || null
+      : null;
   }
 
   // An explicitly armed watcher has no wall-clock or per-product attempt
@@ -312,6 +342,10 @@
 
   function claim(state, product, ownerId, now = Date.now(), options = {}) {
     if (state.completed[product.id]) return { ok: false, reason: "completed" };
+    const itemCompletion = completedItem(state, product);
+    if (itemCompletion) {
+      return { ok: false, reason: "item-completed", activeProductId: itemCompletion.productId || "" };
+    }
     const budget = budgetReason(state, product, now);
     if (budget) return { ok: false, reason: budget };
     const record = recordFor(state, product.id);
@@ -355,7 +389,7 @@
         const blockingAddPhase = String(blockingRecord?.addAction?.phase || "");
         return {
           ok: false,
-          reason: key.startsWith("store:") ? "store-busy" : "product-busy",
+          reason: lockReason(key),
           activeProductId: lock.productId,
           held: lock.hold === true,
           blockingPhase: HELD_WORKFLOW_PHASES.has(blockingWorkflowPhase)
@@ -412,7 +446,7 @@
         || lock.hold === true
         || lock.productId !== product.id
         || lock.ownerId !== ownerId
-      ) return { ok: false, reason: key.startsWith("store:") ? "store-busy" : "product-busy" };
+      ) return { ok: false, reason: lockReason(key) };
     }
     record.attempts += 1;
     record.addAction = { ...record.addAction, updatedAt: now };
@@ -534,7 +568,7 @@
     for (const key of lockKeys(product)) {
       const lock = state.locks[key];
       if (!lock || lock.productId !== product.id || lock.ownerId !== ownerId) {
-        return { ok: false, reason: key.startsWith("store:") ? "store-busy" : "product-busy" };
+        return { ok: false, reason: lockReason(key) };
       }
     }
     record.addAction = {
@@ -615,7 +649,7 @@
     for (const key of keys) {
       const lock = state.locks[key];
       if (!lock || lock.productId !== product.id || lock.ownerId !== ownerId) {
-        return { ok: false, reason: "store-busy" };
+        return { ok: false, reason: lockReason(key) };
       }
     }
     const record = recordFor(state, product.id);
@@ -639,7 +673,7 @@
     for (const key of keys) {
       const lock = state.locks[key];
       if (lock && (lock.productId !== product.id || lock.ownerId !== ownerId)) {
-        return { ok: false, reason: "store-busy" };
+        return { ok: false, reason: lockReason(key) };
       }
     }
     if (outcome === "clicked") {
@@ -702,7 +736,7 @@
     for (const key of lockKeys(product)) {
       const lock = state.locks[key];
       if (!lock || lock.productId !== product.id || lock.ownerId !== ownerId) {
-        return { ok: false, reason: key.startsWith("store:") ? "store-busy" : "product-busy" };
+        return { ok: false, reason: lockReason(key) };
       }
     }
     record.workflow = {
@@ -836,6 +870,12 @@
       return { ok: false, reason: "cart-confirmation-missing" };
     }
     state.completed[product.id] = new Date(now).toISOString();
+    if (product.itemId && product.action !== "watch") {
+      state.completedItems[product.itemId] = {
+        productId: product.id,
+        completedAt: state.completed[product.id]
+      };
+    }
     if (product.action === "checkout") record.submission = { ...record.submission, phase: "confirmed", updatedAt: now };
     record.workflow = { ...record.workflow, phase: "confirmed", updatedAt: now };
     record.addAction = { phase: "idle", ownerId: "", updatedAt: now };
@@ -861,6 +901,12 @@
     const record = recordFor(state, product.id);
     if (record.addAction.phase !== "confirmed") return { ok: false, reason: "cart-confirmation-missing" };
     state.completed[product.id] = new Date(now).toISOString();
+    if (product.itemId && product.action !== "watch") {
+      state.completedItems[product.itemId] = {
+        productId: product.id,
+        completedAt: state.completed[product.id]
+      };
+    }
     record.submission = { ...record.submission, phase: "confirmed", updatedAt: now };
     record.workflow = { ...record.workflow, phase: "confirmed", updatedAt: now };
     record.addAction = { phase: "idle", ownerId: "", updatedAt: now };
@@ -874,6 +920,7 @@
     const record = recordFor(state, product.id);
     return {
       completed: Boolean(state.completed[product.id]),
+      itemCompleted: completedItem(state, product),
       attempts: record.attempts,
       proof: record.proof,
       submission: record.submission,
