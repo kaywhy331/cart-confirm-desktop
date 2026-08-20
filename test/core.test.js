@@ -9,11 +9,13 @@ const {
   createProductStatus,
   eventMessage,
   extractTcin,
+  MAX_PRODUCTS,
   MAX_MISSION_GROUPS,
   matchingProduct,
   missionOpenUrl,
   normalizeMissionGroups,
   normalizeProduct,
+  normalizeProductImageUrl,
   normalizeSettings,
   normalizeTargetUrl,
   preserveAdminCampaignFields,
@@ -172,6 +174,22 @@ test("normalizes a multi-store buy list and preserves a private token", () => {
   assert.equal(result.discordAutoOpen, true);
   assert.equal(result.products[2].signalEntry, "product");
   assert.equal(result.products[2].signalAutoOpen, true);
+});
+
+test("accepts 100 missions and rejects a 101st", () => {
+  const products = Array.from({ length: MAX_PRODUCTS + 1 }, (_, index) => {
+    const sku = String(1011209000 + index);
+    return {
+      productUrl: `https://www.target.com/p/item-${index}/-/A-${sku}`,
+      sku,
+      maxPrice: 20,
+      quantity: 1,
+      action: "watch",
+      fulfillmentMode: "shipping"
+    };
+  });
+  assert.equal(normalizeSettings({ products: products.slice(0, MAX_PRODUCTS) }).products.length, 100);
+  assert.throws(() => normalizeSettings({ products }), /at most 100 products/);
 });
 
 test("normalizes persisted mission groups and clears unknown product assignments", () => {
@@ -335,6 +353,41 @@ test("validates a user-managed affiliate Open link and keeps it out of automatio
     ...PRODUCTS[0],
     affiliateOpenUrl: "https://howl.me/short-link"
   }), /direct HTTPS link/);
+});
+
+test("product image references allow only HTTPS store image hosts and stay out of automation config", () => {
+  const imageUrl = "https://target.scene7.com/is/image/Target/GUEST_booster?wid=300#preview";
+  const normalizedImageUrl = "https://target.scene7.com/is/image/Target/GUEST_booster?wid=300";
+  const product = normalizeProduct({ ...PRODUCTS[0], imageUrl });
+
+  assert.equal(product.imageUrl, normalizedImageUrl);
+  assert.equal(normalizeProductImageUrl("https://i5.walmartimages.com/seo/item.jpg", "walmart"), "https://i5.walmartimages.com/seo/item.jpg");
+  assert.equal(normalizeProductImageUrl("https://m.media-amazon.com/images/I/item.jpg", "amazon"), "https://m.media-amazon.com/images/I/item.jpg");
+  for (const rejected of [
+    "http://target.scene7.com/is/image/Target/item",
+    "https://target.scene7.com.evil.example/item.jpg",
+    "data:image/png;base64,abc",
+    "https://i5.walmartimages.com/seo/wrong-store.jpg"
+  ]) {
+    assert.equal(normalizeProductImageUrl(rejected, "target"), "");
+  }
+
+  assert.equal("imageUrl" in toAutomationProduct(product), false);
+  assert.equal(toRendererProduct(product).imageUrl, normalizedImageUrl);
+  assert.equal(
+    preserveAdminCampaignFields([{ ...product }], [product])[0].imageUrl,
+    normalizedImageUrl
+  );
+  assert.equal(validateEvent({
+    eventType: "page-observed",
+    retailer: "target",
+    sku: product.sku,
+    imageUrl
+  }).imageUrl, normalizedImageUrl);
+
+  const current = { automationEnabled: true, products: [{ ...product, imageUrl: "" }] };
+  const next = { automationEnabled: true, products: [product] };
+  assert.doesNotThrow(() => assertSafeArmedUpdate(current, next));
 });
 
 test("migrates the original Target-only settings", () => {

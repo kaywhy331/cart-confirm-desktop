@@ -283,6 +283,7 @@ h1 { font-size: 21px; letter-spacing: -0.025em; }
 .mission-group-empty { padding: 12px 8px; color: var(--subtle); font-size: 9.5px; text-align: center; }
 .mission-card {
   --store-accent: var(--target);
+  position: relative;
   display: flex;
   align-items: center;
   min-width: 0;
@@ -324,7 +325,52 @@ h1 { font-size: 21px; letter-spacing: -0.025em; }
 .mission-icon-button:disabled { cursor: default; opacity: 0.28; }
 .mission-order-actions .mission-icon-button { width: 20px; height: 17px; border-radius: 5px; font-size: 10px; }
 .mission-main { flex: 1 1 auto; min-width: 0; cursor: pointer; }
-.mission-title-row { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.mission-title-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.mission-product-image {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 30px;
+  width: 30px;
+  height: 30px;
+  overflow: hidden;
+  border: 1px solid rgba(148, 163, 184, 0.3);
+  border-radius: 7px;
+  background: #fff;
+  cursor: zoom-in;
+}
+.mission-product-image[hidden] { display: none !important; }
+.mission-product-image:focus-visible { outline: 2px solid var(--accent-strong); outline-offset: 2px; }
+.mission-product-image img { display: block; width: 100%; height: 100%; object-fit: contain; }
+.mission-image-preview {
+  position: fixed;
+  z-index: 100;
+  width: 270px;
+  padding: 9px;
+  border: 1px solid rgba(148, 163, 184, 0.4);
+  border-radius: 13px;
+  background: rgba(7, 13, 25, 0.98);
+  box-shadow: 0 20px 55px rgba(0, 0, 0, 0.58);
+  pointer-events: none;
+}
+.mission-image-preview[hidden] { display: none !important; }
+.mission-image-preview img {
+  display: block;
+  width: 250px;
+  height: 250px;
+  border-radius: 8px;
+  background: #fff;
+  object-fit: contain;
+}
+.mission-image-preview span {
+  display: block;
+  overflow: hidden;
+  margin-top: 7px;
+  color: #dbe5f4;
+  font-size: 10px;
+  font-weight: 750;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .mission-title-row .store-name {
   flex: 0 0 auto;
   color: var(--store-accent);

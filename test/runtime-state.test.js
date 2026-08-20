@@ -5,6 +5,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const { MAX_PRODUCTS } = require("../lib/core");
 const {
   RUNTIME_STATE_VERSION,
   activateBlitzExecution,
@@ -37,6 +38,43 @@ test("legacy runtime state gains bounded quiet-monitor fields and future floors 
   assert.ok(normalized.quietLastStartedAt["target:1011483406"] <= Date.now());
   assert.equal(normalized.quietLastStartedAt["target:not-a-sku"], undefined);
   assert.equal(normalized.quietLastStartedAt["amazon:B0ABC12345"], undefined);
+});
+
+test("runtime normalization preserves a full 100-mission release cohort", () => {
+  const participantProductIds = Array.from(
+    { length: MAX_PRODUCTS + 1 },
+    (_, index) => `walmart:${200000000 + index}`
+  );
+  const ownerProductId = participantProductIds[MAX_PRODUCTS - 1];
+  const normalized = normalizeRuntimeState({
+    productExecutionContexts: {
+      [ownerProductId]: {
+        mode: "blitz",
+        runId: "run-100",
+        scheduleKey: "release-100",
+        firedAt: "2026-08-19T12:00:00.000Z",
+        expiresAt: 2_000_000_000_000,
+        cohortId: "cohort-100",
+        participantProductIds
+      }
+    },
+    queueCaptures: {
+      "cohort-100": {
+        retailer: "walmart",
+        runId: "run-100",
+        cohortId: "cohort-100",
+        winnerProductId: ownerProductId,
+        participantProductIds,
+        detectedAt: "2026-08-19T12:00:01.000Z",
+        expiresAt: 2_000_000_000_000,
+        attempts: {}
+      }
+    }
+  });
+  assert.equal(normalized.productExecutionContexts[ownerProductId].participantProductIds.length, 100);
+  assert.equal(normalized.queueCaptures["cohort-100"].participantProductIds.length, 100);
+  assert.equal(normalized.productExecutionContexts[ownerProductId].participantProductIds.at(-1), ownerProductId);
+  assert.equal(normalized.queueCaptures["cohort-100"].participantProductIds.includes(participantProductIds[100]), false);
 });
 
 test("runtime receipts and overload deadlines survive a process restart", () => {

@@ -9,6 +9,8 @@ Publishing fails if the version being released has no section here.
 ## 3.7.4
 - Fixed: Chrome kept ping-ponging back to the first carted item while the other missions were still loading — stock-detected mission tabs now open quietly in the background, and a carted item that is just holding for the combined order no longer re-pulls its tab forward
 - The only tab that comes to the front is the mission actually purchasing right now: adding to cart, or the combined-order captain heading into the single checkout
+- New: product thumbnails captured from each retailer now appear before the store name, with a larger preview when you hover the mission or focus its thumbnail
+- Mission capacity increased from 50 to 100 across adding, importing, copying, saved release groups, and same-time scheduled launches
 
 ## 3.7.3
 - Fixed: on Target's redesigned buy box the mission could add the item under "Ready for pickup" even though it was configured for Shipping — the new method cells (Pickup / Delivery / Shipping) mark their selection in a way the old reader could not see

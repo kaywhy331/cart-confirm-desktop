@@ -2635,10 +2635,12 @@
         return;
       }
 
-      interactiveSightings.clear();
-
-      void send("page-observed", product, {}, `page:${product.id}:${pageAddress()}`, OBSERVATION_DEDUPE_MS);
       const kind = adapter.pageKind(location.href, document, product);
+      const imageUrl = kind === "product" ? QuickAdd.pageImageUrl(document, location.href, retailer) : "";
+      interactiveSightings.clear();
+      void send("page-observed", product, {
+        imageUrl
+      }, `page:${product.id}:${pageAddress()}:${imageUrl ? "image" : "no-image"}`, OBSERVATION_DEDUPE_MS);
       if (kind === "queue" && await handleRetailerQueue(product)) return;
       if (handleQueueCaptureRetry(product)) return;
       if (kind === "confirmation" && await handleConfirmation(product)) return;

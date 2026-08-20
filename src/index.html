@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: https://target.com https://*.target.com https://target.scene7.com https://walmart.com https://*.walmart.com https://walmartimages.com https://*.walmartimages.com https://amazon.com https://*.amazon.com https://media-amazon.com https://*.media-amazon.com https://ssl-images-amazon.com https://*.ssl-images-amazon.com; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
   <title>Cart Confirm</title>
   <link rel="stylesheet" href="styles.css">
 </head>
@@ -539,6 +539,9 @@
       </label>
       <div class="mission-main">
         <div class="mission-title-row">
+          <span class="mission-product-image" data-view="imageWrap" role="img" tabindex="0" hidden>
+            <img data-view="image" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer">
+          </span>
           <span class="store-name" data-view="store"></span>
           <strong class="status-title" data-view="title"></strong>
         </div>
@@ -580,6 +583,7 @@
         <span>Product link</span>
         <input data-field="productUrl" type="url" autocomplete="off" spellcheck="false" placeholder="Paste the product page address, e.g. https://www.target.com/p/..." required>
       </label>
+      <input data-field="imageUrl" type="hidden">
 
       <label class="field product-url-field affiliate-open-url-field">
         <span>Affiliate product link (optional)</span>
@@ -682,6 +686,11 @@
       </details>
     </article>
   </template>
+
+  <div class="mission-image-preview" id="missionImagePreview" role="tooltip" aria-hidden="true" hidden>
+    <img id="missionImagePreviewImage" alt="" decoding="async" referrerpolicy="no-referrer">
+    <span id="missionImagePreviewCaption"></span>
+  </div>
 
   <script src="../lib/config-profiles.js"></script>
   <script src="../lib/item-defaults.js"></script>
