@@ -49,6 +49,16 @@ const {
   planCatalogMissionImport,
   planWalmartPrepCandidates
 } = require("./lib/catalog");
+const {
+  acceptTrackalackerCapture,
+  beginTrackalackerImport,
+  cancelTrackalackerImport,
+  clearTrackalackerState,
+  emptyTrackalackerState,
+  normalizeTrackalackerState,
+  normalizeTrackalackerUrl,
+  planTrackalackerMissionImport
+} = require("./lib/trackalacker-import");
 const { migrateStoredSettings } = require("./lib/migrations");
 const { itemProfileById } = require("./lib/item-defaults");
 const { itemHasProtectedProgress } = require("./lib/item-missions");
@@ -150,6 +160,7 @@ const { validateRetailerShareUrl } = require("./lib/howl-link");
 const {
   RETAILERS,
   extractSku,
+  normalizeProductUrl,
   parseRetailUrl,
   retailerLabel,
   storeUrl
@@ -181,6 +192,7 @@ let productStatuses = {};
 let events = [];
 let runtimeState = null;
 let catalogState = emptyCatalogState();
+let trackalackerState = emptyTrackalackerState();
 let msrpResearchState = emptyMsrpResearchState();
 let msrpResearchInFlight = false;
 let msrpResearchKey = "";
@@ -234,6 +246,10 @@ function runtimeStatePath() {
 
 function catalogPath() {
   return path.join(app.getPath("userData"), "catalog.json");
+}
+
+function trackalackerPath() {
+  return path.join(app.getPath("userData"), "trackalacker-import.json");
 }
 
 function discordTokenPath() {
@@ -345,6 +361,22 @@ function loadCatalogState() {
 function persistCatalogState() {
   fs.mkdirSync(path.dirname(catalogPath()), { recursive: true });
   fs.writeFileSync(catalogPath(), JSON.stringify(catalogState, null, 2), { mode: 0o600 });
+}
+
+function loadTrackalackerState() {
+  let stored = {};
+  try {
+    stored = JSON.parse(fs.readFileSync(trackalackerPath(), "utf8"));
+  } catch {
+    stored = {};
+  }
+  trackalackerState = normalizeTrackalackerState(stored);
+  persistTrackalackerState();
+}
+
+function persistTrackalackerState() {
+  fs.mkdirSync(path.dirname(trackalackerPath()), { recursive: true });
+  fs.writeFileSync(trackalackerPath(), JSON.stringify(trackalackerState, null, 2), { mode: 0o600 });
 }
 
 function loadMsrpResearchState() {
@@ -464,6 +496,7 @@ function snapshot() {
       desired: settings.products.some((product) => product.id === signal.productId)
     })),
     catalog: catalogState,
+    trackalacker: trackalackerState,
     msrpResearch: {
       configured: hasEncryptedCredential(msrpResearchKeyPath()),
       credentialUsable: Boolean(msrpResearchKey),
@@ -909,6 +942,53 @@ function catalogResultsRequest(input) {
       payload: { ok: false, reason: "catalog-search-mismatch", error: error.message }
     };
   }
+}
+
+function trackalackerCaptureRequest(input) {
+  try {
+    const accepted = acceptTrackalackerCapture(trackalackerState, input, Date.now());
+    trackalackerState = accepted.state;
+    persistTrackalackerState();
+    configVersion += 1;
+    broadcast();
+    return {
+      statusCode: 202,
+      payload: {
+        ok: true,
+        accepted: accepted.accepted,
+        state: trackalackerState.activeImport?.state || ""
+      }
+    };
+  } catch (error) {
+    return {
+      statusCode: 409,
+      payload: { ok: false, reason: "trackalacker-capture-rejected", error: error.message }
+    };
+  }
+}
+
+async function startTrackalackerImport() {
+  if (settings.automationEnabled) {
+    throw new Error("Switch Autopilot off before scanning TrackaLacker.");
+  }
+  trackalackerState = beginTrackalackerImport(trackalackerState, {
+    id: crypto.randomUUID(),
+    now: Date.now()
+  });
+  persistTrackalackerState();
+  configVersion += 1;
+  broadcast();
+  const url = "https://www.trackalacker.com/products/followed";
+  const via = await openPageInChrome(url);
+  return { snapshot: snapshot(), via, url };
+}
+
+function cancelActiveTrackalackerImport() {
+  trackalackerState = cancelTrackalackerImport(trackalackerState, Date.now());
+  persistTrackalackerState();
+  configVersion += 1;
+  broadcast();
+  return snapshot();
 }
 
 async function startCatalogSearch(input) {
@@ -1820,6 +1900,15 @@ function extensionConfig() {
         expiresAt: catalogState.activeSearch.expiresAt
       }
     : null;
+  const activeTrackalackerImport = trackalackerState.activeImport
+    && ["waiting", "scanning"].includes(trackalackerState.activeImport.state)
+    && new Date(trackalackerState.activeImport.expiresAt).getTime() > Date.now()
+    ? {
+        id: trackalackerState.activeImport.id,
+        startedAt: trackalackerState.activeImport.startedAt,
+        expiresAt: trackalackerState.activeImport.expiresAt
+      }
+    : null;
   return {
     // Howl source and resolved tracking URLs are sharing-only. Chrome receives
     // only the canonical purchasing fields used by the automation pipeline.
@@ -1860,6 +1949,7 @@ function extensionConfig() {
       (product) => productCalendarOwned(settings, product)
     ),
     catalogSearch: activeCatalogSearch,
+    trackalackerImport: activeTrackalackerImport,
     token: settings.companionToken,
     configVersion,
     appVersion: app.getVersion()
@@ -1945,6 +2035,15 @@ function startServerOnPort(port) {
           return;
         }
         readJsonRequest(req, res, (body) => catalogResultsRequest(body));
+        return;
+      }
+
+      if (req.method === "POST" && requestUrl.pathname === "/trackalacker/capture") {
+        if (req.headers["x-cart-assist-token"] !== settings.companionToken) {
+          writeJson(req, res, 401, { error: "invalid-token" });
+          return;
+        }
+        readJsonRequest(req, res, (body) => trackalackerCaptureRequest(body));
         return;
       }
 
@@ -2226,6 +2325,70 @@ function registerIpc() {
   });
 
   ipcMain.handle("cart-assist:catalog-search", (_event, input) => startCatalogSearch(input));
+
+  ipcMain.handle("cart-assist:trackalacker-start", () => startTrackalackerImport());
+
+  ipcMain.handle("cart-assist:trackalacker-cancel", () => cancelActiveTrackalackerImport());
+
+  ipcMain.handle("cart-assist:trackalacker-add-missions", (_event, input) => {
+    if (settings.automationEnabled) {
+      throw new Error("Switch Autopilot off before adding TrackaLacker products to Items.");
+    }
+    const profile = itemProfileById(
+      String(input?.profileId || settings.defaultItemProfileId),
+      settings.itemProfiles
+    );
+    if (!profile) throw new Error("Choose a valid item profile before importing TrackaLacker products.");
+    const plan = planTrackalackerMissionImport(
+      trackalackerState,
+      input?.selections,
+      settings.products,
+      MAX_PRODUCTS,
+      {
+        profile,
+        msrpCatalog: settings.msrpCatalog,
+        orderTaxPercent: settings.orderTaxPercent,
+        storeOrderAllowances: settings.storeOrderAllowances
+      }
+    );
+    const nextSnapshot = plan.additions.length
+      ? appendMissionProducts(
+          plan.additions,
+          `${plan.summary.importedItems} TrackaLacker product${plan.summary.importedItems === 1 ? "" : "s"} added as ${plan.summary.importedStores} store option${plan.summary.importedStores === 1 ? "" : "s"}.`
+        )
+      : snapshot();
+    return { snapshot: nextSnapshot, summary: plan.summary };
+  });
+
+  ipcMain.handle("cart-assist:trackalacker-clear", () => {
+    trackalackerState = clearTrackalackerState();
+    persistTrackalackerState();
+    configVersion += 1;
+    broadcast();
+    return snapshot();
+  });
+
+  ipcMain.handle("cart-assist:trackalacker-open-source", async (_event, input) => {
+    const kind = input?.kind === "history" ? "history" : "product";
+    const url = normalizeTrackalackerUrl(input?.url, kind);
+    if (!url) throw new Error("Only an exact TrackaLacker product or listing-history link can be opened.");
+    return { via: await openPageInChrome(url), url };
+  });
+
+  ipcMain.handle("cart-assist:trackalacker-open-store", async (_event, input) => {
+    const expectedRetailer = String(input?.retailer || "").toLowerCase();
+    if (!["target", "walmart", "amazon"].includes(expectedRetailer)) {
+      throw new Error("Only a supported TrackaLacker store option can be opened.");
+    }
+    const url = normalizeProductUrl(input?.url);
+    const { retailer } = parseRetailUrl(url);
+    const sku = extractSku(retailer, url);
+    const expectedSku = extractSku(expectedRetailer, input?.sku);
+    if (retailer !== expectedRetailer || !sku || sku !== expectedSku) {
+      throw new Error("The TrackaLacker store link no longer matches its exact item ID.");
+    }
+    return openExternalRetailer(url, { actionKind: "trackalacker-preview" });
+  });
 
   ipcMain.handle("cart-assist:catalog-add-missions", (_event, input) => {
     if (settings.automationEnabled) {
@@ -3196,6 +3359,7 @@ if (!gotLock) {
     loadSettings();
     loadPersistedRuntimeState();
     loadCatalogState();
+    loadTrackalackerState();
     loadMsrpResearchState();
     discordToken = loadDiscordToken(discordTokenPath(), safeStorage);
     msrpResearchKey = loadEncryptedCredential(msrpResearchKeyPath(), safeStorage, normalizeOpenAiApiKey);

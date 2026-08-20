@@ -414,6 +414,30 @@ test("product image references allow only HTTPS store image hosts and stay out o
   assert.doesNotThrow(() => assertSafeArmedUpdate(current, next));
 });
 
+test("TrackaLacker source metadata and CDN images stay renderer-only and survive safe settings saves", () => {
+  const source = {
+    ...PRODUCTS[0],
+    imageUrl: "https://static.trackalacker.com/cdn-cgi/image/width=300/item.jpg",
+    sourceProvider: "trackalacker",
+    sourceProductId: "12345",
+    sourceUrl: "https://www.trackalacker.com/products/showcase/pokemon-box",
+    sourceListingId: "301",
+    sourceListingUrl: "https://www.trackalacker.com/products/showcase/pokemon-box/listings/301/pokemon-box",
+    expectedPrice: 49.99,
+    expectedPriceConfidence: "history",
+    expectedPriceObservedAt: "2026-08-20T19:00:00Z"
+  };
+  const product = normalizeProduct(source);
+  assert.equal(product.imageUrl, source.imageUrl);
+  assert.equal(toRendererProduct(product).sourceUrl, source.sourceUrl);
+  assert.equal("sourceUrl" in toAutomationProduct(product), false);
+  const saved = preserveAdminCampaignFields([{ ...toRendererProduct(product), title: "Updated" }], [product])[0];
+  assert.equal(saved.sourceUrl, source.sourceUrl);
+  assert.equal(saved.expectedPrice, 49.99);
+  assert.equal(normalizeProduct({ ...source, sourceUrl: "https://evil.example/products/showcase/item" }).sourceProvider, "");
+  assert.equal(normalizeProduct({ ...source, sourceUrl: "https://evil.trackalacker.com/products/showcase/item" }).sourceProvider, "");
+});
+
 test("migrates the original Target-only settings", () => {
   const result = normalizeSettings({
     productUrl: PRODUCTS[0].productUrl,

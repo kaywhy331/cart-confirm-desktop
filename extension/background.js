@@ -5,6 +5,7 @@ importScripts(
   "schedule-gate.js",
   "automation-state.js",
   "retailers.js",
+  "trackalacker-links.js",
   "tab-context.js",
   "open-request-tabs.js",
   "update-state.js"
@@ -12,6 +13,7 @@ importScripts(
 
 const Traffic = globalThis.CartConfirmTraffic;
 const Retailers = globalThis.CartConfirmRetailers;
+const TrackalackerLinks = globalThis.CartConfirmTrackalackerLinks;
 const ScheduleGate = globalThis.CartConfirmScheduleGate;
 const AutomationState = globalThis.CartConfirmAutomationState;
 const TabContext = globalThis.CartConfirmTabContext;
@@ -40,6 +42,7 @@ let trafficStateQueue = Promise.resolve();
 let tabContextQueue = Promise.resolve();
 let trafficSyncInFlight = false;
 const recentAuthorizedStoreActions = new Map();
+let trackalackerImportOwner = null;
 
 async function fetchWithTimeout(url, options = {}, timeoutMs = REQUEST_TIMEOUT_MS) {
   const controller = new AbortController();
@@ -171,6 +174,13 @@ function publicConfig(config) {
           query: String(config.catalogSearch.query || ""),
           retailers: Array.isArray(config.catalogSearch.retailers) ? config.catalogSearch.retailers : [],
           expiresAt: String(config.catalogSearch.expiresAt || "")
+        }
+      : null,
+    trackalackerImport: config.trackalackerImport && typeof config.trackalackerImport === "object"
+      ? {
+          id: String(config.trackalackerImport.id || ""),
+          startedAt: String(config.trackalackerImport.startedAt || ""),
+          expiresAt: String(config.trackalackerImport.expiresAt || "")
         }
       : null,
     configVersion: config.configVersion,
@@ -1009,6 +1019,117 @@ async function postCatalogResults(capture) {
   }
 }
 
+async function postTrackalackerCapture(capture) {
+  let config = await discoverConfig(true);
+  if (!config) return { ok: false, reason: "desktop-not-found", error: "Cart Confirm desktop is not reachable." };
+
+  const send = () => fetchWithTimeout(`${config.baseUrl}/trackalacker/capture`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Cart-Assist-Token": config.token
+    },
+    body: JSON.stringify(capture)
+  }, 5_000);
+
+  try {
+    let response = await send();
+    if (response.status === 401) {
+      config = await discoverConfig(true);
+      if (!config) return { ok: false, reason: "desktop-not-found" };
+      response = await send();
+    }
+    const result = await response.json().catch(() => ({}));
+    if (response.ok) {
+      cached = null;
+      if (trackalackerImportOwner?.id === String(capture?.importId || "")) {
+        trackalackerImportOwner.claimedAt = Date.now();
+      }
+    }
+    return {
+      ok: response.ok,
+      ...result,
+      reason: result.reason || (response.ok ? "" : "trackalacker-capture-rejected"),
+      error: result.error || (response.ok ? "" : "TrackaLacker capture was rejected.")
+    };
+  } catch {
+    cached = null;
+    await setDisconnectedBadge();
+    return { ok: false, reason: "desktop-unreachable", error: "Cart Confirm desktop became unreachable." };
+  }
+}
+
+async function resolveTrackalackerLink(rawUrl, expectedRetailer) {
+  if (!["target", "walmart", "amazon"].includes(expectedRetailer)) {
+    return { ok: false, reason: "unsupported-retailer" };
+  }
+  let url;
+  try {
+    url = new URL(String(rawUrl || ""));
+  } catch {
+    return { ok: false, reason: "invalid-link" };
+  }
+  const direct = TrackalackerLinks.canonicalProductUrl(url.href, expectedRetailer, Retailers);
+  if (direct) return { ok: true, ...direct };
+  if (!TrackalackerLinks.isAllowedRedirectHost(url.href)) return { ok: false, reason: "unsupported-link-host" };
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 12_000);
+  try {
+    const response = await fetch(url.href, {
+      method: "GET",
+      redirect: "follow",
+      cache: "no-store",
+      credentials: "omit",
+      signal: controller.signal
+    });
+    const resolved = TrackalackerLinks.canonicalProductUrl(response.url, expectedRetailer, Retailers);
+    return resolved ? { ok: true, ...resolved } : { ok: false, reason: "exact-product-link-unavailable" };
+  } catch {
+    return { ok: false, reason: "link-resolution-failed" };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function senderIsTrackalacker(sender) {
+  try {
+    const host = new URL(String(sender?.tab?.url || "")).hostname.toLowerCase();
+    return host === "trackalacker.com" || host.endsWith(".trackalacker.com");
+  } catch {
+    return false;
+  }
+}
+
+async function claimTrackalackerImport(importId, sender) {
+  if (!senderIsTrackalacker(sender)) return { ok: false, reason: "trackalacker-tab-required" };
+  const config = await discoverConfig(true);
+  const requested = String(importId || "");
+  if (!requested || config?.trackalackerImport?.id !== requested) {
+    return { ok: false, reason: "scan-inactive" };
+  }
+  const tabId = sender?.tab?.id;
+  // Each authenticated content fetch is bounded to 12 seconds and retried at
+  // most twice. Keep the lease long enough for one slow listing while the
+  // active tab refreshes it between products and listings.
+  const stale = !trackalackerImportOwner || Date.now() - trackalackerImportOwner.claimedAt > 90_000;
+  if (
+    !stale
+    && trackalackerImportOwner.id === requested
+    && trackalackerImportOwner.tabId !== tabId
+  ) return { ok: true, claimed: false };
+  trackalackerImportOwner = { id: requested, tabId, claimedAt: Date.now() };
+  return { ok: true, claimed: true };
+}
+
+function releaseTrackalackerImport(importId, sender) {
+  if (
+    trackalackerImportOwner?.id === String(importId || "")
+    && trackalackerImportOwner.tabId === sender?.tab?.id
+  ) trackalackerImportOwner = null;
+  return { ok: true };
+}
+
 async function reserveStoreAction(productId, kind) {
   let config = await discoverConfig(true);
   if (!automationActive(config)) return { ok: false, reason: "disarmed" };
@@ -1583,6 +1704,16 @@ async function handleMessage(message, sender) {
       return postCheckoutPreflight(String(message.productId || ""), message.evidence);
     case "CART_CONFIRM_CATALOG_RESULTS":
       return postCatalogResults(message.capture);
+    case "CART_CONFIRM_TRACKALACKER_CAPTURE":
+      if (!senderIsTrackalacker(sender)) return { ok: false, reason: "trackalacker-tab-required" };
+      return postTrackalackerCapture(message.capture);
+    case "CART_CONFIRM_RESOLVE_TRACKALACKER_LINK":
+      if (!senderIsTrackalacker(sender)) return { ok: false, reason: "trackalacker-tab-required" };
+      return resolveTrackalackerLink(String(message.url || ""), String(message.retailer || ""));
+    case "CART_CONFIRM_CLAIM_TRACKALACKER_IMPORT":
+      return claimTrackalackerImport(String(message.importId || ""), sender);
+    case "CART_CONFIRM_RELEASE_TRACKALACKER_IMPORT":
+      return releaseTrackalackerImport(String(message.importId || ""), sender);
     case "CART_CONFIRM_CLAIM_PRODUCT":
       return claimProduct(String(message.productId || ""), `tab:${sender?.tab?.id ?? "unknown"}`);
     case "CART_CONFIRM_PREPARE_ADD_ACTION":
@@ -1683,6 +1814,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   void clearTabProductContext(tabId).catch(() => {});
+  if (trackalackerImportOwner?.tabId === tabId) trackalackerImportOwner = null;
 });
 
 chrome.webRequest.onHeadersReceived.addListener((details) => {

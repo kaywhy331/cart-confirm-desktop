@@ -19,6 +19,8 @@ test("the Manifest V3 companion declares every safety script and required permis
   assert.equal(manifest.permissions.includes("webRequest"), true);
   assert.equal(manifest.host_permissions.includes("http://127.0.0.1/*"), true);
   assert.equal(manifest.host_permissions.includes("https://*.walmart.com/*"), true);
+  assert.equal(manifest.host_permissions.includes("https://www.trackalacker.com/*"), true);
+  assert.deepEqual(manifest.content_scripts[1].js, ["trackalacker-ingest.js"]);
   assert.equal(manifest.action.default_popup, "popup.html");
   assert.equal(manifest.action.default_title, "Quick add");
 

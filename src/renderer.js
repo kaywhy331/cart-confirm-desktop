@@ -50,6 +50,7 @@ const elements = {
   planRevertButton: document.getElementById("planRevertButton"),
   planChangeCount: document.getElementById("planChangeCount"),
   catalogLauncherButton: document.getElementById("catalogLauncherButton"),
+  trackalackerLauncherButton: document.getElementById("trackalackerLauncherButton"),
   missionViewTemplate: document.getElementById("missionViewTemplate"),
   missionEditTemplate: document.getElementById("missionEditTemplate"),
   missionImagePreview: document.getElementById("missionImagePreview"),
@@ -83,6 +84,16 @@ const elements = {
   catalogStatus: document.getElementById("catalogStatus"),
   catalogCount: document.getElementById("catalogCount"),
   catalogList: document.getElementById("catalogList"),
+  trackalackerScanButton: document.getElementById("trackalackerScanButton"),
+  trackalackerCancelButton: document.getElementById("trackalackerCancelButton"),
+  trackalackerClearButton: document.getElementById("trackalackerClearButton"),
+  trackalackerSelectAllButton: document.getElementById("trackalackerSelectAllButton"),
+  trackalackerSelectNoneButton: document.getElementById("trackalackerSelectNoneButton"),
+  trackalackerItemProfile: document.getElementById("trackalackerItemProfile"),
+  trackalackerAddButton: document.getElementById("trackalackerAddButton"),
+  trackalackerStatus: document.getElementById("trackalackerStatus"),
+  trackalackerCount: document.getElementById("trackalackerCount"),
+  trackalackerList: document.getElementById("trackalackerList"),
   storeAllowanceForm: document.getElementById("storeAllowanceForm"),
   orderTaxPercent: document.getElementById("orderTaxPercent"),
   targetOrderAllowance: document.getElementById("targetOrderAllowance"),
@@ -276,10 +287,14 @@ let bulkImportPreviewText = "";
 let catalogSearchInFlight = false;
 let catalogImportInFlight = false;
 let renderedCatalogSearchId = "";
+let trackalackerOperationInFlight = false;
+let renderedTrackalackerImportId = "";
 let lastReadinessIssueItemIds = new Set();
 let missionVisibleLimit = 25;
 const catalogSelectedIds = new Set();
 const catalogSeenIds = new Set();
+const trackalackerSelectedStores = new Set();
+const trackalackerSeenStores = new Set();
 const bulkMissionSelectedIds = new Set();
 let editingItemProfileId = "";
 // Persisted feed entries are history, not fresh alarm triggers. Only events
@@ -1202,6 +1217,11 @@ function buildProductViewCard(product, status) {
       : "signals open product");
   if (product.affiliateOpenUrl) subParts.push("Custom Open link");
   if (product.affiliateUrl) subParts.push("Campaign share ready");
+  if (product.sourceProvider === "trackalacker") {
+    subParts.push(product.expectedPriceConfidence === "history"
+      ? "TrackaLacker history price"
+      : "TrackaLacker estimate needs review");
+  }
   if (product.action === "checkout") {
     subParts.push(product.checkoutPreflightApproved
       ? "saved checkout preflight"
@@ -1291,6 +1311,15 @@ function buildProductViewCard(product, status) {
     copyAffiliateButton.addEventListener("click", () => void runAction(
       () => copyAffiliateProduct(product),
       `${productLabel(product)} retailer-domain campaign link copied.`
+    ));
+  }
+  const sourceButton = card.querySelector(".mission-source");
+  sourceButton.hidden = product.sourceProvider !== "trackalacker" || !product.sourceUrl;
+  setMissionButtonLabel(sourceButton, `Open the TrackaLacker source for ${productLabel(product)}`);
+  if (!sourceButton.hidden) {
+    sourceButton.addEventListener("click", () => void runAction(
+      () => window.cartAssist.openTrackalackerSource(product.sourceUrl, "product"),
+      `${productLabel(product)} TrackaLacker source opened in Chrome.`
     ));
   }
   editButton.addEventListener("click", () => void startEdit(product));
@@ -2231,6 +2260,234 @@ function renderCatalog(catalog = {}) {
   renderWalmartPrepCandidates();
 }
 
+function trackalackerStoreKey(itemId, retailer) {
+  return `${itemId}:${retailer}`;
+}
+
+function trackalackerStoreAlreadyAdded(item, store) {
+  return (currentSnapshot?.settings?.products || []).some((product) => (
+    product.id === store.id
+    || (
+      ItemMissions.itemIdForProduct(product) === item.id
+      && product.retailer === store.retailer
+    )
+  ));
+}
+
+function trackalackerStatusText(trackalacker = {}) {
+  const active = trackalacker.activeImport;
+  if (!active) return trackalacker.items?.length
+    ? "Showing the locally saved preview from the last scan."
+    : "Start a scan to build an item-first preview.";
+  if (active.state === "waiting") return active.message || "Waiting for the browser companion…";
+  if (active.state === "scanning") {
+    const progress = active.discovered
+      ? `${active.processed || 0} of ${active.discovered} processed · ${active.captured || 0} captured${active.failed ? ` · ${active.failed} skipped` : ""}`
+      : active.page
+        ? `Reading followed page ${active.page}${active.pages ? ` of ${active.pages}` : ""}`
+        : "Reading followed products";
+    return `${progress}${active.currentTitle ? ` · ${active.currentTitle}` : ""}`;
+  }
+  if (active.state === "error") return `${active.error || active.message || "Scan failed."}${trackalacker.items?.length ? " You can import the products captured before the error or scan again." : ""}`;
+  return active.message || (active.state === "cancelled" ? "Scan cancelled." : "Scan complete.");
+}
+
+function trackalackerPriceLabel(store) {
+  if (!(Number(store.expectedPrice) > 0)) return { text: "No expected price", note: "review required" };
+  if (store.priceConfidence === "history") {
+    return {
+      text: `${money(store.expectedPrice)} expected`,
+      note: `${store.historySamples || 1} normal history sample${store.historySamples === 1 ? "" : "s"} · ready`
+    };
+  }
+  return { text: `${money(store.expectedPrice)} estimate`, note: "product fallback · review required" };
+}
+
+function trackalackerSourceButton(label, url, kind = "product") {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "trackalacker-link-button";
+  button.textContent = `${label} ↗`;
+  button.addEventListener("click", () => void runAction(
+    () => window.cartAssist.openTrackalackerSource(url, kind),
+    `${label} opened in Chrome.`
+  ));
+  return button;
+}
+
+function trackalackerStoreButton(store) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "trackalacker-link-button";
+  button.textContent = "Store ↗";
+  button.addEventListener("click", () => void runAction(
+    () => window.cartAssist.openTrackalackerStore(store.productUrl, store.retailer, store.sku),
+    `${STORE_LABELS[store.retailer] || "Store"} product opened.`
+  ));
+  return button;
+}
+
+function buildTrackalackerCard(item) {
+  const availableStores = item.stores.filter((store) => !trackalackerStoreAlreadyAdded(item, store));
+  const selectedCount = availableStores.filter((store) => (
+    trackalackerSelectedStores.has(trackalackerStoreKey(item.id, store.retailer))
+  )).length;
+  const card = document.createElement("article");
+  card.className = `trackalacker-card${availableStores.length ? "" : " already-added"}`;
+
+  const productSelect = document.createElement("input");
+  productSelect.type = "checkbox";
+  productSelect.checked = availableStores.length > 0 && selectedCount === availableStores.length;
+  productSelect.indeterminate = selectedCount > 0 && selectedCount < availableStores.length;
+  productSelect.disabled = !availableStores.length || trackalackerOperationInFlight;
+  productSelect.setAttribute("aria-label", `Select every available store for ${item.title}`);
+  productSelect.addEventListener("change", () => {
+    for (const store of availableStores) {
+      const key = trackalackerStoreKey(item.id, store.retailer);
+      if (productSelect.checked) trackalackerSelectedStores.add(key);
+      else trackalackerSelectedStores.delete(key);
+    }
+    renderTrackalacker(currentSnapshot?.trackalacker || {});
+  });
+
+  const imageWrap = document.createElement("span");
+  imageWrap.className = "trackalacker-product-image";
+  if (item.imageUrl) {
+    const image = document.createElement("img");
+    image.src = item.imageUrl;
+    image.alt = `${item.title} product image`;
+    image.loading = "lazy";
+    image.decoding = "async";
+    image.referrerPolicy = "no-referrer";
+    image.addEventListener("error", () => imageWrap.remove(), { once: true });
+    imageWrap.append(image);
+  } else {
+    imageWrap.textContent = "—";
+  }
+
+  const main = document.createElement("div");
+  main.className = "trackalacker-result-main";
+  const titleRow = document.createElement("div");
+  titleRow.className = "trackalacker-title-row";
+  const title = document.createElement("strong");
+  title.textContent = item.title;
+  titleRow.append(title, trackalackerSourceButton("TrackaLacker", item.sourceUrl));
+
+  const stores = document.createElement("div");
+  stores.className = "trackalacker-store-options";
+  if (!item.stores.length) {
+    const unavailable = document.createElement("span");
+    unavailable.className = "trackalacker-no-stores";
+    unavailable.textContent = "No exact Target, Walmart, or Amazon product link was available.";
+    stores.append(unavailable);
+  }
+  for (const store of item.stores) {
+    const key = trackalackerStoreKey(item.id, store.retailer);
+    const alreadyAdded = trackalackerStoreAlreadyAdded(item, store);
+    const option = document.createElement("div");
+    option.className = `trackalacker-store-option${alreadyAdded ? " already-added" : ""}`;
+    option.dataset.retailer = store.retailer;
+    const label = document.createElement("label");
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.checked = trackalackerSelectedStores.has(key) && !alreadyAdded;
+    checkbox.disabled = alreadyAdded || trackalackerOperationInFlight;
+    checkbox.setAttribute("aria-label", `Select ${STORE_LABELS[store.retailer]} for ${item.title}`);
+    checkbox.addEventListener("change", () => {
+      if (checkbox.checked) trackalackerSelectedStores.add(key);
+      else trackalackerSelectedStores.delete(key);
+      renderTrackalacker(currentSnapshot?.trackalacker || {});
+    });
+    const storeName = document.createElement("strong");
+    storeName.textContent = STORE_LABELS[store.retailer] || store.retailer;
+    const pricing = trackalackerPriceLabel(store);
+    const price = document.createElement("span");
+    price.textContent = pricing.text;
+    const note = document.createElement("small");
+    note.textContent = alreadyAdded
+      ? "Already in Items"
+      : `${pricing.note}${store.alternateCount ? ` · ${store.alternateCount} alternate listing${store.alternateCount === 1 ? "" : "s"}` : ""}`;
+    label.append(checkbox, storeName, price, note);
+    const links = document.createElement("span");
+    links.className = "trackalacker-store-links";
+    links.append(
+      trackalackerStoreButton(store),
+      trackalackerSourceButton("History", store.historyUrl, "history")
+    );
+    option.append(label, links);
+    stores.append(option);
+  }
+  if (item.otherStores?.length) {
+    const future = document.createElement("small");
+    future.className = "trackalacker-future-stores";
+    future.textContent = `Also tracked for future retailer support: ${[...new Set(item.otherStores.map((store) => store.store))].join(", ")}.`;
+    stores.append(future);
+  }
+  main.append(titleRow, stores);
+  card.append(productSelect, imageWrap, main);
+  return card;
+}
+
+function renderTrackalacker(trackalacker = {}) {
+  const active = trackalacker.activeImport || null;
+  const importId = String(active?.id || "");
+  if (importId !== renderedTrackalackerImportId) {
+    renderedTrackalackerImportId = importId;
+    trackalackerSelectedStores.clear();
+    trackalackerSeenStores.clear();
+  }
+  const items = Array.isArray(trackalacker.items) ? trackalacker.items : [];
+  const validKeys = new Set();
+  const availableKeys = new Set();
+  for (const item of items) {
+    for (const store of item.stores || []) {
+      const key = trackalackerStoreKey(item.id, store.retailer);
+      validKeys.add(key);
+      if (!trackalackerStoreAlreadyAdded(item, store)) availableKeys.add(key);
+      if (!trackalackerSeenStores.has(key)) {
+        trackalackerSeenStores.add(key);
+        if (!trackalackerStoreAlreadyAdded(item, store)) trackalackerSelectedStores.add(key);
+      }
+      if (trackalackerStoreAlreadyAdded(item, store)) trackalackerSelectedStores.delete(key);
+    }
+  }
+  for (const key of [...trackalackerSelectedStores]) {
+    if (!validKeys.has(key)) trackalackerSelectedStores.delete(key);
+  }
+
+  elements.trackalackerList.replaceChildren();
+  if (!items.length) {
+    const empty = document.createElement("div");
+    empty.className = "empty-state";
+    empty.textContent = active && ["waiting", "scanning"].includes(active.state)
+      ? "Products will appear here as the scan progresses…"
+      : "No TrackaLacker products captured yet.";
+    elements.trackalackerList.append(empty);
+  } else {
+    elements.trackalackerList.append(...items.map(buildTrackalackerCard));
+  }
+
+  const supportedStores = items.reduce((count, item) => count + (item.stores?.length || 0), 0);
+  const readyStores = items.flatMap((item) => item.stores || []).filter((store) => store.priceConfidence === "history").length;
+  elements.trackalackerCount.textContent = `${items.length} product${items.length === 1 ? "" : "s"} · ${supportedStores} supported store option${supportedStores === 1 ? "" : "s"} · ${readyStores} history-priced`;
+  elements.trackalackerStatus.textContent = trackalackerStatusText(trackalacker);
+  elements.trackalackerStatus.className = `trackalacker-progress${active?.state === "error" ? " error" : active?.state === "complete" ? " success" : ""}`;
+  const running = ["waiting", "scanning"].includes(active?.state);
+  const busy = trackalackerOperationInFlight;
+  elements.trackalackerScanButton.disabled = busy || running || isArmed();
+  elements.trackalackerScanButton.textContent = items.length ? "Scan again" : "Scan followed products";
+  elements.trackalackerCancelButton.hidden = !running;
+  elements.trackalackerCancelButton.disabled = busy || !running;
+  elements.trackalackerClearButton.disabled = busy || running || (!active && !items.length);
+  elements.trackalackerSelectAllButton.disabled = busy || running || !availableKeys.size;
+  elements.trackalackerSelectNoneButton.disabled = busy || !trackalackerSelectedStores.size;
+  elements.trackalackerItemProfile.disabled = busy || running || isArmed();
+  elements.trackalackerAddButton.disabled = busy || running || isArmed() || !trackalackerSelectedStores.size;
+  elements.trackalackerAddButton.textContent = trackalackerSelectedStores.size
+    ? `Add selected (${trackalackerSelectedStores.size}) to Items`
+    : "Add selected to Items";
+}
+
 function renderWalmartPrepCandidates() {
   const candidates = currentSnapshot?.settings?.walmartPrepCandidates || [];
   elements.walmartPrepList.replaceChildren();
@@ -2296,7 +2553,7 @@ function fillItemProfileForm(profile) {
 
 function renderItemProfilePickers(settings) {
   const selectedDefault = settings.defaultItemProfileId || ItemDefaults.DEFAULT_ITEM_PROFILE_ID;
-  for (const select of [elements.defaultItemProfile, elements.catalogItemProfile, elements.bulkItemProfile]) {
+  for (const select of [elements.defaultItemProfile, elements.catalogItemProfile, elements.trackalackerItemProfile, elements.bulkItemProfile]) {
     const current = select.value;
     itemProfileOptions(select, current || selectedDefault, settings);
   }
@@ -2574,6 +2831,103 @@ function renderItemDefaults(settings) {
   elements.saveStoreAllowancesButton.disabled = isArmed();
   renderItemProfilePickers(settings);
   renderMsrpCatalog(settings);
+}
+
+async function startTrackalackerScan() {
+  if (trackalackerOperationInFlight) return;
+  if (isArmed()) {
+    setMessage("Switch Autopilot off before scanning TrackaLacker.", "error");
+    return;
+  }
+  trackalackerOperationInFlight = true;
+  renderTrackalacker(currentSnapshot?.trackalacker || {});
+  try {
+    const result = await window.cartAssist.startTrackalackerImport();
+    render(result.snapshot);
+    setMessage(
+      `TrackaLacker followed products opened in Chrome. Keep that signed-in tab open while the companion builds the preview.${result.via === "default-browser" ? " Chrome was not found, so open the page in the browser profile where Quick add is loaded." : ""}`,
+      result.via === "default-browser" ? "warn" : "success"
+    );
+  } catch (error) {
+    setMessage(error.message || "The TrackaLacker scan could not start.", "error");
+  } finally {
+    trackalackerOperationInFlight = false;
+    renderTrackalacker(currentSnapshot?.trackalacker || {});
+  }
+}
+
+async function cancelTrackalackerScan() {
+  if (trackalackerOperationInFlight) return;
+  trackalackerOperationInFlight = true;
+  renderTrackalacker(currentSnapshot?.trackalacker || {});
+  try {
+    render(await window.cartAssist.cancelTrackalackerImport());
+    setMessage("TrackaLacker scan cancelled. Captured products remain available for review.", "success");
+  } catch (error) {
+    setMessage(error.message || "The TrackaLacker scan could not be cancelled.", "error");
+  } finally {
+    trackalackerOperationInFlight = false;
+    renderTrackalacker(currentSnapshot?.trackalacker || {});
+  }
+}
+
+async function clearTrackalackerPreview() {
+  if (trackalackerOperationInFlight) return;
+  if (!window.confirm("Clear the TrackaLacker product preview? Items already added to your plan will stay unchanged.")) return;
+  trackalackerOperationInFlight = true;
+  try {
+    render(await window.cartAssist.clearTrackalackerImport());
+    setMessage("TrackaLacker preview cleared.", "success");
+  } catch (error) {
+    setMessage(error.message || "The TrackaLacker preview could not be cleared.", "error");
+  } finally {
+    trackalackerOperationInFlight = false;
+    renderTrackalacker(currentSnapshot?.trackalacker || {});
+  }
+}
+
+async function addSelectedTrackalackerMissions() {
+  if (trackalackerOperationInFlight || isArmed()) return;
+  if (editingId) {
+    setMessage("Finish the open item editor before importing TrackaLacker products.", "error");
+    return;
+  }
+  const selections = (currentSnapshot?.trackalacker?.items || []).map((item) => ({
+    productId: item.id,
+    retailers: (item.stores || [])
+      .map((store) => store.retailer)
+      .filter((retailer) => trackalackerSelectedStores.has(trackalackerStoreKey(item.id, retailer)))
+  })).filter((selection) => selection.retailers.length);
+  if (!selections.length) return;
+  trackalackerOperationInFlight = true;
+  renderTrackalacker(currentSnapshot?.trackalacker || {});
+  try {
+    const before = planEditMode ? capturePlanSnapshot() : null;
+    const result = await window.cartAssist.addTrackalackerMissions(
+      selections,
+      elements.trackalackerItemProfile.value
+    );
+    render(result.snapshot);
+    if (result.summary?.importedStores > 0) recordPlanChange(before);
+    const summary = result.summary || {};
+    const notes = [];
+    if (summary.ready) notes.push(`${summary.ready} store option${summary.ready === 1 ? "" : "s"} ready from normal price history`);
+    if (summary.needsReview) notes.push(`${summary.needsReview} left Off for cap review`);
+    if (summary.duplicates) notes.push(`${summary.duplicates} already in Items`);
+    if (summary.overCapacity) notes.push(`${summary.overCapacity} over the ${MAX_MISSIONS}-store-option limit`);
+    if (summary.missing) notes.push(`${summary.missing} unavailable`);
+    setMessage(
+      summary.importedStores
+        ? `${summary.importedItems} product${summary.importedItems === 1 ? "" : "s"} added with ${summary.importedStores} store option${summary.importedStores === 1 ? "" : "s"}.${notes.length ? ` ${notes.join(" · ")}.` : ""}`
+        : notes.join(" · ") || "No selected TrackaLacker store options were imported.",
+      summary.importedStores ? "success" : "warn"
+    );
+  } catch (error) {
+    setMessage(error.message || "The selected TrackaLacker products could not be imported.", "error");
+  } finally {
+    trackalackerOperationInFlight = false;
+    renderTrackalacker(currentSnapshot?.trackalacker || {});
+  }
 }
 
 async function submitCatalogSearch() {
@@ -3711,6 +4065,7 @@ function render(snapshot) {
   renderReadiness(settings, status, productStatuses);
   renderCatalog(snapshot.catalog || {});
   renderItemDefaults(settings);
+  renderTrackalacker(snapshot.trackalacker || {});
   renderDiscord(snapshot.discord, settings);
   renderSignals(snapshot.signals || []);
   checkForAlarmEvents(events);
@@ -3840,6 +4195,14 @@ elements.catalogLauncherButton.addEventListener("click", async () => {
   panel?.scrollIntoView?.({ behavior: "smooth", block: "start" });
   setTimeout(() => elements.catalogQuery.focus(), 250);
 });
+elements.trackalackerLauncherButton.addEventListener("click", async () => {
+  if (isArmed() && !await beginPlanEditSession()) return;
+  const panel = document.getElementById("catalogPanel");
+  const toggle = panel?.querySelector(".panel-toggle");
+  if (toggle) setPanelExpanded(toggle, true);
+  panel?.scrollIntoView?.({ behavior: "smooth", block: "start" });
+  setTimeout(() => elements.trackalackerScanButton.focus(), 250);
+});
 elements.readinessReviewButton.addEventListener("click", () => {
   if (!lastReadinessIssueItemIds.size && runReviewModel().hardIssues.length === 0) {
     openRunReview();
@@ -3927,6 +4290,24 @@ elements.catalogSelectNoneButton.addEventListener("click", () => {
 });
 elements.catalogAddButton.addEventListener("click", () => void addSelectedCatalogMissions());
 elements.catalogWalmartPrepButton.addEventListener("click", () => void addSelectedWalmartPrepCandidates());
+elements.trackalackerScanButton.addEventListener("click", () => void startTrackalackerScan());
+elements.trackalackerCancelButton.addEventListener("click", () => void cancelTrackalackerScan());
+elements.trackalackerClearButton.addEventListener("click", () => void clearTrackalackerPreview());
+elements.trackalackerSelectAllButton.addEventListener("click", () => {
+  for (const item of currentSnapshot?.trackalacker?.items || []) {
+    for (const store of item.stores || []) {
+      if (!trackalackerStoreAlreadyAdded(item, store)) {
+        trackalackerSelectedStores.add(trackalackerStoreKey(item.id, store.retailer));
+      }
+    }
+  }
+  renderTrackalacker(currentSnapshot?.trackalacker || {});
+});
+elements.trackalackerSelectNoneButton.addEventListener("click", () => {
+  trackalackerSelectedStores.clear();
+  renderTrackalacker(currentSnapshot?.trackalacker || {});
+});
+elements.trackalackerAddButton.addEventListener("click", () => void addSelectedTrackalackerMissions());
 
 elements.storeAllowanceForm.addEventListener("submit", (event) => {
   event.preventDefault();
