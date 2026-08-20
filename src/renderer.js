@@ -2,6 +2,7 @@
 
 const ConfigProfiles = globalThis.CartConfirmConfigProfiles;
 const ItemDefaults = globalThis.CartConfirmItemDefaults;
+const MAX_MISSIONS = 100;
 const elements = {
   autopilotToggle: document.getElementById("autopilotToggle"),
   autopilotState: document.getElementById("autopilotState"),
@@ -31,6 +32,9 @@ const elements = {
   missionFilterCount: document.getElementById("missionFilterCount"),
   missionViewTemplate: document.getElementById("missionViewTemplate"),
   missionEditTemplate: document.getElementById("missionEditTemplate"),
+  missionImagePreview: document.getElementById("missionImagePreview"),
+  missionImagePreviewImage: document.getElementById("missionImagePreviewImage"),
+  missionImagePreviewCaption: document.getElementById("missionImagePreviewCaption"),
   newMissionButton: document.getElementById("newMissionButton"),
   newMissionGroupButton: document.getElementById("newMissionGroupButton"),
   bulkImportButton: document.getElementById("bulkImportButton"),
@@ -481,6 +485,67 @@ function productLabel(product) {
   return product.title || `${STORE_LABELS[product.retailer]} ${product.sku}`;
 }
 
+let missionImagePreviewOwner = null;
+
+function hideMissionImagePreview(owner = null) {
+  if (owner && missionImagePreviewOwner !== owner) return;
+  missionImagePreviewOwner = null;
+  elements.missionImagePreview.hidden = true;
+  elements.missionImagePreview.setAttribute("aria-hidden", "true");
+  elements.missionImagePreviewImage.removeAttribute("src");
+}
+
+function positionMissionImagePreview(card) {
+  const cardRect = card.getBoundingClientRect();
+  const previewWidth = elements.missionImagePreview.offsetWidth || 270;
+  const previewHeight = elements.missionImagePreview.offsetHeight || 294;
+  const gap = 10;
+  const edge = 10;
+  let left = cardRect.right + gap;
+  if (left + previewWidth > window.innerWidth - edge) {
+    left = cardRect.left - previewWidth - gap;
+  }
+  left = Math.max(edge, Math.min(left, window.innerWidth - previewWidth - edge));
+  const top = Math.max(edge, Math.min(cardRect.top, window.innerHeight - previewHeight - edge));
+  elements.missionImagePreview.style.left = `${Math.round(left)}px`;
+  elements.missionImagePreview.style.top = `${Math.round(top)}px`;
+}
+
+function showMissionImagePreview(card, product) {
+  if (!product.imageUrl) return;
+  missionImagePreviewOwner = card;
+  elements.missionImagePreviewImage.src = product.imageUrl;
+  elements.missionImagePreviewImage.alt = `${productLabel(product)} product image`;
+  elements.missionImagePreviewCaption.textContent = `${STORE_LABELS[product.retailer]} · ${productLabel(product)}`;
+  elements.missionImagePreview.hidden = false;
+  elements.missionImagePreview.setAttribute("aria-hidden", "false");
+  positionMissionImagePreview(card);
+}
+
+function configureMissionProductImage(card, product) {
+  const imageWrap = view(card, "imageWrap");
+  const image = view(card, "image");
+  if (!product.imageUrl) return;
+  imageWrap.hidden = false;
+  imageWrap.setAttribute("aria-label", `Preview image for ${productLabel(product)}`);
+  imageWrap.setAttribute("aria-describedby", "missionImagePreview");
+  image.src = product.imageUrl;
+  card.classList.add("has-product-image");
+  image.addEventListener("error", () => {
+    imageWrap.hidden = true;
+    card.classList.remove("has-product-image");
+    hideMissionImagePreview(card);
+  }, { once: true });
+  card.addEventListener("mouseenter", () => showMissionImagePreview(card, product));
+  card.addEventListener("mouseleave", () => hideMissionImagePreview(card));
+  imageWrap.addEventListener("focus", () => showMissionImagePreview(card, product));
+  imageWrap.addEventListener("blur", () => hideMissionImagePreview(card));
+}
+
+elements.missionImagePreviewImage.addEventListener("error", () => hideMissionImagePreview());
+window.addEventListener("resize", () => hideMissionImagePreview());
+window.addEventListener("scroll", () => hideMissionImagePreview(), true);
+
 async function runAction(action, successMessage) {
   const actionStopEpoch = stopUiEpoch;
   try {
@@ -838,6 +903,7 @@ function buildViewCard(product, status) {
   card.setAttribute("aria-label", card.title);
 
   view(card, "enabled").checked = product.enabled !== false;
+  configureMissionProductImage(card, product);
   const storeView = view(card, "store");
   const missingAffiliate = !product.affiliateOpenUrl && !product.affiliateUrl;
   storeView.textContent = missingAffiliate
@@ -991,6 +1057,7 @@ function buildEditCard(product, options = {}) {
   ) || ItemDefaults.BUILT_IN_ITEM_PROFILES[0];
   field(card, "retailer").value = retailer;
   field(card, "title").value = product?.title || "";
+  field(card, "imageUrl").value = product?.imageUrl || "";
   field(card, "productUrl").value = product?.productUrl || "";
   field(card, "affiliateOpenUrl").value = product?.affiliateOpenUrl || "";
   field(card, "sku").value = product?.sku || "";
@@ -1218,6 +1285,7 @@ function collectMission(card) {
   return {
     retailer,
     title: field(card, "title").value.trim(),
+    imageUrl: field(card, "imageUrl").value,
     openAt: openAtValue ? new Date(openAtValue).toISOString() : "",
     productUrl: field(card, "productUrl").value.trim(),
     affiliateOpenUrl: field(card, "affiliateOpenUrl").value.trim(),
@@ -1322,7 +1390,7 @@ function bulkImportSummaryText(summary = {}) {
   if (summary.needsPrice) parts.push(`${summary.needsPrice} left Off pending price approval`);
   if (summary.duplicates) parts.push(`${summary.duplicates} duplicate${summary.duplicates === 1 ? "" : "s"} skipped`);
   if (summary.invalid) parts.push(`${summary.invalid} invalid line${summary.invalid === 1 ? "" : "s"}`);
-  if (summary.overCapacity) parts.push(`${summary.overCapacity} over the 50-mission limit`);
+  if (summary.overCapacity) parts.push(`${summary.overCapacity} over the ${MAX_MISSIONS}-mission limit`);
   return parts.join(" · ") || "No product URLs were found.";
 }
 
@@ -1921,7 +1989,7 @@ async function addSelectedCatalogMissions() {
     const summary = result.summary || {};
     const extras = [];
     if (summary.duplicates) extras.push(`${summary.duplicates} duplicate${summary.duplicates === 1 ? "" : "s"} skipped`);
-    if (summary.overCapacity) extras.push(`${summary.overCapacity} over the 50-mission limit`);
+    if (summary.overCapacity) extras.push(`${summary.overCapacity} over the ${MAX_MISSIONS}-mission limit`);
     if (summary.missing) extras.push(`${summary.missing} no longer available`);
     if (summary.ready) extras.push(`${summary.ready} ready with approved MSRP`);
     if (summary.needsPrice) extras.push(`${summary.needsPrice} left Off pending price approval`);

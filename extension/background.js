@@ -769,8 +769,7 @@ async function processOpenRequests(config) {
     if (!response.ok) return;
     const payload = await response.json().catch(() => ({}));
     const requests = Array.isArray(payload.requests) ? payload.requests : [];
-    const dedicated = requests.slice(0, 50).filter((request) => request?.dedicatedTab === true);
-    const ordinary = requests.slice(0, 50).filter((request) => request?.dedicatedTab !== true);
+    const { dedicated, ordinary } = OpenRequestTabs.partitionOpenRequests(requests);
     await Promise.all(dedicated.map((request) => reuseTabForOpenRequest(config, request).catch(() => {})));
     for (const request of ordinary) {
       await reuseTabForOpenRequest(config, request).catch(() => {});

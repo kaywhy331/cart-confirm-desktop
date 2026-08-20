@@ -2,6 +2,7 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const { MAX_PRODUCTS } = require("../lib/core");
 const {
   QUIET_GLOBAL_START_GAP_MS,
   QUIET_INTERVAL_MAX_MS,
@@ -37,9 +38,9 @@ function runImmediateRamp(seed) {
   const randomInt = seededRandom(seed);
   const state = createQuietMonitorSchedule();
   const startAt = 1_000_000;
-  reconcileQuietMonitorSchedule(state, products(50), { now: startAt, randomInt, persistedStarts: {} });
+  reconcileQuietMonitorSchedule(state, products(MAX_PRODUCTS), { now: startAt, randomInt, persistedStarts: {} });
   const starts = [];
-  for (let now = startAt; starts.length < 50; now += 250) {
+  for (let now = startAt; starts.length < MAX_PRODUCTS; now += 250) {
     const candidate = nextQuietMonitorCandidate(state, { now, blockedUntil: new Map() });
     if (!candidate) continue;
     const started = markQuietMonitorStarted(state, candidate.productId, { now, randomInt });
@@ -49,13 +50,13 @@ function runImmediateRamp(seed) {
   return starts;
 }
 
-test("the initial 50-product ramp is shuffled, complete, and paced", () => {
+test("the initial 100-product ramp is shuffled, complete, and paced", () => {
   const starts = runImmediateRamp(42);
-  assert.equal(new Set(starts.map((entry) => entry.productId)).size, 50);
+  assert.equal(new Set(starts.map((entry) => entry.productId)).size, MAX_PRODUCTS);
   assert.deepEqual(starts.map((entry) => entry.productId), runImmediateRamp(42).map((entry) => entry.productId));
-  assert.notDeepEqual(starts.map((entry) => entry.productId), products(50).map((entry) => entry.id));
+  assert.notDeepEqual(starts.map((entry) => entry.productId), products(MAX_PRODUCTS).map((entry) => entry.id));
   assert.equal(starts[0].startedAt, 1_000_000);
-  assert.ok(starts.at(-1).startedAt - starts[0].startedAt <= 37_000);
+  assert.ok(starts.at(-1).startedAt - starts[0].startedAt <= (MAX_PRODUCTS - 1) * QUIET_STORE_START_GAP_MS);
   for (let index = 1; index < starts.length; index += 1) {
     assert.ok(starts[index].startedAt - starts[index - 1].startedAt >= QUIET_STORE_START_GAP_MS);
   }
@@ -102,14 +103,14 @@ test("per-product deadlines include both exact 45 and 90 second boundaries", () 
   assert.equal(maxStart.nextDueAt, 190_000);
 });
 
-test("50 same-store products remain serviceable when every interval draws 45 seconds", () => {
+test("100 same-store products remain serviceable when every interval draws 45 seconds", () => {
   const randomInt = (minimum) => minimum;
   const state = createQuietMonitorSchedule();
-  const list = products(50);
+  const list = products(MAX_PRODUCTS);
   const startAt = 1_000_000;
   const starts = new Map(list.map((product) => [product.id, []]));
   reconcileQuietMonitorSchedule(state, list, { now: startAt, randomInt, persistedStarts: {} });
-  for (let now = startAt; now <= startAt + 180_000; now += 250) {
+  for (let now = startAt; now <= startAt + 300_000; now += 250) {
     const candidate = nextQuietMonitorCandidate(state, { now, blockedUntil: new Map() });
     if (!candidate) continue;
     const started = markQuietMonitorStarted(state, candidate.productId, { now, randomInt });

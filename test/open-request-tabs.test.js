@@ -2,7 +2,15 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { chooseReusableTab, purchaseStageTab, shouldActivateTab, tabSku } = require("../extension/open-request-tabs");
+const { MAX_PRODUCTS } = require("../lib/core");
+const {
+  MAX_OPEN_REQUESTS,
+  chooseReusableTab,
+  partitionOpenRequests,
+  purchaseStageTab,
+  shouldActivateTab,
+  tabSku
+} = require("../extension/open-request-tabs");
 
 function walmartQueueUrl(itemId) {
   const qpdata = encodeURIComponent(JSON.stringify({
@@ -24,6 +32,17 @@ test("only explicit background requests keep their claimed tab inactive", () => 
   assert.equal(shouldActivateTab({ background: true }), false);
   assert.equal(shouldActivateTab({ background: false }), true);
   assert.equal(shouldActivateTab({}), true);
+});
+
+test("the browser drains the full 100-mission request batch", () => {
+  const requests = Array.from({ length: MAX_PRODUCTS + 1 }, (_, index) => ({
+    id: index,
+    dedicatedTab: index % 2 === 0
+  }));
+  const { dedicated, ordinary } = partitionOpenRequests(requests);
+  assert.equal(MAX_OPEN_REQUESTS, MAX_PRODUCTS);
+  assert.equal(dedicated.length + ordinary.length, 100);
+  assert.equal([...dedicated, ...ordinary].some((request) => request.id === 100), false);
 });
 
 test("the product's own tab is reused first", () => {

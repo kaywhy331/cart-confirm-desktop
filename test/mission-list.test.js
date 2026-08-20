@@ -3,6 +3,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const {
+  MAX_LIST_ITEMS,
   formatMissionList,
   selectedMissionProducts
 } = require("../lib/mission-list");
@@ -48,4 +49,20 @@ test("selection is deduplicated, ignores unknown IDs, and follows mission order"
     "amazon:B0ABC12345"
   ]);
   assert.throws(() => formatMissionList([]), /Select at least one mission/);
+});
+
+test("copy and export retain all 100 missions without accepting a 101st", () => {
+  const missions = Array.from({ length: MAX_LIST_ITEMS + 1 }, (_, index) => ({
+    id: `target:${1011209000 + index}`,
+    retailer: "target",
+    sku: String(1011209000 + index),
+    title: `Mission ${index + 1}`,
+    maxPrice: 20,
+    productUrl: `https://www.target.com/p/item-${index}/-/A-${1011209000 + index}`
+  }));
+  const selected = selectedMissionProducts(missions, missions.map((mission) => mission.id));
+  assert.equal(MAX_LIST_ITEMS, 100);
+  assert.equal(selected.length, 100);
+  assert.equal(selected.at(-1).id, missions[99].id);
+  assert.equal(formatMissionList(missions).split("\n\n").length, 100);
 });

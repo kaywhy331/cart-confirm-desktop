@@ -27,6 +27,7 @@ const {
   createProductStatus,
   matchingProduct,
   missionOpenUrl,
+  normalizeProductImageUrl,
   normalizeSettings,
   preserveAdminCampaignFields,
   preserveCheckoutEvidence,
@@ -757,24 +758,33 @@ function quickAddMissionRequest(input) {
   }
   const existing = settings.products.find((candidate) => candidate.id === product.id);
   if (existing) {
-    // A repeat capture through an affiliate link still has value: attach the
-    // freshly captured link to the existing mission so its opens carry
-    // affiliate credit. The link was already validated by quickAddMission
-    // against this mission's exact store and item ID.
+    // A repeat capture can safely enrich display/link metadata without
+    // changing price, quantity, action, fulfillment, or any purchase state.
+    // quickAddMission already constrained both references to this retailer.
     const affiliateUpdated = Boolean(product.affiliateOpenUrl)
       && product.affiliateOpenUrl !== existing.affiliateOpenUrl;
-    if (affiliateUpdated) {
+    const imageUpdated = Boolean(product.imageUrl)
+      && product.imageUrl !== existing.imageUrl;
+    if (affiliateUpdated || imageUpdated) {
       settings = {
         ...settings,
         products: settings.products.map((candidate) => (
           candidate.id === existing.id
-            ? { ...candidate, affiliateOpenUrl: product.affiliateOpenUrl }
+            ? {
+                ...candidate,
+                ...(affiliateUpdated ? { affiliateOpenUrl: product.affiliateOpenUrl } : {}),
+                ...(imageUpdated ? { imageUrl: product.imageUrl } : {})
+              }
             : candidate
         ))
       };
+      const captured = [
+        affiliateUpdated ? "affiliate link" : "",
+        imageUpdated ? "product thumbnail" : ""
+      ].filter(Boolean).join(" and ");
       status = {
         ...status,
-        lastMessage: `${existing.title || existing.sku} kept its mission settings; the affiliate product link from Chrome was attached.`.slice(0, 240)
+        lastMessage: `${existing.title || existing.sku} kept its mission settings; its ${captured} from Chrome ${affiliateUpdated && imageUpdated ? "were" : "was"} attached.`.slice(0, 240)
       };
       persistSettings();
       configVersion += 1;
@@ -786,6 +796,7 @@ function quickAddMissionRequest(input) {
         ok: true,
         duplicate: true,
         affiliateUpdated,
+        imageUpdated,
         product: { id: existing.id, title: existing.title, maxPrice: existing.maxPrice }
       }
     };
@@ -1670,6 +1681,16 @@ function handleCompanionEvent(rawEvent) {
   if (result.error) return { accepted: false, reason: result.error };
 
   const { event, product } = result;
+  if (product && event.imageUrl && event.imageUrl !== product.imageUrl) {
+    settings = {
+      ...settings,
+      products: settings.products.map((candidate) => (
+        candidate.id === product.id ? { ...candidate, imageUrl: event.imageUrl } : candidate
+      ))
+    };
+    persistSettings();
+    configVersion += 1;
+  }
   if (event.retailer && RETAILERS[event.retailer]) {
     retailerTabSeenAt.set(event.retailer, Date.now());
   }
@@ -2102,6 +2123,7 @@ function registerIpc() {
             ? nextSettings.products.map((product) => ({
                 ...toAutomationProduct(product),
                 groupId: String(product?.groupId || ""),
+                imageUrl: normalizeProductImageUrl(product?.imageUrl, product?.retailer),
                 affiliateOpenUrl: String(product?.affiliateOpenUrl || "")
               }))
             : nextSettings.products
@@ -2649,6 +2671,11 @@ async function quietCheck(product, taskEpoch, startToken) {
         );
         void openProduct(product.id, {
           actionKind: "background-stock-open",
+          // The stock-detected tab loads unfocused: the browser companion
+          // verifies the offer there and only the mission that claims the
+          // purchase lane pulls its tab forward. Opening it in the
+          // foreground made every in-stock watcher steal focus in turn.
+          background: true,
           resumeMonitoring: false,
           stopEpoch: taskEpoch
         }).catch(() => {});

@@ -155,9 +155,11 @@ test("Quick add keeps the exact observed page cap when the title also matches an
 test("quick add stores the captured affiliate link and opens with it first", () => {
   const { missionOpenUrl } = require("../lib/core");
   const affiliate = "https://www.target.com/p/pokemon-booster-bundle/-/A-1011209279?nrtv_cid=8k7bjebavog09&clkid=63477bc3";
+  const imageUrl = "https://target.scene7.com/is/image/Target/GUEST_booster";
   const mission = quickAddMission({
     productUrl: "https://www.target.com/p/pokemon-booster-bundle/-/A-1011209279",
     affiliateOpenUrl: affiliate,
+    imageUrl,
     retailer: "target",
     sku: "1011209279",
     title: "Pokémon Booster Bundle",
@@ -165,6 +167,7 @@ test("quick add stores the captured affiliate link and opens with it first", () 
   });
   assert.equal(mission.productUrl, "https://www.target.com/p/pokemon-booster-bundle/-/A-1011209279");
   assert.equal(mission.affiliateOpenUrl, affiliate);
+  assert.equal(mission.imageUrl, imageUrl);
   assert.equal(missionOpenUrl(mission), affiliate);
 
   // A mismatched or malformed capture is dropped without failing the add.
@@ -179,4 +182,3 @@ test("quick add stores the captured affiliate link and opens with it first", () 
   assert.equal(mismatched.affiliateOpenUrl, "");
   assert.equal(missionOpenUrl(mismatched), mismatched.productUrl);
 });
-

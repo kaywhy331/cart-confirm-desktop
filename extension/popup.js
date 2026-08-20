@@ -160,15 +160,19 @@ elements.addButton.addEventListener("click", async () => {
     setStatus(
       result.duplicate
         ? (result.affiliateUpdated
-          ? "This item is already in Missions; the affiliate link from this page was attached to it."
-          : "This item is already in Missions; its existing settings were left unchanged.")
+          ? `This item is already in Missions; the affiliate link${result.imageUpdated ? " and product thumbnail were" : " was"} attached to it.`
+          : result.imageUpdated
+            ? "This item is already in Missions; its product thumbnail was captured from this page."
+            : "This item is already in Missions; its existing settings were left unchanged.")
         : result.product?.action === "checkout"
           ? "Auto-submit mission added. Live final-review verification is required; one locked preflight per store approves its checkout profile."
           : `Mission added with the desktop default profile (${result.product?.action || "configured"}).`,
       "success"
     );
     elements.addButton.textContent = result.duplicate
-      ? (result.affiliateUpdated ? "Affiliate Link Attached" : "Already in Missions")
+      ? (result.affiliateUpdated
+        ? (result.imageUpdated ? "Link + Thumbnail Attached" : "Affiliate Link Attached")
+        : result.imageUpdated ? "Thumbnail Captured" : "Already in Missions")
       : "Added";
     return;
   }

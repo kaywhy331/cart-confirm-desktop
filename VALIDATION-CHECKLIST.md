@@ -22,7 +22,7 @@ blocks bad states rather than only ever testing the happy path.
 
 1. **Pick one store and one low-stakes test product.** In-stock, first-party,
    cheap enough that an unexpected charge is a non-event, not a scarce or
-   hyped item. Don't start the first pass across all three stores or all 50
+   hyped item. Don't start the first pass across all three stores or all 100
    products at once — if something's wrong, a single store/product run tells
    you which adapter broke it instead of leaving you guessing.
 2. **Optional but recommended:** temporarily set that store account's default
@@ -106,16 +106,19 @@ For each of Target, Walmart, and Amazon you plan to automate:
 - [ ] With Autopilot off, run a **Catalog Inbox** keyword search against one retailer. Confirm exactly one official search page opens and the inbox lists only visible result cards with the correct retailer, item ID, title, canonical URL, displayed price (or **Not shown**), and observation time.
 - [ ] Repeat with include words, exclude words, and a maximum displayed price. Confirm nonmatching titles, missing prices under a maximum-price filter, and prices above the maximum stay out of the inbox. Confirm no pagination, scrolling, repeated retailer requests, or private API calls are initiated by Cart Confirm.
 - [ ] In **Item defaults**, leave one product type without prices and approve a different type for Target, Walmart, and Amazon. Import matching and nonmatching catalog results with an explicitly selected profile. Confirm matching rows receive only their retailer's approved MSRP and selected profile; unknown rows retain the profile fields but stay Off at $0. Confirm displayed listing prices never become caps.
-- [ ] Use Catalog Inbox **Select all** and **Select none**, import one result only once, and confirm existing missions are skipped and the 50-mission limit is never exceeded.
+- [ ] Use Catalog Inbox **Select all** and **Select none**, import one result only once, and confirm existing missions are skipped and the 100-mission limit is never exceeded.
 - [ ] Select one harmless exact Walmart result with an approved Walmart MSRP and item profile, choose a future **Known Walmart drop time**, and select **Monitor selected for Walmart prep**. Confirm the candidate appears separately from Missions and Autopilot can arm with only that candidate. Observe that the first public-page response establishes a baseline and does not add a Mission; an unchanged or `304` response, timeout, and network failure also do not. In a controlled local/mock test, confirm a `200` to `404`/`503` transition, recovery to `200`, embedded availability/price change, or `/qp` redirect moves only that exact item into Missions while preserving its profile, approved caps, and drop time. Confirm no browser page opens before that time.
 - [ ] While a harmless Walmart prep check is in flight, press **Stop everything**. Confirm the request is aborted, the candidate and cached observation are cleared, and a late response cannot create a Mission. Confirm prep checks rotate one at a time no faster than every 30 seconds, consume the shared 120-action/hour Walmart budget, respect overload cooldowns, and never request a private inventory, checkout, ticket, or signature endpoint.
 
 - [ ] With the desktop connected and Autopilot off, use the Chrome toolbar
       **Quick add** popup on one product page from each supported retailer.
       Confirm the preview shows the exact TCIN / Walmart item ID / ASIN, title,
-      and current retailer-page price. Add it and confirm Missions receives an
+      and current retailer-page price. Add it and confirm Missions receives a
       row whose maximum unit price exactly matches the preview and whose other
-      fields match the selected default item profile. On a new install, confirm
+      fields match the selected default item profile. Confirm a small product
+      thumbnail appears before the store name and hovering the row opens a
+      medium preview without navigating away; a broken or missing retailer
+      image must leave the row usable without a preview. On a new install, confirm
       shipping + watch-only. Confirm
       Autopilot remains Off and no cart or checkout action occurs during import.
 - [ ] Change an existing Quick-added mission's cap, then Quick-add the same

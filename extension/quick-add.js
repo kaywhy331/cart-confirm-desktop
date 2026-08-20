@@ -6,6 +6,19 @@
     walmart: ["h1[data-automation-id='product-title']", "h1[itemprop='name']", "h1"],
     amazon: ["#productTitle", "h1"]
   });
+  const IMAGE_SELECTORS = Object.freeze({
+    target: [
+      "[data-test='product-image'] img",
+      "[data-test*='product-image' i] img",
+      "[data-testid*='product-image' i] img"
+    ],
+    walmart: [
+      "img[data-testid='hero-image']",
+      "[data-testid='hero-image-container'] img",
+      "[data-automation-id='product-image'] img"
+    ],
+    amazon: ["#landingImage", "#imgBlkFront", "#main-image img"]
+  });
 
   function cleanTitle(value) {
     return String(value || "")
@@ -45,6 +58,69 @@
     }
   }
 
+  function normalizeImageCandidate(value, pageUrl) {
+    if (!String(value || "").trim()) return "";
+    try {
+      const url = new URL(String(value || ""), String(pageUrl || ""));
+      if (url.protocol !== "https:" || url.username || url.password) return "";
+      url.hash = "";
+      return url.href.length <= 2_048 ? url.href : "";
+    } catch {
+      return "";
+    }
+  }
+
+  function dynamicAmazonImage(element) {
+    try {
+      const entries = Object.entries(JSON.parse(element?.getAttribute("data-a-dynamic-image") || "{}"));
+      entries.sort((left, right) => {
+        const leftSize = Array.isArray(left[1]) ? Number(left[1][0]) * Number(left[1][1]) : 0;
+        const rightSize = Array.isArray(right[1]) ? Number(right[1][0]) * Number(right[1][1]) : 0;
+        return rightSize - leftSize;
+      });
+      return entries[0]?.[0] || "";
+    } catch {
+      return "";
+    }
+  }
+
+  function imageElementUrl(element, pageUrl) {
+    if (!element) return "";
+    const candidates = [
+      element.getAttribute("data-old-hires"),
+      dynamicAmazonImage(element),
+      element.currentSrc,
+      element.getAttribute("src"),
+      element.getAttribute("data-src")
+    ];
+    for (const candidate of candidates) {
+      const normalized = normalizeImageCandidate(candidate, pageUrl);
+      if (normalized) return normalized;
+    }
+    return "";
+  }
+
+  function pageImageUrl(doc, value, retailer = globalThis.CartConfirmRetailers?.detectRetailer(value)) {
+    for (const selector of IMAGE_SELECTORS[retailer] || []) {
+      const imageUrl = imageElementUrl(doc.querySelector(selector), value);
+      if (imageUrl) return imageUrl;
+    }
+    for (const selector of [
+      "meta[property='og:image']",
+      "meta[property='og:image:secure_url']",
+      "meta[name='twitter:image']",
+      "link[rel='image_src']"
+    ]) {
+      const element = doc.querySelector(selector);
+      const imageUrl = normalizeImageCandidate(
+        element?.getAttribute("content") || element?.getAttribute("href"),
+        value
+      );
+      if (imageUrl) return imageUrl;
+    }
+    return "";
+  }
+
   function canonicalProductUrl(retailer, sku, value) {
     if (retailer === "walmart") return `https://www.walmart.com/ip/${sku}`;
     if (retailer === "amazon") return `https://www.amazon.com/dp/${sku}`;
@@ -67,6 +143,7 @@
       retailer,
       sku,
       title: pageTitle(doc, retailer, Retailers) || `${adapter.label} ${sku}`,
+      imageUrl: pageImageUrl(doc, value, retailer),
       productUrl: canonicalProductUrl(retailer, sku, value),
       affiliateOpenUrl: affiliateCaptureUrl(value),
       price: hasUsablePrice(offer?.price) ? Math.round(price * 100) / 100 : null,
@@ -77,7 +154,7 @@
     };
   }
 
-  const api = Object.freeze({ affiliateCaptureUrl, canonicalProductUrl, cleanTitle, hasUsablePrice, inspectProductPage, pageTitle });
+  const api = Object.freeze({ affiliateCaptureUrl, canonicalProductUrl, cleanTitle, hasUsablePrice, inspectProductPage, pageImageUrl, pageTitle });
   globalThis.CartConfirmQuickAdd = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;
 })();

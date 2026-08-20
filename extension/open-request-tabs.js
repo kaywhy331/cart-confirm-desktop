@@ -3,6 +3,7 @@
 (() => {
   const Retailers = globalThis.CartConfirmRetailers
     || (typeof require === "function" ? require("./retailers") : null);
+  const MAX_OPEN_REQUESTS = 100;
 
   function tabSku(retailer, url) {
     return Retailers?.extractSkuFromUrl?.(String(retailer || ""), String(url || "")) || "";
@@ -10,6 +11,14 @@
 
   function shouldActivateTab(request = {}) {
     return request.background !== true;
+  }
+
+  function partitionOpenRequests(requests = []) {
+    const bounded = (Array.isArray(requests) ? requests : []).slice(0, MAX_OPEN_REQUESTS);
+    return {
+      dedicated: bounded.filter((request) => request?.dedicatedTab === true),
+      ordinary: bounded.filter((request) => request?.dedicatedTab !== true)
+    };
   }
 
   // A tab sitting on a cart, checkout, or order-confirmation page is a live
@@ -64,7 +73,14 @@
       || null;
   }
 
-  const api = Object.freeze({ chooseReusableTab, purchaseStageTab, shouldActivateTab, tabSku });
+  const api = Object.freeze({
+    MAX_OPEN_REQUESTS,
+    chooseReusableTab,
+    partitionOpenRequests,
+    purchaseStageTab,
+    shouldActivateTab,
+    tabSku
+  });
   globalThis.CartConfirmOpenRequestTabs = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;
 })();

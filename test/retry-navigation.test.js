@@ -361,13 +361,18 @@ test("a completed mission's cart tab goes quiet instead of alarming and re-activ
   // The cart handler checks completion BEFORE any activation or cart-reached
   // alarm, so a finished mission parked on its cart page stops harassing the
   // operator and stops pinning the rotation stand-down clock.
-  const cartPage = section("async function handleCartPage", "const inventory = adapter.cartInventory(document);");
+  const cartPage = section("async function handleCartPage", "async function handleCheckoutPage");
   const completedGate = cartPage.indexOf("if (addState.ok && addState.completed) return;");
   const activation = cartPage.indexOf("requestPurchaseTabActivation(product);");
   const cartReached = cartPage.indexOf('send("cart-reached"');
+  const combinedHold = cartPage.indexOf("combined-cart-hold:");
   assert.ok(completedGate > 0, "cart handler must gate on completion");
   assert.ok(completedGate < activation, "completion gate must precede tab activation");
   assert.ok(completedGate < cartReached, "completion gate must precede the cart alarm");
+  // A combined member that is carted and holding must never re-pull its tab
+  // forward: activation sits after the combined holding branches return.
+  assert.ok(combinedHold > 0, "cart handler must publish the combined holding status");
+  assert.ok(combinedHold < activation, "combined holding branches must precede tab activation");
 
   // Activation requests carry the product id, and the worker refuses them
   // for completed missions even if a stale content script still asks.
@@ -376,3 +381,9 @@ test("a completed mission's cart tab goes quiet instead of alarming and re-activ
   assert.match(background, /if \(state\.completed\?\.\[productId\]\) return \{ ok: false, reason: "completed" \};/);
 });
 
+
+test("a stock-detected quiet-monitor open loads its tab in the background", () => {
+  const main = fs.readFileSync(path.join(__dirname, "..", "main.js"), "utf8");
+  const openCall = main.slice(main.indexOf('actionKind: "background-stock-open"') - 200, main.indexOf('actionKind: "background-stock-open"') + 400);
+  assert.match(openCall, /background: true/);
+});

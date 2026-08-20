@@ -19,6 +19,7 @@ function snapshotFixture() {
         id: "target:95298172",
         retailer: "target",
         title: "Booster Box",
+        imageUrl: "https://target.scene7.com/is/image/Target/GUEST_booster",
         openAt: "",
         productUrl: "https://www.target.com/p/restocks/A-95298172",
         sku: "95298172",
@@ -315,6 +316,23 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   const card = doc.querySelector(".mission-card");
   assert.ok(card, "expected a mission view card");
   assert.equal(card.querySelector(".status-title").textContent, "Booster Box");
+  const imageWrap = card.querySelector("[data-view='imageWrap']");
+  const thumbnail = card.querySelector("[data-view='image']");
+  const storeName = card.querySelector("[data-view='store']");
+  assert.equal(imageWrap.hidden, false);
+  assert.equal(thumbnail.src, "https://target.scene7.com/is/image/Target/GUEST_booster");
+  assert.equal(storeName.previousElementSibling, imageWrap, "the product thumbnail precedes the store name");
+  assert.equal(thumbnail.getAttribute("referrerpolicy"), "no-referrer");
+  card.dispatchEvent(new window.Event("mouseenter"));
+  assert.equal(doc.getElementById("missionImagePreview").hidden, false);
+  assert.equal(doc.getElementById("missionImagePreviewImage").src, thumbnail.src);
+  assert.match(doc.getElementById("missionImagePreviewCaption").textContent, /Target · Booster Box/);
+  card.dispatchEvent(new window.Event("mouseleave"));
+  assert.equal(doc.getElementById("missionImagePreview").hidden, true);
+  imageWrap.dispatchEvent(new window.Event("focus"));
+  assert.equal(doc.getElementById("missionImagePreview").hidden, false, "keyboard focus also opens the image preview");
+  imageWrap.dispatchEvent(new window.Event("blur"));
+  assert.equal(doc.getElementById("missionImagePreview").hidden, true);
   assert.equal(card.querySelector(".action-chip").textContent, "ATC");
   assert.equal(card.querySelector(".mission-price-quantity").textContent, "$40 ×1");
   assert.match(card.querySelector(".mission-price-quantity").title, /\$40\.00/);
@@ -720,6 +738,7 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   let editCard = doc.querySelector(".mission-edit-card");
   assert.ok(editCard, "expected the inline mission editor");
   assert.equal(editCard.querySelector("[data-field='title']").value, "Booster Box");
+  assert.equal(editCard.querySelector("[data-field='imageUrl']").value, "https://target.scene7.com/is/image/Target/GUEST_booster");
   assert.equal(editCard.querySelector("[data-field='howlUrl']"), null);
   assert.equal(editCard.querySelector("[data-field='affiliateUrl']"), null);
   const affiliateOpenInput = editCard.querySelector("[data-field='affiliateOpenUrl']");
@@ -755,6 +774,11 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   assert.equal(
     savedSettingsInputs.at(-1).products[0].affiliateOpenUrl,
     "https://www.target.com/p/-/A-95298172?afid=user"
+  );
+  assert.equal(
+    savedSettingsInputs.at(-1).products[0].imageUrl,
+    "https://target.scene7.com/is/image/Target/GUEST_booster",
+    "editing a mission preserves its captured thumbnail"
   );
 
   // Backend-provisioned campaign links expose a one-click copy action without

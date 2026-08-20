@@ -1656,7 +1656,12 @@
     const addState = await productAutomationState(product);
     if (addState.ok && addState.completed) return;
 
-    if (config.automationEnabled) requestPurchaseTabActivation(product);
+    // Activation deliberately does NOT happen up here. A combined-order
+    // member that is carted and holding sits on this page with nothing for
+    // the operator to do, and re-pulling its tab forward every throttle
+    // window made Chrome ping-pong back to the first carted item while the
+    // other missions were still checking stock. The tab comes forward below
+    // only when this mission is actually proceeding toward checkout.
 
     // Alert the operator the moment the cart page is on screen for a purchase
     // mission, before line and quantity verification finish, so they are
@@ -1903,6 +1908,12 @@
         return;
       }
     }
+
+    // Only a mission that holds the lane and is proceeding to checkout (the
+    // combined captain once the batch is ready, or a solo mission) brings its
+    // cart tab forward. Holding members and lane-waiting missions returned
+    // above without stealing focus.
+    requestPurchaseTabActivation(product);
 
     const checkoutButton = adapter.checkoutButton(document);
     if (!checkoutButton) {
@@ -2624,10 +2635,12 @@
         return;
       }
 
-      interactiveSightings.clear();
-
-      void send("page-observed", product, {}, `page:${product.id}:${pageAddress()}`, OBSERVATION_DEDUPE_MS);
       const kind = adapter.pageKind(location.href, document, product);
+      const imageUrl = kind === "product" ? QuickAdd.pageImageUrl(document, location.href, retailer) : "";
+      interactiveSightings.clear();
+      void send("page-observed", product, {
+        imageUrl
+      }, `page:${product.id}:${pageAddress()}:${imageUrl ? "image" : "no-image"}`, OBSERVATION_DEDUPE_MS);
       if (kind === "queue" && await handleRetailerQueue(product)) return;
       if (handleQueueCaptureRetry(product)) return;
       if (kind === "confirmation" && await handleConfirmation(product)) return;
