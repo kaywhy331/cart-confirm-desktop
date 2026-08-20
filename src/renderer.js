@@ -30,6 +30,9 @@ const elements = {
   missionRetailerFilter: document.getElementById("missionRetailerFilter"),
   missionActiveFilter: document.getElementById("missionActiveFilter"),
   missionFilterCount: document.getElementById("missionFilterCount"),
+  missionPlanTools: document.getElementById("missionPlanTools"),
+  planEditButton: document.getElementById("planEditButton"),
+  catalogLauncherButton: document.getElementById("catalogLauncherButton"),
   missionViewTemplate: document.getElementById("missionViewTemplate"),
   missionEditTemplate: document.getElementById("missionEditTemplate"),
   missionImagePreview: document.getElementById("missionImagePreview"),
@@ -92,7 +95,9 @@ const elements = {
   msrpSuggestions: document.getElementById("msrpSuggestions"),
   bulkMissionSelectAllButton: document.getElementById("bulkMissionSelectAllButton"),
   bulkMissionSelectNoneButton: document.getElementById("bulkMissionSelectNoneButton"),
-  bulkMissionList: document.getElementById("bulkMissionList"),
+  bulkMissionSelectionCount: document.getElementById("bulkMissionSelectionCount"),
+  bulkEnableMissionsButton: document.getElementById("bulkEnableMissionsButton"),
+  bulkDisableMissionsButton: document.getElementById("bulkDisableMissionsButton"),
   bulkItemProfile: document.getElementById("bulkItemProfile"),
   applyBulkItemProfileButton: document.getElementById("applyBulkItemProfileButton"),
   bulkMissionGroup: document.getElementById("bulkMissionGroup"),
@@ -101,6 +106,14 @@ const elements = {
   bulkMissionOpenAt: document.getElementById("bulkMissionOpenAt"),
   scheduleCandidateMissionsButton: document.getElementById("scheduleCandidateMissionsButton"),
   clearSelectedMissionSchedulesButton: document.getElementById("clearSelectedMissionSchedulesButton"),
+  readinessState: document.getElementById("readinessState"),
+  readinessSummary: document.getElementById("readinessSummary"),
+  readinessConnection: document.getElementById("readinessConnection"),
+  readinessEnabled: document.getElementById("readinessEnabled"),
+  readinessScheduled: document.getElementById("readinessScheduled"),
+  readinessExposure: document.getElementById("readinessExposure"),
+  readinessNote: document.getElementById("readinessNote"),
+  readinessReviewButton: document.getElementById("readinessReviewButton"),
   testButton: document.getElementById("testButton"),
   openAllButton: document.getElementById("openAllButton"),
   worstCase: document.getElementById("worstCase"),
@@ -180,7 +193,22 @@ const BLOCKING_REASONS = new Set([
   "unmatched-product"
 ]);
 
-function setPanelExpanded(toggle, expanded) {
+const PANEL_STATE_PREFIX = "cart-confirm:panel:";
+
+function panelStateKey(toggle) {
+  return `${PANEL_STATE_PREFIX}${toggle.getAttribute("aria-controls") || "unknown"}`;
+}
+
+function savedPanelExpanded(toggle, fallback) {
+  try {
+    const saved = window.localStorage.getItem(panelStateKey(toggle));
+    return saved === null ? fallback : saved === "expanded";
+  } catch {
+    return fallback;
+  }
+}
+
+function setPanelExpanded(toggle, expanded, options = {}) {
   const panel = toggle.closest(".collapsible-panel");
   if (!panel) return;
   const content = document.getElementById(toggle.getAttribute("aria-controls"));
@@ -188,10 +216,17 @@ function setPanelExpanded(toggle, expanded) {
   if (content) content.hidden = !expanded;
   toggle.setAttribute("aria-expanded", String(expanded));
   toggle.textContent = expanded ? "Minimize" : "Expand";
+  if (options.persist === false) return;
+  try {
+    window.localStorage.setItem(panelStateKey(toggle), expanded ? "expanded" : "collapsed");
+  } catch {
+    // A read-only storage context still gets the markup defaults.
+  }
 }
 
 for (const toggle of document.querySelectorAll(".panel-toggle")) {
-  setPanelExpanded(toggle, toggle.getAttribute("aria-expanded") !== "false");
+  const fallback = toggle.getAttribute("aria-expanded") !== "false";
+  setPanelExpanded(toggle, savedPanelExpanded(toggle, fallback), { persist: false });
   toggle.addEventListener("click", () => {
     setPanelExpanded(toggle, toggle.getAttribute("aria-expanded") !== "true");
   });
@@ -206,7 +241,8 @@ let availableUpdateVersion = "";
 let lastUpdaterRevision = -1;
 let editingId = null; // null | product id | "new"
 let editCardNode = null;
-let resumeAutopilotAfterEdit = false;
+let planEditMode = false;
+let resumeAutopilotAfterPlanEdit = false;
 let awaySince = 0;
 let settingsSaveTimer = null;
 let selectedConfigurationProfileId = "built-in:recommended";
@@ -727,7 +763,7 @@ async function saveMissionList(products, overrides = {}) {
   return next;
 }
 
-// --- Pause / resume Autopilot around edits, so armed missions stay editable ---
+// --- Plan editing pauses Autopilot once, then resumes once when the plan is ready ---
 
 async function pauseAutopilot() {
   const next = await window.cartAssist.saveSettings({
@@ -760,22 +796,68 @@ async function resumeAutopilot() {
     && !window.confirm(`${autoSubmit.count} enabled mission${autoSubmit.count === 1 ? "" : "s"} may submit a real order.${liveVerificationWarning(autoSubmit.liveVerificationCount)} Resuming starts a new run. Switch Autopilot back on?`)
   ) {
     setMessage("Autopilot stayed off. Switch it on from the header when ready.", "warn");
-    return;
+    return false;
   }
   const next = await window.cartAssist.saveSettings({ ...saved, automationEnabled: true });
   render(next);
+  return true;
 }
 
-// Apply per-mission enabled changes, transparently pausing and resuming
-// Autopilot when it is on (a resume starts a new run by design).
-async function setMissionsEnabled(updates) {
+async function beginPlanEditSession() {
+  if (planEditMode) return true;
   const actionStopEpoch = stopUiEpoch;
-  const wasArmed = isArmed();
-  if (wasArmed) await pauseAutopilot();
+  try {
+    if (isArmed()) {
+      await pauseAutopilot();
+      if (actionStopEpoch !== stopUiEpoch) return false;
+      resumeAutopilotAfterPlanEdit = true;
+    }
+    planEditMode = true;
+    renderMissions();
+    setMessage(
+      resumeAutopilotAfterPlanEdit
+        ? "Autopilot paused once. Make every plan change, then choose Finish editing to start the updated run."
+        : "Plan editor open. Select filtered missions for bulk changes, or edit individual missions.",
+      "warn"
+    );
+    return true;
+  } catch (error) {
+    setMessage(error.message || "Could not open the plan editor.", "error");
+    return false;
+  }
+}
+
+async function finishPlanEditSession() {
+  if (!planEditMode) return;
+  if (editingId) {
+    setMessage("Finish the open mission editor first (Done or Cancel).", "error");
+    return;
+  }
+  const shouldResume = resumeAutopilotAfterPlanEdit;
+  const actionStopEpoch = stopUiEpoch;
+  planEditMode = false;
+  resumeAutopilotAfterPlanEdit = false;
+  bulkMissionSelectedIds.clear();
+  renderMissions();
+  if (!shouldResume || actionStopEpoch !== stopUiEpoch) {
+    setMessage("Plan editor closed. Your changes are saved.", "success");
+    return;
+  }
+  try {
+    const resumed = await resumeAutopilot();
+    if (resumed) setMessage("Plan saved and Autopilot resumed with one new run.", "success");
+  } catch (error) {
+    setMessage(error.message || "The plan was saved, but Autopilot could not resume.", "error");
+  }
+}
+
+// Enabled changes join the current plan-edit session. When a run is active,
+// the first change pauses it and leaves it paused for the remaining edits.
+async function setMissionsEnabled(updates) {
+  if (isArmed() && !await beginPlanEditSession()) return;
   await saveMissionList(savedProducts().map((product) => (
     updates.has(product.id) ? { ...product, enabled: updates.get(product.id) } : product
   )));
-  if (wasArmed && actionStopEpoch === stopUiEpoch) await resumeAutopilot();
 }
 
 // --- Mission cards ---
@@ -902,6 +984,26 @@ function buildViewCard(product, status) {
   card.title = `${STORE_LABELS[product.retailer]} ${product.sku} — ${capDescription} — ${fullState}: ${status.lastMessage || "Waiting."}`;
   card.setAttribute("aria-label", card.title);
 
+  if (planEditMode) {
+    const selection = document.createElement("label");
+    selection.className = "mission-bulk-select";
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.checked = bulkMissionSelectedIds.has(product.id);
+    checkbox.setAttribute("aria-label", `Select ${productLabel(product)} for a bulk plan change`);
+    checkbox.addEventListener("change", () => {
+      if (checkbox.checked) bulkMissionSelectedIds.add(product.id);
+      else bulkMissionSelectedIds.delete(product.id);
+      card.classList.toggle("bulk-selected", checkbox.checked);
+      renderBulkMissionControls(currentSnapshot.settings);
+    });
+    const selectionText = document.createElement("span");
+    selectionText.textContent = "Select";
+    selection.append(checkbox, selectionText);
+    card.prepend(selection);
+    card.classList.toggle("bulk-selected", checkbox.checked);
+  }
+
   view(card, "enabled").checked = product.enabled !== false;
   configureMissionProductImage(card, product);
   const storeView = view(card, "store");
@@ -978,8 +1080,8 @@ function buildViewCard(product, status) {
   setMissionButtonLabel(editButton, `Edit ${productLabel(product)}`);
   setMissionButtonLabel(removeButton, `Remove ${productLabel(product)}`);
   if (armedNow) {
-    editButton.title = "Pauses Autopilot while you edit; it resumes on Done";
-    removeButton.title = "Pauses Autopilot to remove, then resumes";
+    editButton.title = "Pauses Autopilot once and opens the plan editor";
+    removeButton.title = "Pauses Autopilot once and keeps the plan editor open";
   }
 
   card.dataset.productId = product.id;
@@ -1026,11 +1128,8 @@ function buildViewCard(product, status) {
   removeButton.addEventListener("click", () => {
     if (!window.confirm(`Remove "${productLabel(product)}"?`)) return;
     void runAction(async () => {
-      const actionStopEpoch = stopUiEpoch;
-      const wasArmed = isArmed();
-      if (wasArmed) await pauseAutopilot();
+      if (isArmed() && !await beginPlanEditSession()) return;
       await saveMissionList(savedProducts().filter((candidate) => candidate.id !== product.id));
-      if (wasArmed && actionStopEpoch === stopUiEpoch) await resumeAutopilot();
     }, `${productLabel(product)} removed.`);
   });
   view(card, "enabled").addEventListener("change", (event) => {
@@ -1187,12 +1286,12 @@ function buildEditCard(product, options = {}) {
   field(card, "maxPrice").addEventListener("input", () => updateMissionOrderTotal(card));
   field(card, "quantity").addEventListener("change", () => updateMissionOrderTotal(card));
   field(card, "quantity").addEventListener("input", () => updateMissionOrderTotal(card));
-  card.querySelector(".mission-apply-profile").addEventListener("click", () => {
+  field(card, "itemProfileId").addEventListener("change", () => {
     try {
       const applied = applyProfileToEditor(card);
       setMessage(applied.enabled
-        ? `Profile applied with a $${applied.maxPrice.toFixed(2)} approved MSRP cap.`
-        : "Profile applied. No approved MSRP matched, so the mission remains Off until you set or approve a price.",
+        ? `Profile applied immediately with a $${applied.maxPrice.toFixed(2)} approved MSRP cap.`
+        : "Profile applied immediately. No approved MSRP matched, so the mission remains Off until you set or approve a price.",
       applied.enabled ? "success" : "warn");
     } catch (error) {
       setMessage(error.message || "The item profile could not be applied.", "error");
@@ -1203,10 +1302,6 @@ function buildEditCard(product, options = {}) {
     editingId = null;
     editCardNode = null;
     renderMissions();
-    if (resumeAutopilotAfterEdit) {
-      resumeAutopilotAfterEdit = false;
-      void runAction(() => resumeAutopilot(), "Autopilot resumed.");
-    }
   };
   card.querySelector(".mission-cancel").addEventListener("click", cancel);
   card.addEventListener("keydown", (event) => {
@@ -1329,10 +1424,6 @@ async function finishEdit(card) {
     editingId = null;
     editCardNode = null;
     renderMissions();
-    if (resumeAutopilotAfterEdit) {
-      resumeAutopilotAfterEdit = false;
-      await runAction(() => resumeAutopilot(), "Autopilot resumed.");
-    }
   }
 }
 
@@ -1341,19 +1432,7 @@ async function startEdit(product, seed = null) {
     setMessage("Finish the open mission editor first (Done or Cancel).", "error");
     return;
   }
-  if (isArmed()) {
-    const actionStopEpoch = stopUiEpoch;
-    try {
-      await pauseAutopilot();
-      resumeAutopilotAfterEdit = actionStopEpoch === stopUiEpoch;
-      if (resumeAutopilotAfterEdit) {
-        setMessage("Autopilot paused while you edit — it resumes on Done.", "warn");
-      }
-    } catch (error) {
-      setMessage(error.message || "Could not pause Autopilot.", "error");
-      return;
-    }
-  }
+  if (isArmed() && !await beginPlanEditSession()) return;
   editingId = product ? product.id : "new";
   editCardNode = buildEditCard(product || seed, { isNew: !product });
   renderMissions();
@@ -1371,11 +1450,12 @@ function closeBulkImportDialog() {
   else elements.bulkImportDialog.removeAttribute("open");
 }
 
-function openBulkImportDialog() {
+async function openBulkImportDialog() {
   if (editingId) {
     setMessage("Finish the open mission editor before importing URLs.", "error");
     return;
   }
+  if (isArmed() && !await beginPlanEditSession()) return;
   elements.bulkImportText.value = "";
   setBulkImportResult("");
   if (typeof elements.bulkImportDialog.showModal === "function") elements.bulkImportDialog.showModal();
@@ -1403,14 +1483,11 @@ async function submitBulkImport() {
     return;
   }
 
-  const actionStopEpoch = stopUiEpoch;
-  const wasArmed = isArmed();
   bulkImportInFlight = true;
   elements.bulkImportSubmitButton.disabled = true;
   elements.bulkImportCancelButton.disabled = true;
   setBulkImportResult("Validating and deduplicating URLs…");
   try {
-    if (wasArmed) await pauseAutopilot();
     const result = await window.cartAssist.bulkImportMissions(text);
     render(result.snapshot);
     const summaryText = bulkImportSummaryText(result.summary);
@@ -1418,21 +1495,12 @@ async function submitBulkImport() {
     if (result.summary?.imported > 0) {
       bulkImportInFlight = false;
       closeBulkImportDialog();
-      if (wasArmed && actionStopEpoch === stopUiEpoch) await resumeAutopilot();
       setMessage(`${summaryText}. Review each imported mission before enabling it.`, "success");
       return;
     }
     setBulkImportResult(`${summaryText}${issueText ? ` ${issueText}` : ""}`, "error");
-    if (wasArmed && actionStopEpoch === stopUiEpoch) await resumeAutopilot();
   } catch (error) {
     setBulkImportResult(error.message || "The URL import failed.", "error");
-    if (wasArmed && actionStopEpoch === stopUiEpoch) {
-      try {
-        await resumeAutopilot();
-      } catch {
-        setMessage("Import failed and Autopilot could not be resumed. Review the header state.", "error");
-      }
-    }
   } finally {
     bulkImportInFlight = false;
     elements.bulkImportSubmitButton.disabled = false;
@@ -1630,7 +1698,7 @@ function resetItemProfileForm() {
   elements.itemProfileId.value = "";
   elements.itemProfileName.value = "";
   elements.itemProfileQuantity.value = "1";
-  elements.itemProfileAction.value = "checkout";
+  elements.itemProfileAction.value = "watch";
   elements.itemProfileFulfillment.value = "shipping";
   elements.itemProfileAlert.value = "standard";
   elements.itemProfileEnabled.checked = true;
@@ -1868,42 +1936,41 @@ function renderMsrpCatalog(settings) {
   }));
 }
 
-function renderBulkMissionDefaults(settings) {
+function filteredMissionProducts() {
+  const filters = missionFilterValues();
+  return savedProducts().filter((product) => missionMatchesFilters(product, filters));
+}
+
+function renderBulkMissionControls(settings) {
   const currentIds = new Set(settings.products.map((product) => product.id));
   for (const id of [...bulkMissionSelectedIds]) if (!currentIds.has(id)) bulkMissionSelectedIds.delete(id);
+  elements.missionPlanTools.hidden = !planEditMode;
+  elements.planEditButton.textContent = planEditMode ? "Finish editing" : "Edit plan";
+  elements.planEditButton.classList.toggle("primary", planEditMode);
+  elements.planEditButton.classList.toggle("secondary", !planEditMode);
+  elements.planEditButton.setAttribute("aria-pressed", String(planEditMode));
+  if (!planEditMode) return;
+
+  elements.missionPlanTools.classList.toggle("is-empty", !settings.products.length);
   const selectedGroupId = elements.bulkMissionGroup.value;
   missionGroupOptions(elements.bulkMissionGroup, selectedGroupId);
-  elements.bulkMissionList.replaceChildren(...settings.products.map((product) => {
-    const label = document.createElement("label");
-    label.className = "bulk-mission-option";
-    const checkbox = document.createElement("input");
-    checkbox.type = "checkbox";
-    checkbox.checked = bulkMissionSelectedIds.has(product.id);
-    checkbox.addEventListener("change", () => {
-      if (checkbox.checked) bulkMissionSelectedIds.add(product.id);
-      else bulkMissionSelectedIds.delete(product.id);
-      renderBulkMissionDefaults(currentSnapshot.settings);
-    });
-    const text = document.createElement("span");
-    text.textContent = `${STORE_LABELS[product.retailer]} · ${productLabel(product)} · ${ACTION_LABELS[product.action]}`;
-    label.append(checkbox, text);
-    return label;
-  }));
-  if (!settings.products.length) {
-    const empty = document.createElement("div");
-    empty.className = "empty-state";
-    empty.textContent = "Add missions before using bulk update.";
-    elements.bulkMissionList.append(empty);
-  }
+  const visible = filteredMissionProducts();
+  const selected = bulkMissionSelectedIds.size;
+  elements.bulkMissionSelectionCount.textContent = settings.products.length
+    ? `${selected} selected · ${visible.length} shown`
+    : "No missions yet — create or import one to build the plan.";
   elements.applyBulkItemProfileButton.disabled = !bulkMissionSelectedIds.size || isArmed();
   elements.applyBulkMissionGroupButton.disabled = !bulkMissionSelectedIds.size;
   elements.copySelectedMissionListButton.disabled = !bulkMissionSelectedIds.size;
+  elements.bulkEnableMissionsButton.disabled = !bulkMissionSelectedIds.size;
+  elements.bulkDisableMissionsButton.disabled = !bulkMissionSelectedIds.size;
   elements.bulkMissionOpenAt.disabled = !bulkMissionSelectedIds.size || isArmed();
   elements.scheduleCandidateMissionsButton.disabled = !bulkMissionSelectedIds.size || isArmed();
   elements.clearSelectedMissionSchedulesButton.disabled = isArmed() || !settings.products.some((product) => (
     bulkMissionSelectedIds.has(product.id) && product.openAt
   ));
-  elements.bulkMissionSelectAllButton.disabled = !settings.products.length;
+  elements.bulkMissionSelectAllButton.disabled = !visible.length;
+  elements.bulkMissionSelectAllButton.textContent = visible.length ? `Select shown (${visible.length})` : "Select shown";
   elements.bulkMissionSelectNoneButton.disabled = !bulkMissionSelectedIds.size;
 }
 
@@ -1928,7 +1995,6 @@ function renderItemDefaults(settings) {
   elements.saveStoreAllowancesButton.disabled = isArmed();
   renderItemProfilePickers(settings);
   renderMsrpCatalog(settings);
-  renderBulkMissionDefaults(settings);
 }
 
 async function submitCatalogSearch() {
@@ -2238,10 +2304,12 @@ function renderMissions() {
   // While a mission editor is open, leave the list DOM alone: background
   // snapshot broadcasts must not steal focus from the person typing.
   if (editingId && editCardNode && elements.missionList.contains(editCardNode)) {
+    renderBulkMissionControls(currentSnapshot?.settings || { products: [] });
     updateWorstCase();
     return;
   }
   renderMissionFilterOptions();
+  renderBulkMissionControls(currentSnapshot?.settings || { products: [] });
   const statuses = currentSnapshot?.productStatuses || {};
   const products = savedProducts();
   const filters = missionFilterValues();
@@ -2325,13 +2393,7 @@ function updateStatusAges() {
   }
 }
 
-// The hard ceiling: what everything hitting at once could cost.
-function updateWorstCase() {
-  const products = savedProducts();
-  if (!products.length) {
-    elements.worstCase.textContent = "";
-    return;
-  }
+function missionMaximumExposure(products = savedProducts()) {
   let total = 0;
   let autoBuyCount = 0;
   for (const product of products) {
@@ -2342,6 +2404,17 @@ function updateWorstCase() {
       ? Number(product.maxOrderTotal) || 0
       : (Number(product.maxPrice) || 0) * (Number(product.quantity) || 1);
   }
+  return { total, autoBuyCount };
+}
+
+// The hard ceiling: what everything hitting at once could cost.
+function updateWorstCase() {
+  const products = savedProducts();
+  if (!products.length) {
+    elements.worstCase.textContent = "";
+    return;
+  }
+  const { total, autoBuyCount } = missionMaximumExposure(products);
   const exposure = total > 0
     ? `Worst case if every enabled mission hits its cap: $${Math.round(total)}.`
     : "No spending exposure: only watch-only missions are enabled.";
@@ -2351,6 +2424,61 @@ function updateWorstCase() {
       : " Autopilot is ON."
     : "";
   elements.worstCase.textContent = `${exposure}${liveNote}`;
+}
+
+function renderReadiness(settings, status, productStatuses = {}) {
+  const products = settings.products || [];
+  const enabled = products.filter((product) => product.enabled !== false);
+  const scheduled = products.filter((product) => product.openAt);
+  const { total, autoBuyCount } = missionMaximumExposure(products);
+  const actionCounts = Object.fromEntries(Object.keys(ACTION_LABELS).map((action) => [
+    action,
+    enabled.filter((product) => product.action === action).length
+  ]));
+  const actionSummary = [
+    actionCounts.watch && `${actionCounts.watch} watch`,
+    actionCounts.cart && `${actionCounts.cart} add-only`,
+    actionCounts.review && `${actionCounts.review} review`,
+    actionCounts.checkout && `${actionCounts.checkout} auto-buy`
+  ].filter(Boolean).join(" · ");
+
+  const disconnected = status.companion !== "connected";
+  const unpriced = enabled.filter((product) => product.action !== "watch" && Number(product.maxPrice) <= 0);
+  const missed = enabled.filter((product) => {
+    if (!product.openAt) return false;
+    const at = new Date(product.openAt).getTime();
+    return Number.isFinite(at) && at < Date.now() - 120_000;
+  });
+  const blocked = enabled.filter((product) => BLOCKING_REASONS.has(productStatuses[product.id]?.reason));
+  const issues = [];
+  if (!products.length) issues.push("Add at least one mission.");
+  else if (!enabled.length) issues.push("Turn on at least one mission.");
+  if (disconnected) issues.push("Connect the Chrome companion.");
+  if (unpriced.length) issues.push(`${unpriced.length} active mission${unpriced.length === 1 ? " needs" : "s need"} a positive price cap.`);
+  if (missed.length) issues.push(`${missed.length} scheduled time${missed.length === 1 ? " has" : "s have"} passed and must be cleared or replaced.`);
+  if (blocked.length) issues.push(`${blocked.length} active mission${blocked.length === 1 ? " has" : "s have"} a blocking status.`);
+
+  const running = Boolean(settings.automationEnabled);
+  const ready = !issues.length;
+  elements.readinessState.textContent = running ? "Running" : ready ? "Ready" : products.length ? "Needs review" : "No plan";
+  elements.readinessState.classList.toggle("ready", ready || running);
+  elements.readinessState.classList.toggle("attention", !ready && !running);
+  elements.readinessConnection.textContent = disconnected ? "Needs connection" : "Connected";
+  elements.readinessEnabled.textContent = `${enabled.length} / ${products.length}`;
+  elements.readinessScheduled.textContent = String(scheduled.length);
+  elements.readinessExposure.textContent = total > 0 ? compactMissionPrice(total) : "$0";
+  elements.readinessSummary.textContent = enabled.length
+    ? `${enabled.length} mission${enabled.length === 1 ? " is" : "s are"} On${actionSummary ? ` · ${actionSummary}` : ""}.`
+    : products.length
+      ? `${products.length} mission${products.length === 1 ? " is" : "s are"} saved, but all are Off.`
+      : "Build a reusable mission plan, review it here, then start one run.";
+  elements.readinessNote.textContent = issues.length
+    ? issues.join(" ")
+    : autoBuyCount
+      ? `${autoBuyCount} mission${autoBuyCount === 1 ? " can" : "s can"} submit a real order after live verification. Every cap is included above.`
+      : "No blockers found. Starting Autopilot will use the saved plan as shown.";
+  elements.readinessNote.classList.toggle("attention", Boolean(issues.length));
+  elements.readinessReviewButton.textContent = issues.length ? "Review issues in Missions" : "Review missions";
 }
 
 // --- Companion connection card ---
@@ -2386,7 +2514,7 @@ function companionStepState() {
     return {
       done: false,
       label: "Waiting for Chrome",
-      hint: "Nothing from Chrome has reached this app yet. Autopilot and Test now open a mission page in Chrome and wait for the companion automatically. If that connection fails, confirm the extension was loaded once from the folder shown by “Show companion folder”; its badge explains the problem: IDLE/ARM = connected · OFF = desktop unreachable · UPD = reload needed · PAIR = pairing issue."
+      hint: "Nothing from Chrome has reached this app yet. Starting Autopilot or choosing Monitor only opens a mission page in Chrome and waits for the companion automatically. If that connection fails, confirm the extension was loaded once from the folder shown by “Show companion folder”; its badge explains the problem: IDLE/ARM = connected · OFF = desktop unreachable · UPD = reload needed · PAIR = pairing issue."
     };
   }
   if (hello.reason === "version-mismatch") {
@@ -2406,7 +2534,7 @@ function companionStepState() {
   return {
     done: false,
     label: "Open a store tab",
-    hint: "Extension loaded ✓. Autopilot and Test will open a Target, Walmart, or Amazon mission page and finish this connection automatically."
+    hint: "Extension loaded ✓. Starting Autopilot or choosing Monitor only will open a Target, Walmart, or Amazon mission page and finish this connection automatically."
   };
 }
 
@@ -2877,6 +3005,7 @@ function render(snapshot) {
   renderUpdaterState(app.update || { status: "idle" });
 
   renderMissions();
+  renderReadiness(settings, status, productStatuses);
   renderCatalog(snapshot.catalog || {});
   renderItemDefaults(settings);
   renderDiscord(snapshot.discord, settings);
@@ -2895,6 +3024,7 @@ elements.autopilotToggle.addEventListener("click", async () => {
     await runAction(async () => {
       if (!currentSnapshot) throw new Error("Settings have not loaded yet.");
       if (editingId) throw new Error("Finish the open mission editor first (Done or Cancel).");
+      if (planEditMode) throw new Error("Choose Finish editing before starting Autopilot.");
       const saved = currentSnapshot.settings;
       if (saved.automationEnabled) {
         const next = await window.cartAssist.saveSettings({ ...saved, automationEnabled: false });
@@ -2959,7 +3089,9 @@ elements.autopilotToggle.addEventListener("click", async () => {
 
 elements.disarmButton.addEventListener("click", () => {
   stopUiEpoch += 1;
-  resumeAutopilotAfterEdit = false;
+  resumeAutopilotAfterPlanEdit = false;
+  planEditMode = false;
+  bulkMissionSelectedIds.clear();
   clearTimeout(settingsSaveTimer);
   settingsSaveTimer = null;
   return runAction(async () => {
@@ -2968,9 +3100,28 @@ elements.disarmButton.addEventListener("click", () => {
     const next = await window.cartAssist.stopAll();
     render(next);
     return next;
-  }, "Stopped. Autopilot off, all monitoring paused, queued page openings cancelled, and scheduled times cleared.");
+  }, "Stopped. Autopilot off, all monitoring paused, and queued page openings cancelled. Your plan and scheduled times are still saved.");
 });
 
+elements.planEditButton.addEventListener("click", () => {
+  if (planEditMode) void finishPlanEditSession();
+  else void beginPlanEditSession();
+});
+elements.catalogLauncherButton.addEventListener("click", async () => {
+  if (isArmed() && !await beginPlanEditSession()) return;
+  const panel = document.getElementById("catalogPanel");
+  const toggle = panel?.querySelector(".panel-toggle");
+  if (toggle) setPanelExpanded(toggle, true);
+  panel?.scrollIntoView?.({ behavior: "smooth", block: "start" });
+  setTimeout(() => elements.catalogQuery.focus(), 250);
+});
+elements.readinessReviewButton.addEventListener("click", () => {
+  const panel = document.getElementById("missionsPanel");
+  const toggle = panel?.querySelector(".panel-toggle");
+  if (toggle) setPanelExpanded(toggle, true);
+  clearMissionFilters();
+  panel?.scrollIntoView?.({ behavior: "smooth", block: "start" });
+});
 elements.newMissionButton.addEventListener("click", () => void startEdit(null));
 elements.newMissionGroupButton.addEventListener("click", () => {
   const requested = window.prompt("Name this mission group", "New group");
@@ -2984,13 +3135,13 @@ elements.newMissionGroupButton.addEventListener("click", () => {
     const group = { id: newCustomId("group"), name, collapsed: false };
     await saveMissionList(savedProducts(), { missionGroups: [...savedMissionGroups(), group] });
     return group;
-  }, (group) => `${group.name} group created. Assign missions from Edit or the bulk controls.`);
+  }, (group) => `${group.name} group created. Assign missions from an individual edit or the plan tools.`);
 });
 elements.missionSearch.addEventListener("input", renderMissions);
 elements.missionGroupFilter.addEventListener("change", renderMissions);
 elements.missionRetailerFilter.addEventListener("change", renderMissions);
 elements.missionActiveFilter.addEventListener("change", renderMissions);
-elements.bulkImportButton.addEventListener("click", openBulkImportDialog);
+elements.bulkImportButton.addEventListener("click", () => void openBulkImportDialog());
 elements.bulkImportSubmitButton.addEventListener("click", () => void submitBulkImport());
 elements.bulkImportCancelButton.addEventListener("click", closeBulkImportDialog);
 elements.bulkImportDialog.addEventListener("cancel", (event) => {
@@ -3110,12 +3261,37 @@ elements.itemProfileForm.addEventListener("submit", (event) => {
     const profiles = existing.some((candidate) => candidate.id === profile.id)
       ? existing.map((candidate) => candidate.id === profile.id ? profile : candidate)
       : [...existing, profile];
-    const next = await window.cartAssist.saveSettings({ ...currentSnapshot.settings, itemProfiles: profiles });
+    const linkedProducts = editingItemProfileId
+      ? currentSnapshot.settings.products.filter((product) => product.itemProfileId === profile.id)
+      : [];
+    const updateLinked = linkedProducts.length > 0 && window.confirm(
+      `${linkedProducts.length} mission${linkedProducts.length === 1 ? " uses" : "s use"} this profile. Apply the updated quantity, action, fulfillment, alerts, and approved MSRP caps to ${linkedProducts.length === 1 ? "it" : "them"} now?`
+    );
+    const products = updateLinked
+      ? currentSnapshot.settings.products.map((product) => (
+          product.itemProfileId === profile.id
+            ? ItemDefaults.applyItemProfile(
+                product,
+                profile,
+                currentSnapshot.settings.msrpCatalog,
+                {
+                  storeOrderAllowances: currentSnapshot.settings.storeOrderAllowances,
+                  orderTaxPercent: currentSnapshot.settings.orderTaxPercent
+                }
+              )
+            : product
+        ))
+      : currentSnapshot.settings.products;
+    const next = await window.cartAssist.saveSettings({
+      ...currentSnapshot.settings,
+      itemProfiles: profiles,
+      products
+    });
     render(next);
     fillItemProfileForm(profile);
     renderItemProfilePickers(next.settings);
-    return profile.name;
-  }, (name) => `${name} item profile saved.`);
+    return { name: profile.name, updated: updateLinked ? linkedProducts.length : 0 };
+  }, ({ name, updated }) => `${name} item profile saved.${updated ? ` ${updated} linked mission${updated === 1 ? " was" : "s were"} updated in the same change.` : ""}`);
 });
 
 elements.itemProfileResetButton.addEventListener("click", () => {
@@ -3199,13 +3375,21 @@ elements.msrpResearchEnabled.addEventListener("change", () => void runAction(asy
 }, (enabled) => enabled ? "Monthly cited MSRP research enabled." : "Monthly MSRP research disabled."));
 
 elements.bulkMissionSelectAllButton.addEventListener("click", () => {
-  for (const product of savedProducts()) bulkMissionSelectedIds.add(product.id);
-  renderBulkMissionDefaults(currentSnapshot.settings);
+  for (const product of filteredMissionProducts()) bulkMissionSelectedIds.add(product.id);
+  renderMissions();
 });
 elements.bulkMissionSelectNoneButton.addEventListener("click", () => {
   bulkMissionSelectedIds.clear();
-  renderBulkMissionDefaults(currentSnapshot.settings);
+  renderMissions();
 });
+elements.bulkEnableMissionsButton.addEventListener("click", () => void runAction(
+  () => setMissionsEnabled(new Map([...bulkMissionSelectedIds].map((id) => [id, true]))),
+  `${bulkMissionSelectedIds.size} selected mission${bulkMissionSelectedIds.size === 1 ? "" : "s"} turned On.`
+));
+elements.bulkDisableMissionsButton.addEventListener("click", () => void runAction(
+  () => setMissionsEnabled(new Map([...bulkMissionSelectedIds].map((id) => [id, false]))),
+  `${bulkMissionSelectedIds.size} selected mission${bulkMissionSelectedIds.size === 1 ? "" : "s"} turned Off.`
+));
 elements.copySelectedMissionListButton.addEventListener("click", () => void runAction(
   () => window.cartAssist.copyMissionList([...bulkMissionSelectedIds]),
   ({ count }) => `${count} selected mission${count === 1 ? "" : "s"} copied as a consolidated list.`
@@ -3392,6 +3576,7 @@ function setMissionOpenBusy(busy) {
   elements.autopilotToggle.disabled = busy;
   elements.testButton.disabled = busy;
   elements.openAllButton.disabled = busy;
+  elements.planEditButton.disabled = busy;
 }
 
 elements.testButton.addEventListener("click", async () => {
@@ -3401,12 +3586,12 @@ elements.testButton.addEventListener("click", async () => {
   try {
     await runAction(async () => {
       if (isArmed()) {
-        throw new Error("Switch Autopilot off before testing — Test all opens mission pages without buying anything.");
+        throw new Error("Switch Autopilot off before Monitor only — it opens mission pages without buying anything.");
       }
       return window.cartAssist.testEvent();
     }, (result) => {
       const count = Number(result?.count || 0);
-      const parts = [`Test started for ${count} enabled mission${count === 1 ? "" : "s"}`];
+      const parts = [`Monitor-only check started for ${count} enabled mission${count === 1 ? "" : "s"}`];
       if (result?.connectionOpened) parts.push("Chrome companion connected automatically");
       if (result?.reused) parts.push(`${result.reused} reused an existing Chrome tab`);
       if (result?.deduped) parts.push(`${result.deduped} already queued`);

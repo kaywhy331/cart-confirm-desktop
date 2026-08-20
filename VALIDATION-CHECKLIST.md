@@ -108,7 +108,7 @@ For each of Target, Walmart, and Amazon you plan to automate:
 - [ ] In **Item defaults**, leave one product type without prices and approve a different type for Target, Walmart, and Amazon. Import matching and nonmatching catalog results with an explicitly selected profile. Confirm matching rows receive only their retailer's approved MSRP and selected profile; unknown rows retain the profile fields but stay Off at $0. Confirm displayed listing prices never become caps.
 - [ ] Use Catalog Inbox **Select all** and **Select none**, import one result only once, and confirm existing missions are skipped and the 100-mission limit is never exceeded.
 - [ ] Select one harmless exact Walmart result with an approved Walmart MSRP and item profile, choose a future **Known Walmart drop time**, and select **Monitor selected for Walmart prep**. Confirm the candidate appears separately from Missions and Autopilot can arm with only that candidate. Observe that the first public-page response establishes a baseline and does not add a Mission; an unchanged or `304` response, timeout, and network failure also do not. In a controlled local/mock test, confirm a `200` to `404`/`503` transition, recovery to `200`, embedded availability/price change, or `/qp` redirect moves only that exact item into Missions while preserving its profile, approved caps, and drop time. Confirm no browser page opens before that time.
-- [ ] While a harmless Walmart prep check is in flight, press **Stop everything**. Confirm the request is aborted, the candidate and cached observation are cleared, and a late response cannot create a Mission. Confirm prep checks rotate one at a time no faster than every 30 seconds, consume the shared 120-action/hour Walmart budget, respect overload cooldowns, and never request a private inventory, checkout, ticket, or signature endpoint.
+- [ ] While a harmless Walmart prep check is in flight, press **Stop everything**. Confirm the request is aborted, the cached observation is cleared, the configured candidate and its future time remain saved, and a late response cannot create a Mission. Re-arm and confirm the candidate establishes a fresh baseline before monitoring changes again. Confirm prep checks rotate one at a time no faster than every 30 seconds, consume the shared 120-action/hour Walmart budget, respect overload cooldowns, and never request a private inventory, checkout, ticket, or signature endpoint.
 
 - [ ] With the desktop connected and Autopilot off, use the Chrome toolbar
       **Quick add** popup on one product page from each supported retailer.
@@ -136,13 +136,27 @@ For each of Target, Walmart, and Amazon you plan to automate:
       is reported. Confirm the default profile is applied; a matching approved
       MSRP can make a row ready, while an unknown product remains Off with a $0 cap.
 - [ ] Create, update, select, restart with, and delete a custom item profile.
-      Confirm selecting it in a mission applies all allowlisted fields. In bulk
-      update, select individual rows, all, and none; confirm only selected rows
-      change and an unknown $0 row cannot become enabled.
-- [ ] In **Select and use missions**, choose two missions and select **Copy selected
-      list**. Paste into a plain-text editor and confirm each entry is exactly
+      Confirm selecting it in a mission immediately applies all allowlisted
+      fields without a second Apply action. Update a profile used by multiple
+      missions and accept the one confirmation; confirm every linked mission
+      updates in the same save. Repeat and decline; confirm their stamped settings
+      remain unchanged. In **Edit plan**, filter the list, use **Select shown**,
+      and confirm only selected rows change and an unknown $0 row cannot become enabled.
+- [ ] In **Edit plan**, choose two missions and select **Copy list**. Paste into
+      a plain-text editor and confirm each entry is exactly
       `Title - $ExpectedPrice`, followed by its product URL, with one blank line
       between entries. Confirm a mission without a positive cap says **Price not set**.
+- [ ] Arm harmless missions, then edit one mission. Confirm Autopilot pauses once
+      and **Edit plan** changes to **Finish editing**. Save or cancel several
+      individual edits and apply multiple bulk changes; confirm none starts a new
+      run. Select **Finish editing**, approve the safety confirmation once, and
+      confirm exactly one updated run starts. Repeat, but press **Stop everything**
+      during the session; confirm finishing or cancelling an open editor cannot
+      re-arm the app.
+- [ ] Give two harmless missions future **Open at** times, press **Stop everything**,
+      and restart the app. Confirm both times remain present while no schedule can
+      fire in the stopped state. Use **Edit plan → Clear selected times** and
+      confirm only that explicit action removes them.
 - [ ] Configure a test OpenAI API key only on a machine where OS encryption is
       available. Confirm the key is never echoed or written to settings JSON.
       Run MSRP research, open every cited source, and confirm suggestions do not
@@ -216,7 +230,7 @@ for one supervised run) and manually walk the checkout to the final review page:
 
 ## 5. Ongoing
 
-- [ ] Press **Test all (no buying)** once and confirm every enabled mission
+- [ ] Press **Monitor only** once and confirm every enabled mission
       without an **Open at** time is checked through the paced store queues.
       Confirm scheduled missions stay closed until their configured time.
 - [ ] Leave a scheduled product page open, arm Autopilot before its time, and
@@ -287,7 +301,7 @@ Run these supervised before relying on signal-triggered purchasing:
       marks it **Desired** by the exact retailer + SKU. A different SKU with a
       similar title must remain **New**.
 - [ ] With **Stop everything** active, confirm the Discord last-poll time and
-      inbox do not change. Then use an explicit Arm, Test, or Open action and
+      inbox do not change. Then use an explicit Arm, Monitor-only, or Open action and
       confirm polling resumes; a signal that became stale while stopped must
       not auto-open. The manual **Product** button may lift the pause because it
       is itself an explicit Open action.

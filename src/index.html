@@ -37,8 +37,8 @@
           <span class="autopilot-label">Autopilot</span>
           <span class="autopilot-state" id="autopilotState">OFF</span>
         </button>
-        <button class="button secondary" id="testButton" type="button" title="Checks every enabled mission that does not have a calendar time; nothing is added">Test all (no buying)</button>
-        <button class="button danger" id="disarmButton" type="button" title="Autopilot off, monitoring paused, queued openings cancelled, scheduled times cleared">Stop everything</button>
+        <button class="button secondary" id="testButton" type="button" title="Checks every enabled mission that does not have a calendar time; nothing is added">Monitor only</button>
+        <button class="button danger" id="disarmButton" type="button" title="Autopilot off, monitoring paused, and queued openings cancelled; your mission plan and scheduled times stay saved">Stop everything</button>
       </div>
     </header>
 
@@ -83,7 +83,9 @@
             <h2>Missions</h2>
             <div class="action-row">
               <button class="button ghost compact" id="openAllButton" type="button">Open all due</button>
+              <button class="button ghost compact" id="catalogLauncherButton" type="button">Search catalog</button>
               <button class="button secondary compact" id="bulkImportButton" type="button">Bulk import</button>
+              <button class="button secondary compact" id="planEditButton" type="button" aria-pressed="false">Edit plan</button>
               <button class="button primary compact" id="newMissionButton" type="button">+ New mission</button>
               <button class="button ghost compact panel-toggle" type="button" aria-controls="missionsPanelBody" aria-expanded="true">Minimize</button>
             </div>
@@ -112,14 +114,46 @@
               <label>
                 <span class="sr-only">Filter missions by status</span>
                 <select id="missionActiveFilter" aria-label="Filter missions by status">
-                  <option value="all">Active + inactive</option>
-                  <option value="active">Active</option>
-                  <option value="inactive">Inactive</option>
+                  <option value="all">On + Off</option>
+                  <option value="active">On</option>
+                  <option value="inactive">Off</option>
                 </select>
               </label>
               <button class="button secondary compact" id="newMissionGroupButton" type="button">+ Group</button>
               <span class="mission-filter-count" id="missionFilterCount" aria-live="polite"></span>
             </div>
+            <section class="mission-plan-tools" id="missionPlanTools" aria-label="Bulk mission plan tools" hidden>
+              <div class="mission-plan-tools-heading">
+                <div>
+                  <strong>Edit the plan</strong>
+                  <span id="bulkMissionSelectionCount">0 selected</span>
+                </div>
+                <div class="action-row">
+                  <button class="button ghost compact" id="bulkMissionSelectAllButton" type="button">Select visible</button>
+                  <button class="button ghost compact" id="bulkMissionSelectNoneButton" type="button">Clear selection</button>
+                  <button class="button secondary compact" id="bulkEnableMissionsButton" type="button">Turn on</button>
+                  <button class="button ghost compact" id="bulkDisableMissionsButton" type="button">Turn off</button>
+                </div>
+              </div>
+              <div class="bulk-profile-actions">
+                <select id="bulkItemProfile" aria-label="Profile for selected missions"></select>
+                <button class="button primary compact" id="applyBulkItemProfileButton" type="button">Apply profile</button>
+                <button class="button secondary compact" id="copySelectedMissionListButton" type="button">Copy list</button>
+              </div>
+              <div class="bulk-group-actions">
+                <select id="bulkMissionGroup" aria-label="Group for selected missions"><option value="">Ungrouped</option></select>
+                <button class="button secondary compact" id="applyBulkMissionGroupButton" type="button">Move to group</button>
+              </div>
+              <div class="bulk-schedule-actions">
+                <label class="field compact-field">
+                  <span>Shared opening time</span>
+                  <input id="bulkMissionOpenAt" type="datetime-local">
+                </label>
+                <button class="button primary compact" id="scheduleCandidateMissionsButton" type="button">Set shared time</button>
+                <button class="button ghost compact" id="clearSelectedMissionSchedulesButton" type="button">Clear selected times</button>
+              </div>
+              <small class="bulk-schedule-help">Selection follows the filters above. A shared time keeps each mission calendar-gated and applies the bounded 15-minute candidate traffic setup; prices, quantities, and purchase actions do not change.</small>
+            </section>
             <p class="step-hint worst-case" id="worstCase"></p>
             <div class="mission-list" id="missionList"></div>
           </div>
@@ -133,10 +167,10 @@
             </div>
             <div class="action-row">
               <button class="button ghost compact" id="catalogClearButton" type="button">Clear</button>
-              <button class="button ghost compact panel-toggle" type="button" aria-controls="catalogPanelBody" aria-expanded="true">Minimize</button>
+              <button class="button ghost compact panel-toggle" type="button" aria-controls="catalogPanelBody" aria-expanded="false">Expand</button>
             </div>
           </div>
-          <div class="panel-content" id="catalogPanelBody">
+          <div class="panel-content" id="catalogPanelBody" hidden>
             <p class="catalog-explainer">Enter a keyword to open one official search page per selected retailer. The companion catalogs up to 20 visible result cards from each page—no private APIs, hidden batching, scrolling, or continuous crawler.</p>
             <form class="catalog-search-form" id="catalogSearchForm">
               <label class="field catalog-query-field">
@@ -184,7 +218,7 @@
                 <span>Apply item profile</span>
                 <select id="catalogItemProfile"></select>
               </label>
-              <p class="catalog-safety">The profile defaults to <strong>shipping + final review</strong>. A mission turns On only when its title matches an approved retailer MSRP; otherwise it stays Off for price review.</p>
+              <p class="catalog-safety">The selected profile applies its saved action and fulfillment. A mission turns On only when its title matches an approved retailer MSRP; otherwise it stays Off for price review.</p>
             </div>
             <div class="catalog-import-defaults">
               <label class="field">
@@ -207,9 +241,9 @@
               <span class="eyebrow">One setup, reusable defaults</span>
               <h2>Item defaults</h2>
             </div>
-            <button class="button ghost compact panel-toggle" type="button" aria-controls="itemDefaultsPanelBody" aria-expanded="true">Minimize</button>
+            <button class="button ghost compact panel-toggle" type="button" aria-controls="itemDefaultsPanelBody" aria-expanded="false">Expand</button>
           </div>
-          <div class="panel-content" id="itemDefaultsPanelBody">
+          <div class="panel-content" id="itemDefaultsPanelBody" hidden>
             <div class="defaults-block">
               <div class="defaults-heading">
                 <div>
@@ -241,7 +275,7 @@
                 <input id="itemProfileId" type="hidden">
                 <label class="field"><span>Profile name</span><input id="itemProfileName" type="text" maxlength="40" placeholder="Example: Two shipped"></label>
                 <label class="field"><span>Quantity</span><input id="itemProfileQuantity" type="number" min="1" max="99" step="1" value="1" required></label>
-                <label class="field"><span>Action</span><select id="itemProfileAction"><option value="checkout">Submit order automatically</option><option value="review">Prepare checkout, I submit</option><option value="cart">Add to cart only</option><option value="watch">Watch &amp; alert only</option></select></label>
+                <label class="field"><span>Action</span><select id="itemProfileAction"><option value="watch">Watch &amp; alert only</option><option value="cart">Add to cart only</option><option value="review">Prepare checkout, I submit</option><option value="checkout">Submit order automatically</option></select></label>
                 <label class="field"><span>Fulfillment</span><select id="itemProfileFulfillment"><option value="shipping">Shipping / delivery</option><option value="pickup">Store pickup</option></select></label>
                 <label class="field"><span>Alert</span><select id="itemProfileAlert"><option value="standard">Standard ping</option><option value="alarm">Loud alarm</option><option value="silent">Silent log</option></select></label>
                 <label class="toggle-row"><input id="itemProfileEnabled" type="checkbox" checked><span>Turn matching priced items On</span></label>
@@ -270,24 +304,6 @@
               <button class="button ghost compact" id="addMsrpRecordButton" type="button">+ Add product type</button>
             </div>
 
-            <div class="defaults-block bulk-defaults-block">
-              <div class="defaults-heading">
-                <div><strong>Select and use missions</strong><p>Select individual items, all, or none; then copy a consolidated title/price/link list or apply one profile and refreshed approved MSRP caps.</p></div>
-                <div class="action-row"><button class="button ghost compact" id="bulkMissionSelectAllButton" type="button">Select all</button><button class="button ghost compact" id="bulkMissionSelectNoneButton" type="button">Select none</button></div>
-              </div>
-              <div class="bulk-mission-list" id="bulkMissionList"></div>
-              <div class="bulk-profile-actions"><select id="bulkItemProfile"></select><button class="button primary compact" id="applyBulkItemProfileButton" type="button">Apply profile to selected</button><button class="button secondary compact" id="copySelectedMissionListButton" type="button">Copy selected list</button></div>
-              <div class="bulk-group-actions"><select id="bulkMissionGroup" aria-label="Group for selected missions"><option value="">Ungrouped</option></select><button class="button secondary compact" id="applyBulkMissionGroupButton" type="button">Move selected to group</button></div>
-              <div class="bulk-schedule-actions">
-                <label class="field compact-field">
-                  <span>Shared candidate opening time</span>
-                  <input id="bulkMissionOpenAt" type="datetime-local">
-                </label>
-                <button class="button primary compact" id="scheduleCandidateMissionsButton" type="button">Schedule candidate drop</button>
-                <button class="button ghost compact" id="clearSelectedMissionSchedulesButton" type="button">Clear selected times</button>
-              </div>
-              <small class="bulk-schedule-help">Use this when several pre-known SKUs might appear in the same release window. It gives every selected mission the same calendar gate and applies the bounded 15-minute <strong>Midnight candidates</strong> traffic setup; prices, quantities, and purchase actions do not change.</small>
-            </div>
           </div>
         </section>
 
@@ -422,6 +438,25 @@
       </div>
 
       <div class="monitor-column">
+        <section class="panel readiness-panel" id="readinessPanel">
+          <div class="panel-heading readiness-heading">
+            <div>
+              <span class="eyebrow">Before you run</span>
+              <h2>Run readiness</h2>
+            </div>
+            <span class="step-state" id="readinessState">Checking</span>
+          </div>
+          <p class="readiness-summary" id="readinessSummary"></p>
+          <div class="readiness-metrics">
+            <div><span>Chrome</span><strong id="readinessConnection">—</strong></div>
+            <div><span>Missions on</span><strong id="readinessEnabled">0</strong></div>
+            <div><span>Scheduled</span><strong id="readinessScheduled">0</strong></div>
+            <div><span>Maximum exposure</span><strong id="readinessExposure">$0</strong></div>
+          </div>
+          <div class="readiness-note" id="readinessNote"></div>
+          <button class="button ghost compact" id="readinessReviewButton" type="button">Review missions</button>
+        </section>
+
         <section class="panel" id="schedulePanel" hidden>
           <div class="panel-heading">
             <h2>Drop calendar</h2>
@@ -600,8 +635,7 @@
           <span>Mission group</span>
           <select data-field="groupId"></select>
         </label>
-        <button class="button secondary compact mission-apply-profile" type="button">Apply profile + approved MSRP</button>
-        <small>Applies the reusable settings and the matching store MSRP. If no approved price matches, this mission stays Off.</small>
+        <small>Changing the profile immediately applies its reusable settings and matching store MSRP. If no approved price matches, this mission stays Off.</small>
         <input data-field="msrpRecordId" type="hidden">
         <input data-field="priceSource" type="hidden">
       </div>

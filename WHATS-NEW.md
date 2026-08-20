@@ -6,6 +6,13 @@ update dialog shows exactly these bullets. Keep every entry short, plain, and
 about what the user will notice — one bullet per change, no internals.
 Publishing fails if the version being released has no section here.
 
+## 3.7.5
+- New: Run readiness now summarizes Chrome connection, enabled and scheduled missions, action mix, blockers, and maximum exposure before you start
+- Editing a running plan pauses it once and keeps it paused while you make several mission, catalog, or default changes; Finish editing resumes once, while Stop everything cancels the run without erasing mission schedules
+- Profile, On/Off, group, copy, and shared-time controls now sit directly above the filtered Missions list, with row selection for changing several missions together
+- Picking a mission profile now applies it immediately, and saving a changed custom profile can update every mission linked to that profile in one step
+- Catalog and Item defaults start collapsed and remember their state; the wider responsive layout fits the default window without sideways scrolling and makes mission status easier to scan
+
 ## 3.7.4
 - Fixed: Chrome kept ping-ponging back to the first carted item while the other missions were still loading — stock-detected mission tabs now open quietly in the background, and a carted item that is just holding for the combined order no longer re-pulls its tab forward
 - The only tab that comes to the front is the mission actually purchasing right now: adding to cart, or the combined-order captain heading into the single checkout

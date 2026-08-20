@@ -15,7 +15,9 @@ test("Walmart prep polling is conditional, budgeted, stoppable, and materializes
   assert.match(main, /products: \[\.\.\.settings\.products, current\]/);
   assert.match(main, /walmartPrepCandidates: settings\.walmartPrepCandidates\.filter/);
   assert.match(main, /walmartPrepMonitorTick\(\)/);
-  assert.match(main, /walmartPrepCandidates: \[\]/, "Stop must clear pending prep candidates");
+  const stop = main.slice(main.indexOf('ipcMain.handle("cart-assist:stop-all"'));
+  const stopBody = stop.slice(0, stop.indexOf("\n  });") + 6);
+  assert.doesNotMatch(stopBody, /walmartPrepCandidates:/, "Stop must preserve the configured prep plan");
   assert.match(main, /runtimeState\.walmartPrepObservations = \{\}/, "Stop must clear prep observations");
 });
 

@@ -1,6 +1,6 @@
 {
   "name": "cart-confirm-desktop",
-  "version": "3.7.4",
+  "version": "3.7.5",
   "description": "A traffic-governed, fail-closed first-party buy-list companion for Target, Walmart, and Amazon.",
   "main": "main.js",
   "author": "Kevin",
