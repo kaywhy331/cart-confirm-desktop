@@ -317,6 +317,9 @@ test("Stop everything and re-arming clear quiet-lane residue and held lanes retr
   assert.match(main, /function resetQuietProductState\(\) \{[\s\S]*?lastAvailability\.clear\(\);[\s\S]*?productFailures\.clear\(\);[\s\S]*?productQuarantineUntil\.clear\(\);[\s\S]*?storeFailureProducts\.clear\(\);[\s\S]*?lastAutoOpenAt\.clear\(\);[\s\S]*?\}/);
   const stopAll = main.slice(main.indexOf('ipcMain.handle("cart-assist:stop-all"'));
   assert.match(stopAll.slice(0, 800), /resetQuietProductState\(\);/);
+  const stopBody = stopAll.slice(0, stopAll.indexOf("\n  });") + 6);
+  assert.doesNotMatch(stopBody, /\bopenAt\b/, "Stop must preserve mission schedules");
+  assert.doesNotMatch(stopBody, /walmartPrepCandidates:\s*\[\]/, "Stop must preserve prep candidates");
   const armBranch = main.slice(main.indexOf("if (normalized.automationEnabled && !wasArmed) {"));
   assert.match(armBranch.slice(0, 400), /resetQuietProductState\(\);/);
 

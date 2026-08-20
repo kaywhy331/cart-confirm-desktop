@@ -2357,11 +2357,7 @@ function registerIpc() {
       ...settings,
       automationEnabled: false,
       monitoringPaused: true,
-      scheduledOpenEnabled: false,
-      products: settings.products.map((product) => (
-        product.openAt ? { ...product, openAt: "" } : product
-      )),
-      walmartPrepCandidates: []
+      scheduledOpenEnabled: false
     };
     runtimeState.productExecutionContexts = {};
     runtimeState.queueCaptures = {};
@@ -2371,7 +2367,7 @@ function registerIpc() {
     configVersion += 1;
     status = {
       ...status,
-      lastMessage: "Stopped. Autopilot off, monitoring paused, queued openings cancelled, scheduled times cleared."
+      lastMessage: "Stopped. Autopilot off, monitoring paused, and queued openings cancelled. Your mission plan and scheduled times were preserved."
     };
     broadcast();
     return snapshot();

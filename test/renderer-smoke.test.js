@@ -108,6 +108,14 @@ function snapshotFixture() {
 test("mission control boots, edits, arms, and filters like the dashboard", async () => {
   const dom = new JSDOM(html, { url: "file:///app/index.html", runScripts: "outside-only" });
   const { window } = dom;
+  const localStorageValues = new Map();
+  Object.defineProperty(window, "localStorage", {
+    configurable: true,
+    value: {
+      getItem: (key) => localStorageValues.has(key) ? localStorageValues.get(key) : null,
+      setItem: (key, value) => localStorageValues.set(key, String(value))
+    }
+  });
   let pushUpdate = null;
   let pushUpdaterState = null;
   let installUpdateCalls = 0;
@@ -338,6 +346,16 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   assert.match(card.querySelector(".mission-price-quantity").title, /\$40\.00/);
   assert.equal(doc.getElementById("autopilotState").textContent, "STOPPED");
   assert.match(doc.getElementById("worstCase").textContent, /\$40/);
+  assert.equal(doc.getElementById("readinessState").textContent, "Ready");
+  assert.equal(doc.getElementById("readinessConnection").textContent, "Connected");
+  assert.equal(doc.getElementById("readinessEnabled").textContent, "1 / 1");
+  assert.equal(doc.getElementById("readinessExposure").textContent, "$40");
+  assert.match(doc.getElementById("readinessSummary").textContent, /1 add-only/);
+  assert.equal(doc.getElementById("catalogPanelBody").hidden, true, "secondary catalog setup starts collapsed");
+  assert.equal(doc.getElementById("itemDefaultsPanelBody").hidden, true, "secondary defaults start collapsed");
+  doc.getElementById("catalogLauncherButton").click();
+  assert.equal(doc.getElementById("catalogPanelBody").hidden, false);
+  assert.equal(window.localStorage.getItem("cart-confirm:panel:catalogPanelBody"), "expanded");
   assert.equal(doc.getElementById("alarmBar").hidden, true);
   assert.equal(window.getComputedStyle(doc.getElementById("alarmBar")).display, "none");
   for (const element of [
@@ -353,7 +371,7 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
     doc.getElementById("testButton").closest(".topbar-controls"),
     "Test lives in the header next to Autopilot"
   );
-  assert.match(doc.getElementById("testButton").textContent, /Test all/);
+  assert.equal(doc.getElementById("testButton").textContent, "Monitor only");
   // The updater control is always visible; without a pending update it
   // offers a manual check instead of hiding.
   assert.equal(doc.getElementById("updateNotice").hidden, false);
@@ -486,6 +504,9 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   await new Promise((resolve) => setTimeout(resolve, 10));
   const createdGroup = savedSettingsInputs.at(-1).missionGroups[0];
   assert.equal(createdGroup.name, "Drop night");
+  doc.getElementById("planEditButton").click();
+  assert.equal(doc.getElementById("missionPlanTools").hidden, false);
+  assert.equal(doc.getElementById("planEditButton").textContent, "Finish editing");
   doc.getElementById("bulkMissionSelectAllButton").click();
   doc.getElementById("bulkMissionGroup").value = createdGroup.id;
   doc.getElementById("applyBulkMissionGroupButton").click();
@@ -507,6 +528,8 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   groupSection.querySelector(".mission-group-enabled input").click();
   await new Promise((resolve) => setTimeout(resolve, 10));
   assert.equal(savedSettingsInputs.at(-1).products[0].enabled, false);
+  doc.getElementById("planEditButton").click();
+  assert.equal(doc.getElementById("missionPlanTools").hidden, true);
 
   pushUpdate(snapshotFixture());
 
@@ -575,8 +598,19 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   const customItemProfile = savedSettingsInputs.at(-1).itemProfiles[0];
   assert.equal(customItemProfile.name, "Two shipped");
   assert.equal(customItemProfile.settings.quantity, 2);
+  assert.equal(customItemProfile.settings.action, "watch");
   assert.equal("maxOrderBuffer" in customItemProfile.settings, false);
   assert.equal(doc.getElementById("itemProfileDeleteButton").hidden, false);
+
+  // Choosing a profile inside one mission applies it immediately; there is
+  // no second Apply-profile micro-step.
+  doc.querySelector(".mission-card .mission-edit").click();
+  let profileEditCard = doc.querySelector(".mission-edit-card");
+  profileEditCard.querySelector("[data-field='itemProfileId']").value = customItemProfile.id;
+  profileEditCard.querySelector("[data-field='itemProfileId']").dispatchEvent(new window.Event("change", { bubbles: true }));
+  assert.equal(profileEditCard.querySelector("[data-field='quantity']").value, "2");
+  assert.equal(profileEditCard.querySelector("[data-field='action']").value, customItemProfile.settings.action);
+  profileEditCard.querySelector(".mission-cancel").click();
 
   doc.getElementById("itemProfileName").value = "Two shipped updated";
   doc.getElementById("itemProfileForm").dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true }));
@@ -584,6 +618,7 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   assert.equal(savedSettingsInputs.at(-1).itemProfiles.length, 1);
   assert.equal(savedSettingsInputs.at(-1).itemProfiles[0].name, "Two shipped updated");
 
+  doc.getElementById("planEditButton").click();
   doc.getElementById("bulkMissionSelectAllButton").click();
   doc.getElementById("copySelectedMissionListButton").click();
   await new Promise((resolve) => setTimeout(resolve, 10));
@@ -594,8 +629,16 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   await new Promise((resolve) => setTimeout(resolve, 10));
   assert.equal(savedSettingsInputs.at(-1).products[0].quantity, 2);
   assert.equal(savedSettingsInputs.at(-1).products[0].maxPrice, 40);
-  assert.equal(savedSettingsInputs.at(-1).products[0].maxOrderTotal, 100.2);
+  assert.equal(savedSettingsInputs.at(-1).products[0].maxOrderTotal, 0);
   assert.equal(savedSettingsInputs.at(-1).products[0].enabled, true);
+
+  // Updating a reusable profile can refresh every linked mission in the same
+  // save after one explicit confirmation.
+  doc.getElementById("itemProfileQuantity").value = "3";
+  doc.getElementById("itemProfileForm").dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true }));
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(savedSettingsInputs.at(-1).products[0].quantity, 3);
+  assert.match(doc.getElementById("message").textContent, /1 linked mission was updated/);
 
   // A pre-known candidate set gets one shared calendar gate and a sustained,
   // bounded setup without altering product price, quantity, or action fields.
@@ -617,6 +660,7 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   doc.getElementById("clearSelectedMissionSchedulesButton").click();
   await new Promise((resolve) => setTimeout(resolve, 10));
   assert.equal(savedSettingsInputs.at(-1).products[0].openAt, "");
+  doc.getElementById("planEditButton").click();
 
   doc.getElementById("itemProfileDeleteButton").click();
   await new Promise((resolve) => setTimeout(resolve, 10));
@@ -691,7 +735,7 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   await new Promise((resolve) => setTimeout(resolve, 10));
   assert.equal(testEventCalls, 1, "an overlapping Test all click must not enqueue another sweep");
   assert.equal(openProductCalls, 0, "the backend owns the paced all-mission Test run as one atomic action");
-  assert.match(doc.getElementById("message").textContent, /Test started for 1 enabled mission/);
+  assert.match(doc.getElementById("message").textContent, /Monitor-only check started for 1 enabled mission/);
   assert.match(doc.getElementById("message").textContent, /Chrome companion connected automatically/);
   assert.match(doc.getElementById("message").textContent, /nothing will be added/);
   assert.equal(doc.getElementById("testButton").disabled, false);
@@ -873,7 +917,8 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   doc.getElementById("eventFilterButton").click();
   assert.equal(doc.getElementById("eventFilterButton").hidden, true);
 
-  // Armed snapshot: autopilot ON, and editing pauses instead of locking.
+  // Armed snapshot: the first edit pauses once, and Done/Cancel keeps the
+  // plan session open until the operator deliberately finishes it.
   const armed = snapshotFixture();
   armed.settings.automationEnabled = true;
   armed.settings.monitoringPaused = false;
@@ -881,6 +926,7 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   assert.equal(doc.getElementById("autopilotState").textContent, "ON");
   assert.equal(doc.querySelector(".mission-card .mission-edit").disabled, false);
   assert.equal(doc.querySelector(".mission-card [data-view='enabled']").disabled, false);
+  const planSessionSaveStart = savedSettingsInputs.length;
   doc.querySelector(".mission-card .mission-edit").click();
   await new Promise((resolve) => setTimeout(resolve, 10));
   const pausedEditor = doc.querySelector(".mission-edit-card");
@@ -888,6 +934,26 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   pausedEditor.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
   await new Promise((resolve) => setTimeout(resolve, 10));
   assert.equal(doc.querySelector(".mission-edit-card"), null);
+  assert.equal(doc.getElementById("autopilotState").textContent, "OFF");
+  assert.equal(doc.getElementById("planEditButton").textContent, "Finish editing");
+  assert.equal(
+    savedSettingsInputs.slice(planSessionSaveStart).filter((input) => input.automationEnabled === false).length,
+    1,
+    "opening a plan session pauses exactly once"
+  );
+  assert.equal(
+    savedSettingsInputs.slice(planSessionSaveStart).filter((input) => input.automationEnabled === true).length,
+    0,
+    "closing an individual editor does not re-arm"
+  );
+  doc.getElementById("planEditButton").click();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(doc.getElementById("autopilotState").textContent, "ON");
+  assert.equal(
+    savedSettingsInputs.slice(planSessionSaveStart).filter((input) => input.automationEnabled === true).length,
+    1,
+    "finishing the plan session resumes exactly once"
+  );
 
   // A hard Stop during an armed edit cancels the editor's deferred re-arm.
   pushUpdate(armed);
