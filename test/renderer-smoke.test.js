@@ -75,6 +75,7 @@ function snapshotFixture() {
     events: [],
     signals: [],
     catalog: { version: 1, activeSearch: null, items: [] },
+    trackalacker: { version: 1, activeImport: null, items: [], lastImport: null },
     msrpResearch: {
       configured: false,
       credentialUsable: false,
@@ -130,6 +131,9 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   const bulkImportInputs = [];
   const catalogSearchInputs = [];
   const catalogAddInputs = [];
+  const trackalackerAddInputs = [];
+  const openedTrackalackerSources = [];
+  const openedTrackalackerStores = [];
   let catalogClearCalls = 0;
   const acceptedMsrpSuggestionIds = [];
   const copiedAffiliateUrls = [];
@@ -252,6 +256,64 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
     clearCatalog: async () => {
       catalogClearCalls += 1;
       return snapshotFixture();
+    },
+    startTrackalackerImport: async () => ({ snapshot: snapshotFixture(), via: "chrome" }),
+    cancelTrackalackerImport: async () => snapshotFixture(),
+    clearTrackalackerImport: async () => snapshotFixture(),
+    openTrackalackerSource: async (url, kind) => {
+      openedTrackalackerSources.push({ url, kind });
+      return { via: "chrome", url };
+    },
+    openTrackalackerStore: async (url, retailer, sku) => {
+      openedTrackalackerStores.push({ url, retailer, sku });
+      return { via: "chrome", url };
+    },
+    addTrackalackerMissions: async (selections, profileId) => {
+      trackalackerAddInputs.push({ selections, profileId });
+      const next = snapshotFixture();
+      const shared = {
+        itemId: "trackalacker:12345",
+        title: "Pokemon Followed Box",
+        imageUrl: "https://static.trackalacker.com/cdn-cgi/image/width=300/item.jpg",
+        quantity: 1,
+        action: "watch",
+        alertLevel: "standard",
+        fulfillmentMode: "shipping",
+        itemProfileId: profileId,
+        sourceProvider: "trackalacker",
+        sourceProductId: "12345",
+        sourceUrl: "https://www.trackalacker.com/products/showcase/pokemon-followed-box",
+        signalAutoOpen: true,
+        signalEntry: "product"
+      };
+      next.settings.products.push(
+        {
+          ...shared,
+          id: "target:1010892076",
+          retailer: "target",
+          sku: "1010892076",
+          productUrl: "https://www.target.com/p/item/-/A-1010892076",
+          maxPrice: 49.99,
+          maxOrderTotal: 0,
+          enabled: true,
+          expectedPriceConfidence: "history"
+        },
+        {
+          ...shared,
+          id: "walmart:20754418655",
+          retailer: "walmart",
+          sku: "20754418655",
+          productUrl: "https://www.walmart.com/ip/20754418655",
+          maxPrice: 49.99,
+          maxOrderTotal: 0,
+          enabled: false,
+          expectedPriceConfidence: "product"
+        }
+      );
+      return {
+        snapshot: next,
+        summary: { selectedItems: 1, selectedStores: 2, importedItems: 1, importedStores: 2, ready: 1, needsReview: 1, duplicates: 0, missing: 0, overCapacity: 0 }
+      };
     },
     acceptMsrpSuggestion: async (suggestionId) => {
       acceptedMsrpSuggestionIds.push(suggestionId);
@@ -1235,6 +1297,84 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   await new Promise((resolve) => setTimeout(resolve, 10));
   assert.equal(catalogClearCalls, 1);
   assert.equal(doc.querySelectorAll(".catalog-card").length, 0);
+
+  // TrackaLacker preview is product-first: one card owns multiple selectable
+  // store toggles, source/history links, image, and price-confidence labels.
+  const trackalackerPreview = snapshotFixture();
+  trackalackerPreview.trackalacker = {
+    version: 1,
+    activeImport: {
+      id: "track-import-1",
+      state: "complete",
+      captured: 1,
+      processed: 1,
+      discovered: 1,
+      failed: 0,
+      message: "Captured 1 followed product."
+    },
+    lastImport: null,
+    items: [{
+      id: "trackalacker:12345",
+      sourceProductId: "12345",
+      sourceUrl: "https://www.trackalacker.com/products/showcase/pokemon-followed-box",
+      title: "Pokemon Followed Box",
+      imageUrl: "https://static.trackalacker.com/cdn-cgi/image/width=300/item.jpg",
+      displayPrice: 49.99,
+      otherStores: [{ store: "Best Buy", listingId: "303", historyUrl: "https://www.trackalacker.com/products/showcase/pokemon-followed-box/listings/303/pokemon-followed-box" }],
+      stores: [
+        {
+          id: "target:1010892076",
+          retailer: "target",
+          sku: "1010892076",
+          listingId: "301",
+          productUrl: "https://www.target.com/p/item/-/A-1010892076",
+          historyUrl: "https://www.trackalacker.com/products/showcase/pokemon-followed-box/listings/301/pokemon-followed-box",
+          expectedPrice: 49.99,
+          priceConfidence: "history",
+          historySamples: 4,
+          alternateCount: 1
+        },
+        {
+          id: "walmart:20754418655",
+          retailer: "walmart",
+          sku: "20754418655",
+          listingId: "302",
+          productUrl: "https://www.walmart.com/ip/20754418655",
+          historyUrl: "https://www.trackalacker.com/products/showcase/pokemon-followed-box/listings/302/pokemon-followed-box",
+          expectedPrice: 49.99,
+          priceConfidence: "product",
+          historySamples: 0,
+          alternateCount: 0
+        }
+      ]
+    }]
+  };
+  pushUpdate(trackalackerPreview);
+  assert.equal(doc.querySelectorAll(".trackalacker-card").length, 1);
+  assert.equal(doc.querySelectorAll(".trackalacker-store-option").length, 2);
+  assert.equal([...doc.querySelectorAll(".trackalacker-store-option input")].every((input) => input.checked), true);
+  assert.match(doc.querySelector(".trackalacker-card").textContent, /Best Buy/);
+  assert.match(doc.querySelector(".trackalacker-card").textContent, /history sample/);
+  doc.querySelector(".trackalacker-title-row .trackalacker-link-button").click();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(openedTrackalackerSources[0].kind, "product");
+  doc.querySelector(".trackalacker-store-links .trackalacker-link-button").click();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.deepEqual(openedTrackalackerStores[0], {
+    url: "https://www.target.com/p/item/-/A-1010892076",
+    retailer: "target",
+    sku: "1010892076"
+  });
+  doc.getElementById("trackalackerAddButton").click();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.deepEqual(JSON.parse(JSON.stringify(trackalackerAddInputs[0].selections)), [{
+    productId: "trackalacker:12345",
+    retailers: ["target", "walmart"]
+  }]);
+  const importedItem = [...doc.querySelectorAll(".mission-card")].find((card) => /Pokemon Followed Box/.test(card.textContent));
+  assert.ok(importedItem, "TrackaLacker stores render as one grouped item");
+  assert.equal(importedItem.querySelectorAll(".item-store-option.selected").length, 2);
+  assert.equal(importedItem.querySelector(".mission-source").hidden, false);
 
   window.close();
 });

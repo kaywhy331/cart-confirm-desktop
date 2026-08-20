@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: https://target.com https://*.target.com https://target.scene7.com https://walmart.com https://*.walmart.com https://walmartimages.com https://*.walmartimages.com https://amazon.com https://*.amazon.com https://media-amazon.com https://*.media-amazon.com https://ssl-images-amazon.com https://*.ssl-images-amazon.com; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: https://target.com https://*.target.com https://target.scene7.com https://walmart.com https://*.walmart.com https://walmartimages.com https://*.walmartimages.com https://amazon.com https://*.amazon.com https://media-amazon.com https://*.media-amazon.com https://ssl-images-amazon.com https://*.ssl-images-amazon.com https://trackalacker.com https://*.trackalacker.com; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
   <title>Cart Confirm</title>
   <link rel="stylesheet" href="styles.css">
 </head>
@@ -93,6 +93,7 @@
             <div class="action-row">
               <button class="button ghost compact" id="openAllButton" type="button">Open due pages</button>
               <span class="add-products-label">Add products:</span>
+              <button class="button ghost compact" id="trackalackerLauncherButton" type="button">TrackaLacker</button>
               <button class="button ghost compact" id="catalogLauncherButton" type="button">From catalog</button>
               <button class="button secondary compact" id="bulkImportButton" type="button">Import links</button>
               <button class="button secondary compact" id="planEditButton" type="button" aria-pressed="false">Edit plan</button>
@@ -186,6 +187,40 @@
             </div>
           </div>
           <div class="panel-content" id="catalogPanelBody" hidden>
+            <section class="trackalacker-import" aria-labelledby="trackalackerImportTitle">
+              <div class="trackalacker-heading">
+                <div>
+                  <span class="eyebrow">Signed-in browser import</span>
+                  <h3 id="trackalackerImportTitle">TrackaLacker followed products</h3>
+                </div>
+                <div class="action-row">
+                  <button class="button primary compact" id="trackalackerScanButton" type="button">Scan followed products</button>
+                  <button class="button ghost compact" id="trackalackerCancelButton" type="button" hidden>Cancel scan</button>
+                  <button class="button ghost compact" id="trackalackerClearButton" type="button">Clear preview</button>
+                </div>
+              </div>
+              <p class="catalog-explainer">Uses the companion inside your signed-in TrackaLacker tab. It reads followed-product pages one at a time, captures the product image and source link, resolves supported retailer links, and summarizes each listing’s visible price history. No TrackaLacker password is requested or stored.</p>
+              <div class="trackalacker-progress" id="trackalackerStatus" role="status" aria-live="polite">Start a scan to build an item-first preview.</div>
+              <div class="catalog-inbox-heading trackalacker-inbox-heading">
+                <span id="trackalackerCount">0 products</span>
+                <div class="action-row">
+                  <button class="button ghost compact" id="trackalackerSelectAllButton" type="button">Select all stores</button>
+                  <button class="button ghost compact" id="trackalackerSelectNoneButton" type="button">Clear selection</button>
+                  <button class="button secondary compact" id="trackalackerAddButton" type="button">Add selected to Items</button>
+                </div>
+              </div>
+              <div class="catalog-import-defaults">
+                <label class="field">
+                  <span>Apply item template</span>
+                  <select id="trackalackerItemProfile"></select>
+                </label>
+                <p class="catalog-safety">Store options stay grouped under one product. A same-store, non-surge history can be ready with the selected template; product-level fallback estimates stay Off until you review the cap.</p>
+              </div>
+              <div class="trackalacker-list" id="trackalackerList">
+                <div class="empty-state">No TrackaLacker products captured yet.</div>
+              </div>
+            </section>
+            <div class="catalog-section-divider" role="separator"></div>
             <p class="catalog-explainer">Enter a keyword to open one official search page per selected retailer. The companion catalogs up to 20 visible result cards from each page—no private APIs, hidden batching, scrolling, or continuous crawler.</p>
             <form class="catalog-search-form" id="catalogSearchForm">
               <label class="field catalog-query-field">
@@ -625,6 +660,7 @@
       <span class="state-chip" data-view="state"></span>
       <div class="row-actions">
         <button class="mission-icon-button mission-open" type="button">↗</button>
+        <button class="mission-icon-button mission-source" type="button" hidden>T</button>
         <button class="mission-icon-button mission-copy-affiliate" type="button" hidden>🔗</button>
         <button class="mission-icon-button mission-edit" type="button">✎</button>
         <button class="mission-icon-button mission-remove" type="button">✕</button>

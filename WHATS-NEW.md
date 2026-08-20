@@ -6,6 +6,12 @@ update dialog shows exactly these bullets. Keep every entry short, plain, and
 about what the user will notice — one bullet per change, no internals.
 Publishing fails if the version being released has no section here.
 
+## 3.7.7
+- Import followed TrackaLacker products into an item-first preview with thumbnails, TrackaLacker sources, exact Target, Walmart, and Amazon store links, and per-store toggles
+- Listing History links now provide conservative expected store prices; surge, above-MSRP, and scalper observations are excluded, while product-level fallback prices stay Off for review
+- Multiple stores for one followed product import under one shared item instead of becoming duplicate items, with existing routes skipped and the 100-store-option limit enforced
+- Large imports run sequentially with progress, bounded retries, cancellation, and saved partial results while using only the browser's existing TrackaLacker sign-in
+
 ## 3.7.6
 - Products now appear once as items, with Target, Walmart, and Amazon as store options; the first store that secures an item stops its alternatives for that run
 - Each item row shows its captured product thumbnail, opens a larger preview on hover or keyboard focus, and keeps direct Open controls and store-specific prices beneath one item name

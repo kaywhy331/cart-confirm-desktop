@@ -3,7 +3,7 @@
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAvkHdX7fS35SJCa3qjcQtC5Wvijg/Hm3dzJA611+MKPFjEeyPxOKUA/JxmJ0L6ZidLPnmEQO3S0V2YmkZtXR3A/6ryWtdBtDAqV+a9oIa05fkpLC3Aj8dr8HdDZu0Kbgh+KSoc2lUAks0PajTE7eCgvu6ndjaGdumbEEiPhbthadGQrDxmpB87lBk6uyzL/fEjFdWXzLmdZGlt+shsLNc5Sz7ibnieWjOCp5LlRkTtbYfpgcmXe6tJhz3SaGv+sbES75Qlf6ltDYeg8YjGA0HRgApNt63l9OBkFizcN3FTKeXhpRGJ/8nu2BXXEwazfQaBzk/jOEMd1YfuxTVFXIS5wIDAQAB",
   "name": "Quick add",
   "short_name": "Quick add",
-  "version": "3.7.6",
+  "version": "3.7.7",
   "description": "Runs a traffic-governed, first-party, price-and-total-capped buy list on Target, Walmart, and Amazon.",
   "permissions": [
     "activeTab",
@@ -22,6 +22,10 @@
     "https://amazon.com/*",
     "https://www.amazon.com/*",
     "https://*.amazon.com/*",
+    "https://trackalacker.com/*",
+    "https://www.trackalacker.com/*",
+    "https://howl.link/*",
+    "https://*.howl.link/*",
     "http://127.0.0.1/*"
   ],
   "background": {
@@ -38,6 +42,14 @@
         "https://www.amazon.com/*"
       ],
       "js": ["retailers.js", "quick-add.js", "catalog-search.js", "evidence.js", "safety.js", "schedule-gate.js", "queue-capture.js", "content.js"],
+      "run_at": "document_end"
+    },
+    {
+      "matches": [
+        "https://trackalacker.com/*",
+        "https://www.trackalacker.com/*"
+      ],
+      "js": ["trackalacker-ingest.js"],
       "run_at": "document_end"
     }
   ],
