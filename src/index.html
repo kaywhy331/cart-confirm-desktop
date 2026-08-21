@@ -586,6 +586,23 @@
               </details>
             </section>
             <div class="catalog-section-divider" role="separator"></div>
+            <section class="signal-strategy-card" aria-labelledby="signalStrategyTitle">
+              <div class="signal-strategy-heading">
+                <div>
+                  <strong id="signalStrategyTitle">Signal strategies</strong>
+                  <p>Rules run from top to bottom. The first matching rule controls the action; lower rules are ignored for that signal.</p>
+                </div>
+                <span class="step-state" id="signalStrategyCount">Legacy mission actions</span>
+              </div>
+              <div class="signal-strategy-list" id="signalStrategyList">
+                <div class="empty-state">No strategies yet. Existing per-mission signal actions remain unchanged.</div>
+              </div>
+              <div class="action-row signal-strategy-actions">
+                <button class="button secondary compact" id="addSignalStrategyButton" type="button">Add signal strategy</button>
+              </div>
+              <small class="row-help">Store choices come from your current mission store options. Empty include keywords make a catchall rule. A strategy can narrow a mission, but never exceed that mission's action, quantity, price, fulfillment, or order-total authorization.</small>
+            </section>
+            <div class="catalog-section-divider" role="separator"></div>
             <p class="step-hint" id="discordHint">Eligible offers verified in open store tabs appear here automatically. You can also connect a Discord bot that can view the signal channel and read its message history. Discord user tokens and self-bots are never accepted.</p>
             <div class="discord-setup">
               <label class="field">
@@ -628,6 +645,75 @@
       <span>First-party sellers only, always capped — enforced in code. Unofficial personal-use tool; store names and marks belong to their respective owners.</span>
     </footer>
   </div>
+
+  <dialog class="bulk-import-dialog signal-strategy-dialog" id="signalStrategyDialog" aria-labelledby="signalStrategyDialogTitle">
+    <div class="dialog-heading">
+      <div>
+        <span class="eyebrow">Ordered CartSignals rule</span>
+        <h2 id="signalStrategyDialogTitle">Add signal strategy</h2>
+      </div>
+      <button class="button ghost compact" id="signalStrategyCancelButton" type="button">Close</button>
+    </div>
+    <p>All selected criteria must match. Use multiple strategies for different priorities; move the most specific rules to the top.</p>
+    <form id="signalStrategyForm">
+      <div class="signal-strategy-form-grid">
+        <label class="field signal-strategy-name">
+          <span>Strategy name</span>
+          <input id="signalStrategyName" type="text" maxlength="80" autocomplete="off" placeholder="MSRP checkout" required>
+        </label>
+        <label class="field">
+          <span>Price</span>
+          <select id="signalStrategyPriceBand">
+            <option value="any">Any price classification</option>
+            <option value="below_msrp">Below MSRP</option>
+            <option value="msrp">At or near MSRP</option>
+            <option value="slightly_above_msrp">Slightly above MSRP</option>
+            <option value="above_msrp">Above MSRP / price surge</option>
+          </select>
+          <small>TrackaLacker's label is used when present. Otherwise, a known price up to 10% over the mission's approved MSRP is “slightly above.”</small>
+        </label>
+        <label class="field">
+          <span>Action</span>
+          <select id="signalStrategyAction">
+            <option value="notify">Notify</option>
+            <option value="add_to_cart">Add To Cart</option>
+            <option value="prepare_checkout">Prepare Checkout</option>
+            <option value="submit_order">Submit Order</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>Quantity</span>
+          <select id="signalStrategyQuantity">
+            <option value="max">Max Allowed (up to mission cap)</option>
+            <option value="1">1</option>
+            <option value="2">2</option>
+            <option value="3">3</option>
+            <option value="4">4</option>
+            <option value="5">5</option>
+          </select>
+        </label>
+      </div>
+      <fieldset class="signal-strategy-stores">
+        <legend>Stores from available mission options</legend>
+        <div id="signalStrategyStores"></div>
+        <small>Leave every store unchecked to match any available store.</small>
+      </fieldset>
+      <label class="field">
+        <span>Include keywords</span>
+        <textarea id="signalStrategyIncludeKeywords" maxlength="1000" rows="3" spellcheck="false" placeholder="pokemon + &quot;elite trainer box&quot; | 'booster bundle'"></textarea>
+        <small>Spaces or + mean AND. Use |, comma, or OR for alternatives; quotes require an exact phrase; -word excludes inline. Empty means catchall.</small>
+      </label>
+      <label class="field">
+        <span>Exclude keywords</span>
+        <textarea id="signalStrategyExcludeKeywords" maxlength="1000" rows="2" spellcheck="false" placeholder="used | refurbished | &quot;open box&quot;"></textarea>
+        <small>Any matching exclusion clause rejects this strategy.</small>
+      </label>
+      <label class="toggle-row signal-strategy-enabled"><input id="signalStrategyEnabled" type="checkbox" checked><span>Strategy enabled</span></label>
+      <div class="dialog-actions">
+        <button class="button primary" id="signalStrategySaveButton" type="submit">Save strategy</button>
+      </div>
+    </form>
+  </dialog>
 
   <dialog class="bulk-import-dialog" id="bulkImportDialog" aria-labelledby="bulkImportTitle">
     <div class="dialog-heading">

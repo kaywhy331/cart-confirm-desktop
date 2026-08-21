@@ -1248,6 +1248,48 @@ button:disabled:hover { transform: none; }
 .signal-audit-row { padding: 9px; border: 1px solid var(--line); border-radius: 9px; background: rgba(3, 8, 17, 0.3); }
 .signal-audit-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
 .signal-audit-heading strong { font-size: 10.5px; line-height: 1.4; }
+.signal-strategy-card {
+  padding: 13px;
+  border: 1px solid rgba(167, 139, 250, 0.28);
+  border-radius: 12px;
+  background: rgba(91, 33, 182, 0.07);
+}
+.signal-strategy-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.signal-strategy-heading > div { min-width: 0; }
+.signal-strategy-heading strong { color: #ede9fe; font-size: 12px; }
+.signal-strategy-heading p { margin-top: 4px; color: var(--muted); font-size: 10px; line-height: 1.45; }
+.signal-strategy-list { display: grid; gap: 7px; margin-top: 11px; }
+.signal-strategy-row {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 9px;
+  padding: 9px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(3, 8, 17, 0.38);
+}
+.signal-strategy-row.disabled { opacity: 0.58; border-style: dashed; }
+.signal-strategy-priority {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border: 1px solid rgba(167, 139, 250, 0.32);
+  border-radius: 50%;
+  color: #ddd6fe;
+  font-size: 10px;
+  font-weight: 850;
+}
+.signal-strategy-content { min-width: 0; }
+.signal-strategy-row-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+.signal-strategy-row-heading strong { color: #eaf4ff; font-size: 11px; line-height: 1.4; }
+.signal-strategy-content > small { display: block; margin-top: 3px; color: var(--muted); font-size: 9px; line-height: 1.4; }
+.signal-strategy-keywords { margin-top: 4px; overflow-wrap: anywhere; color: var(--subtle); font-size: 9px; line-height: 1.45; }
+.signal-strategy-content .signal-strategy-shadow-warning { color: var(--warning); }
+.signal-strategy-row-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 5px; max-width: 185px; }
+.signal-strategy-row-actions .button { min-width: 32px; min-height: 28px; padding: 0 7px; font-size: 9px; }
+.signal-strategy-actions { margin-top: 10px; }
 .discord-launcher {
   display: flex;
   justify-content: flex-end;
@@ -1570,6 +1612,26 @@ button:disabled:hover { transform: none; }
 }
 .bulk-import-dialog textarea:focus { border-color: var(--accent); outline: 3px solid rgba(56, 189, 248, 0.13); }
 .bulk-import-dialog .bulk-import-safety { color: var(--warning); }
+.signal-strategy-dialog { width: min(760px, calc(100vw - 36px)); }
+.signal-strategy-dialog form { margin-top: 15px; }
+.signal-strategy-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0 12px;
+}
+.signal-strategy-name { grid-column: 1 / -1; }
+.signal-strategy-dialog textarea { min-height: 72px; padding: 10px 11px; }
+.signal-strategy-stores {
+  margin: 0 0 13px;
+  padding: 10px 11px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+.signal-strategy-stores legend { padding: 0 5px; color: #dbe5f4; font-size: 11px; font-weight: 700; }
+.signal-strategy-stores > div { display: flex; flex-wrap: wrap; gap: 9px 18px; }
+.signal-strategy-stores > small { display: block; margin-top: 7px; color: var(--subtle); font-size: 9px; }
+.signal-strategy-no-stores { color: var(--warning) !important; }
+.signal-strategy-enabled { margin: 2px 0 14px; }
 .bulk-import-result { min-height: 22px; margin: 10px 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
 .bulk-import-result.error { color: var(--danger); }
 .dialog-actions { display: flex; justify-content: flex-end; }
@@ -1771,7 +1833,10 @@ footer {
   .step-header { flex-wrap: wrap; }
   .product-row-top { flex-wrap: wrap; }
   .title-input { flex-basis: 100%; order: 5; }
-  .product-fields, .automation-grid, .discord-setup, .signal-bridge-controls, .catalog-filter-grid, .catalog-import-defaults, .item-profile-form, .store-allowance-form, .msrp-row, .bulk-mission-list, .mission-profile-row, .msrp-research-controls, .mission-toolbar { grid-template-columns: 1fr; }
+  .product-fields, .automation-grid, .discord-setup, .signal-bridge-controls, .signal-strategy-form-grid, .catalog-filter-grid, .catalog-import-defaults, .item-profile-form, .store-allowance-form, .msrp-row, .bulk-mission-list, .mission-profile-row, .msrp-research-controls, .mission-toolbar { grid-template-columns: 1fr; }
+  .signal-strategy-name { grid-column: auto; }
+  .signal-strategy-row { grid-template-columns: 28px minmax(0, 1fr); }
+  .signal-strategy-row-actions { grid-column: 2; justify-content: flex-start; max-width: none; }
   .item-profile-form .action-row { grid-column: auto; }
   .defaults-heading { flex-direction: column; }
   .defaults-default-profile { width: 100%; }

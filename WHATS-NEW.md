@@ -6,6 +6,11 @@ update dialog shows exactly these bullets. Keep every entry short, plain, and
 about what the user will notice — one bullet per change, no internals.
 Publishing fails if the version being released has no section here.
 
+## 3.8.3
+- New ordered Signal strategies let you choose a price band, available stores, include and exclude keywords, an action, and quantity 1–5 or Max Allowed
+- Strategies run from top to bottom and the first enabled match wins; an empty keyword rule acts as a catchall, with a warning when it would hide rules below it
+- Matching signals can notify, add to cart, prepare checkout, or submit an order while the mission's existing action, quantity, price, seller, fulfillment, and checkout safeguards remain hard limits
+
 ## 3.8.2
 - TrackaLacker signals now arrive through the bundled Chrome extension's own Web Push subscription, using your existing signed-in TrackaLacker tab for one-time device enrollment and no recurring TrackaLacker polling
 - The setup screen now connects Chrome push directly; the AppX listener, native notification permission, and separate listener package are no longer required

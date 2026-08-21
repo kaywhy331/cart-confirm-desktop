@@ -577,6 +577,7 @@ function publicSettings() {
     trackalackerSignalDeliveryPaused: settings.trackalackerSignalDeliveryPaused,
     trackalackerSignalDedupeWindowSeconds: settings.trackalackerSignalDedupeWindowSeconds,
     trackalackerSignalAliases: settings.trackalackerSignalAliases,
+    signalStrategies: settings.signalStrategies,
     configurationProfiles: settings.configurationProfiles,
     msrpCatalog: settings.msrpCatalog,
     itemProfiles: settings.itemProfiles,
@@ -1634,7 +1635,7 @@ function validateProductEvent(event) {
   return { event: checkedEvent, product };
 }
 
-function sendEventNotification(event, product, queueFanout = null) {
+function sendEventNotification(event, product, queueFanout = null, options = {}) {
   if (event.eventType === "traffic-overload") {
     notifyOnce(
       `${event.retailer}:traffic-overload`,
@@ -1658,7 +1659,7 @@ function sendEventNotification(event, product, queueFanout = null) {
     sourceEventType: event.eventType
   };
 
-  if (event.eventType === "offer-observed" && event.eligible) {
+  if (event.eventType === "offer-observed" && event.eligible && options.suppressEligibleOffer !== true) {
     notifyOnce(
       key,
       `${store} offer is eligible`,
@@ -1786,13 +1787,21 @@ function currentSignalActivations(now = Date.now()) {
   return signalActivations;
 }
 
-function activateMatchedSignal(signal, product, now = Date.now()) {
+function activateMatchedSignal(signal, product, now = Date.now(), route = null) {
   if (!settings.signalsEnabled || !product?.id || signal?.productId !== product.id) return null;
+  const strategyDecision = route?.strategyDecision?.state === "matched"
+    ? route.strategyDecision
+    : null;
   signalActivations = activateSignalProduct(signalActivations, {
     productId: product.id,
     signalId: signal.id,
     source: signal.source,
-    runId: settings.automationRunId
+    runId: settings.automationRunId,
+    action: strategyDecision ? product.action : "",
+    quantity: strategyDecision ? product.quantity : null,
+    acceptPartial: strategyDecision?.strategy?.quantity === "max",
+    strategyId: strategyDecision?.strategy?.id,
+    strategyName: strategyDecision?.strategy?.name
   }, now);
   configVersion += 1;
   return signalActivations[product.id] || null;
@@ -1827,17 +1836,20 @@ function handleBrowserSignalEvent(event, product) {
     autoOpenEnabled: true,
     now: Date.now()
   });
-  if (route.state !== "pending") return null;
-  const activation = activateMatchedSignal(signal, route.product, Date.now());
-  if (!activation) return null;
+  const activation = route.state === "pending"
+    ? activateMatchedSignal(signal, route.product, Date.now(), route)
+    : null;
+  if (route.state === "pending" && !activation) return { activation: null, route };
   runtimeState.signals = upsertSignal(runtimeState.signals, {
     ...signal,
-    autoOpenState: "opened",
-    autoOpenedAt: new Date().toISOString(),
-    note: "The browser verified this exact item, store, first-party seller, and capped price. Signals authorized only this mission for a bounded purchase attempt."
+    autoOpenState: route.state === "pending" ? "opened" : route.state,
+    autoOpenedAt: route.state === "pending" ? new Date().toISOString() : "",
+    note: route.state === "pending"
+      ? "The browser verified this exact item, store, first-party seller, and capped price. Signals authorized only this mission for a bounded purchase attempt."
+      : route.note
   });
   persistRuntimeState();
-  return activation;
+  return { activation, route };
 }
 
 function signalSummary(signal) {
@@ -1872,6 +1884,7 @@ function handleDiscordSignal(signal, historical) {
     );
     return;
   }
+  if (route.reason === "no-strategy") return;
   if (route.state !== "pending") {
     notifyOnce(
       `discord-recorded:${signal.id}`,
@@ -1882,7 +1895,7 @@ function handleDiscordSignal(signal, historical) {
     return;
   }
 
-  activateMatchedSignal(signal, route.product, Date.now());
+  activateMatchedSignal(signal, route.product, Date.now(), route);
 
   notifyOnce(
     `discord-match:${signal.id}`,
@@ -1969,6 +1982,8 @@ function handleTrackalackerSignalRequest(envelope, idempotencyKey, options = {})
       ...outcome.resolution.canonicalSignal,
       autoOpenState: outcome.route?.state === "pending"
         ? "pending"
+        : outcome.route?.state === "notified"
+          ? "notified"
         : outcome.route?.state === "stale"
           ? "stale"
           : outcome.resolution.mission ? "disabled" : "new-product",
@@ -1988,13 +2003,23 @@ function handleTrackalackerSignalRequest(envelope, idempotencyKey, options = {})
   }
   broadcast();
 
+  if (outcome.route?.state === "notified") {
+    const strategyName = outcome.route.strategyDecision?.strategy?.name || "Signal strategy";
+    notifyOnce(
+      `trackalacker-notify:${outcome.record.signalId}`,
+      `${retailerLabel(outcome.record.retailer)} TrackaLacker signal`,
+      `${outcome.record.productNameRaw || "A desired item"} matched ${strategyName}. Notification only; no store page was opened.`,
+      true
+    );
+  }
+
   if (!outcome.shouldOpen) {
     return { statusCode: 200, payload: outcome.response };
   }
 
   const signal = outcome.resolution.canonicalSignal;
   const route = outcome.route;
-  const activation = activateMatchedSignal(signal, route.product, Date.now());
+  const activation = activateMatchedSignal(signal, route.product, Date.now(), route);
   if (!activation) {
     updateTrackalackerSignalAction(signal.id, {
       missionDecision: "failed",
@@ -2166,6 +2191,7 @@ async function openSignal(signalId, requestedEntry = "product") {
       settings: {
         ...settings,
         discordAutoOpen: true,
+        signalStrategies: [],
         products: settings.products.map((candidate) => (
           candidate.id === product.id
             ? { ...candidate, signalAutoOpen: true, signalEntry: "product" }
@@ -2174,7 +2200,7 @@ async function openSignal(signalId, requestedEntry = "product") {
       },
       now: Date.now()
     });
-    if (productRoute.state === "pending") activateMatchedSignal(signal, product, Date.now());
+    if (productRoute.state === "pending") activateMatchedSignal(signal, productRoute.product, Date.now(), productRoute);
     return openProduct(product.id);
   }
   const route = planSignalRoute({
@@ -2183,6 +2209,7 @@ async function openSignal(signalId, requestedEntry = "product") {
       ...settings,
       monitoringPaused: false,
       discordAutoOpen: true,
+      signalStrategies: [],
       products: settings.products.map((candidate) => (
         candidate.id === product.id
           ? { ...candidate, signalAutoOpen: true, signalEntry: requestedEntry }
@@ -2194,7 +2221,7 @@ async function openSignal(signalId, requestedEntry = "product") {
   if (route.entry !== requestedEntry) {
     throw new Error("Direct entry requires Autopilot or Signals, a fresh under-cap price, a matching sanitized link, and Amazon.com as seller for Amazon. Open the product page instead.");
   }
-  activateMatchedSignal(signal, product, Date.now());
+  activateMatchedSignal(signal, route.product, Date.now(), route);
   return openProduct(product.id, {
     urlOverride: route.url,
     spacingMs: DESKTOP_DROP_SPACING_MS,
@@ -2212,7 +2239,8 @@ function handleCompanionEvent(rawEvent) {
   if (result.error) return { accepted: false, reason: result.error };
 
   const { event, product } = result;
-  const signalActivation = handleBrowserSignalEvent(event, product);
+  const browserSignalDecision = handleBrowserSignalEvent(event, product);
+  const signalActivation = browserSignalDecision?.activation || null;
   if (product && event.imageUrl && event.imageUrl !== product.imageUrl) {
     settings = {
       ...settings,
@@ -2266,7 +2294,9 @@ function handleCompanionEvent(rawEvent) {
   const queueFanout = event.eventType === "queue-waiting" && product
     ? triggerQueueFanout(event)
     : null;
-  sendEventNotification(event, product, queueFanout);
+  sendEventNotification(event, product, queueFanout, {
+    suppressEligibleOffer: browserSignalDecision?.route?.reason === "no-strategy"
+  });
   broadcast();
   return {
     accepted: true,
@@ -2420,8 +2450,20 @@ function extensionConfig() {
     products: settings.products.map((product) => {
       const context = productExecutionContext(runtimeState, product.id, settings.automationRunId);
       const signalActivation = liveSignalActivations[product.id] || null;
+      const automationProduct = toAutomationProduct(product);
+      const strategyQuantity = Number.isInteger(signalActivation?.quantity)
+        ? signalActivation.quantity
+        : automationProduct.quantity;
       return {
-        ...toAutomationProduct(product),
+        ...automationProduct,
+        action: signalActivation?.action || automationProduct.action,
+        quantity: strategyQuantity,
+        acceptPartial: signalActivation?.acceptPartial === true
+          ? true
+          : automationProduct.acceptPartial,
+        checkoutEvidence: strategyQuantity === automationProduct.quantity
+          ? automationProduct.checkoutEvidence
+          : null,
         enabled: product.enabled && (!settings.signalsEnabled || Boolean(signalActivation)),
         signalActivated: Boolean(signalActivation),
         signalActivationExpiresAt: signalActivation?.expiresAt || 0,

@@ -57,6 +57,7 @@ function snapshotFixture() {
       discordEnabled: false,
       discordChannelId: "",
       discordAutoOpen: true,
+      signalStrategies: [],
       configurationProfiles: [],
       msrpCatalog: [],
       itemProfiles: [],
@@ -519,6 +520,50 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   assert.equal(doc.getElementById("watcherIntervalSeconds").value, "60");
   assert.equal(doc.getElementById("walmartQueueCaptureReloads").value, "0");
   assert.match(card.querySelector("[data-view='sub']").textContent, /continuous watcher/);
+
+  // Signal strategies use available mission stores and preserve explicit
+  // first-match ordering through add, edit, reorder, and delete operations.
+  assert.equal(doc.getElementById("signalStrategyCount").textContent, "Legacy mission actions");
+  doc.getElementById("addSignalStrategyButton").click();
+  assert.equal(doc.getElementById("signalStrategyDialog").hasAttribute("open"), true);
+  const targetStoreChoice = doc.querySelector("#signalStrategyStores input[data-signal-store='target']");
+  assert.ok(targetStoreChoice, "Target is pulled from the configured mission stores");
+  targetStoreChoice.checked = true;
+  doc.getElementById("signalStrategyName").value = "Priority MSRP checkout";
+  doc.getElementById("signalStrategyPriceBand").value = "msrp";
+  doc.getElementById("signalStrategyAction").value = "prepare_checkout";
+  doc.getElementById("signalStrategyQuantity").value = "2";
+  doc.getElementById("signalStrategyIncludeKeywords").value = "pokemon + \"booster box\"";
+  doc.getElementById("signalStrategyExcludeKeywords").value = "used | refurbished";
+  doc.getElementById("signalStrategyForm").dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true }));
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  let savedStrategies = savedSettingsInputs.at(-1).signalStrategies;
+  assert.equal(savedStrategies.length, 1);
+  assert.deepEqual(JSON.parse(JSON.stringify(savedStrategies[0].stores)), ["target"]);
+  assert.equal(savedStrategies[0].quantity, 2);
+  assert.match(doc.querySelector(".signal-strategy-row").textContent, /Priority MSRP checkout/);
+  [...doc.querySelectorAll(".signal-strategy-row button")].find((button) => button.textContent === "Edit").click();
+  doc.getElementById("signalStrategyName").value = "Edited MSRP checkout";
+  doc.getElementById("signalStrategyForm").dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true }));
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(savedSettingsInputs.at(-1).signalStrategies[0].name, "Edited MSRP checkout");
+
+  doc.getElementById("addSignalStrategyButton").click();
+  doc.getElementById("signalStrategyName").value = "Default notify";
+  doc.getElementById("signalStrategyForm").dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true }));
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(doc.querySelectorAll(".signal-strategy-row").length, 2);
+  const secondRow = doc.querySelectorAll(".signal-strategy-row")[1];
+  [...secondRow.querySelectorAll("button")].find((button) => button.textContent === "↑").click();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  savedStrategies = savedSettingsInputs.at(-1).signalStrategies;
+  assert.equal(savedStrategies[0].name, "Default notify");
+  assert.match(doc.querySelector(".signal-strategy-shadow-warning").textContent, /shadows every enabled strategy below/);
+  window.confirm = () => true;
+  [...doc.querySelector(".signal-strategy-row").querySelectorAll("button")]
+    .find((button) => button.textContent === "Delete").click();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(savedSettingsInputs.at(-1).signalStrategies.length, 1);
 
   // Dense rows round only their display value; exact caps remain available
   // to assistive technology/tooltips and in the saved mission contract.
