@@ -6,6 +6,10 @@ update dialog shows exactly these bullets. Keep every entry short, plain, and
 about what the user will notice — one bullet per change, no internals.
 Publishing fails if the version being released has no section here.
 
+## 3.7.8
+- Fixed TrackaLacker scans incorrectly reporting that no followed products were found on signed-in accounts
+- Followed products, exact store links, images, and Listing History prices now import from TrackaLacker's current page data, with clearer sign-in and browser-verification guidance when access is blocked
+
 ## 3.7.7
 - Import followed TrackaLacker products into an item-first preview with thumbnails, TrackaLacker sources, exact Target, Walmart, and Amazon store links, and per-store toggles
 - Listing History links now provide conservative expected store prices; surge, above-MSRP, and scalper observations are excluded, while product-level fallback prices stay Off for review
