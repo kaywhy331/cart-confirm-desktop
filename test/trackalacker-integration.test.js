@@ -35,6 +35,21 @@ test("TrackaLacker ingestion crosses only the authenticated extension-to-loopbac
   assert.doesNotMatch(`${content}\n${background}\n${main}`, /(?:password|passwd)\s*[:=]\s*["'][^"']+["']/i);
 });
 
+test("followed-product scans are opened and confirmed by the extension's own Chrome profile", () => {
+  const main = fs.readFileSync(path.join(__dirname, "..", "main.js"), "utf8");
+  const background = fs.readFileSync(path.join(__dirname, "..", "extension", "background.js"), "utf8");
+  const start = main.slice(
+    main.indexOf("async function startTrackalackerImport"),
+    main.indexOf("function cancelActiveTrackalackerImport")
+  );
+  assert.match(start, /waitForTrackalackerImportStart\(importId\)/);
+  assert.match(start, /via: "extension-profile"/);
+  assert.doesNotMatch(start, /openPageInChrome/);
+  assert.match(background, /function ensureTrackalackerImportPage/);
+  assert.match(background, /requestTrackalackerPage\(`import:\$\{importId\}`\)/);
+  assert.match(background, /ensureTrackalackerImportPage\(cached\)/);
+});
+
 test("the crawler is sequential, bounded, retryable, and reports progress before mutating missions", () => {
   const content = fs.readFileSync(path.join(root, "extension", "trackalacker-ingest.js"), "utf8");
   const background = fs.readFileSync(path.join(root, "extension", "background.js"), "utf8");

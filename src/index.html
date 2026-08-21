@@ -78,13 +78,13 @@
           <ol class="install-steps">
             <li>Choose <strong>Show companion folder</strong> so the correct folder is selected for you.</li>
             <li>Choose <strong>Open Chrome extensions</strong>, turn on Developer mode, then use <strong>Load unpacked</strong> on that folder.</li>
-            <li>Choose <strong>Test connection safely</strong>. The app opens one store page and confirms the connection here.</li>
+            <li>Choose <strong>Connect one page</strong>. The app opens exactly one configured store page without enabling or running any item.</li>
           </ol>
           <div class="action-row">
             <button class="button secondary" id="showExtensionButton" type="button">Show companion folder</button>
             <button class="button ghost" id="openChromeExtensionsButton" type="button">Open Chrome extensions</button>
             <button class="button ghost" id="copyExtensionButton" type="button">Copy folder path</button>
-            <button class="button primary" id="testConnectionButton" type="button">Test connection safely</button>
+            <button class="button primary" id="testConnectionButton" type="button">Connect one page</button>
             <span class="port-badge" id="portBadge">Port —</span>
           </div>
           <p class="step-hint attention-hint" id="connectHint" hidden></p>
@@ -502,7 +502,7 @@
           </div>
           <p class="readiness-summary" id="readinessSummary"></p>
           <div class="readiness-metrics">
-            <div><span>Chrome</span><strong id="readinessConnection">—</strong></div>
+            <div><span>Ready source</span><strong id="readinessConnection">—</strong></div>
             <div><span>Items on</span><strong id="readinessEnabled">0</strong></div>
             <div><span>Scheduled</span><strong id="readinessScheduled">0</strong></div>
             <div><span>Maximum exposure</span><strong id="readinessExposure">$0</strong></div>
@@ -545,7 +545,7 @@
 
         <div class="discord-launcher" id="discordLauncher">
           <button class="button secondary discord-launcher-button" id="showDiscordButton" type="button" aria-controls="signalPanel" aria-expanded="false">
-            Show signals
+            Configure signals
           </button>
         </div>
 
@@ -577,9 +577,10 @@
               </div>
               <div class="action-row signal-bridge-actions">
                 <button class="button secondary compact" id="signalBridgePermissionButton" type="button">Connect TrackaLacker push</button>
+                <button class="button ghost compact" id="signalBridgeScanButton" type="button">Scan followed products</button>
                 <button class="button ghost compact" id="signalBridgeReplayButton" type="button">Run dry-run replay</button>
               </div>
-              <small class="row-help">Setup opens TrackaLacker in Chrome and uses that page's existing signed-in session to enroll the extension's real PushSubscription. No account credentials or push keys are stored by CartCollect. Synthetic replays exercise the production parser and resolver but can never open a store or place an order.</small>
+              <small class="row-help">Setup asks the companion extension to reuse or open TrackaLacker in the Chrome profile where that extension is installed, then uses that page's existing signed-in session to enroll the real PushSubscription. No account credentials or push keys are stored by CartCollect. Synthetic replays exercise the production parser and resolver but can never open a store or place an order.</small>
               <details class="signal-audit-details">
                 <summary>Recent TrackaLacker signal audit</summary>
                 <div class="signal-audit-list" id="signalBridgeRecent"><div class="empty-state">No TrackaLacker alerts recorded yet.</div></div>
@@ -599,6 +600,7 @@
               </div>
               <div class="action-row signal-strategy-actions">
                 <button class="button secondary compact" id="addSignalStrategyButton" type="button">Add signal strategy</button>
+                <button class="button ghost compact" id="addDefaultSignalStrategyButton" type="button">Add safe Notify catchall</button>
               </div>
               <small class="row-help">Store choices come from your current mission store options. Empty include keywords make a catchall rule. A strategy can narrow a mission, but never exceed that mission's action, quantity, price, fulfillment, or order-total authorization.</small>
             </section>
@@ -666,11 +668,11 @@
           <select id="signalStrategyPriceBand">
             <option value="any">Any price classification</option>
             <option value="below_msrp">Below MSRP</option>
-            <option value="msrp">At or near MSRP</option>
+            <option value="msrp">MSRP (or source-labeled near MSRP)</option>
             <option value="slightly_above_msrp">Slightly above MSRP</option>
             <option value="above_msrp">Above MSRP / price surge</option>
           </select>
-          <small>TrackaLacker's label is used when present. Otherwise, a known price up to 10% over the mission's approved MSRP is “slightly above.”</small>
+          <small>TrackaLacker's explicit label is used when present. Otherwise, the exact approved MSRP is “MSRP” and a known price up to 10% higher is “slightly above.”</small>
         </label>
         <label class="field">
           <span>Action</span>
@@ -743,6 +745,11 @@
     <p id="runReviewSummary"></p>
     <div class="run-review-metrics" id="runReviewMetrics"></div>
     <ul class="run-review-issues" id="runReviewIssues"></ul>
+    <div class="run-review-setup-actions" id="runReviewSetupActions">
+      <button class="button secondary compact" id="runReviewItemsButton" type="button">Choose items</button>
+      <button class="button secondary compact" id="runReviewConfigureSignalsButton" type="button">Configure signals</button>
+      <button class="button secondary compact" id="runReviewConnectButton" type="button">Connect one Chrome page</button>
+    </div>
     <p class="run-review-safety">Signals keeps every mission dormant until an exact TrackaLacker, browser, or Discord match; Autopilot monitors every due mission. In either mode, the first selected store to claim an item blocks sibling stores from buying it again.</p>
     <div class="dialog-actions run-review-actions">
       <button class="button secondary" id="runReviewMonitorButton" type="button">Start monitoring only</button>
@@ -759,6 +766,7 @@
       </div>
       <label class="toggle-row mission-enabled" title="Only enabled items run">
         <input data-view="enabled" type="checkbox">
+        <span>On</span>
       </label>
       <div class="mission-main">
         <div class="mission-title-row">
@@ -918,6 +926,7 @@
   <script src="../lib/config-profiles.js"></script>
   <script src="../lib/item-defaults.js"></script>
   <script src="../lib/item-missions.js"></script>
+  <script src="../lib/signals-readiness.js"></script>
   <script src="renderer.js"></script>
 </body>
 </html>

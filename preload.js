@@ -31,6 +31,7 @@ contextBridge.exposeInMainWorld("cartAssist", {
   openBuyList: (options = {}) => ipcRenderer.invoke("cart-assist:open-buy-list", {
     backgroundFirst: options?.backgroundFirst === true
   }),
+  connectCompanion: () => ipcRenderer.invoke("cart-assist:connect-companion"),
   openCart: (retailer) => ipcRenderer.invoke("cart-assist:open-cart", retailer),
   openOrders: (retailer) => ipcRenderer.invoke("cart-assist:open-orders", retailer),
   copyAffiliateLink: (input) => ipcRenderer.invoke("cart-assist:copy-affiliate-link", input),

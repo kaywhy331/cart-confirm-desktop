@@ -1,0 +1,13 @@
+# TrackaLacker live push qualification
+
+Use this checklist only with your own signed-in Chrome profile. Never paste or capture cookies, authorization headers, CSRF values, subscription endpoints, `p256dh`, `auth`, or device tokens in the receipt.
+
+1. Start the current Cart Confirm desktop build, load its bundled **Cart Confirm Companion** folder in Chrome, save at least one supported store item, and choose **Connect one page**. Confirm the app reports **Chrome connected** while the item remains in its previous On/Off state and monitoring remains stopped.
+2. Open **Configure signals**, enable TrackaLacker Web Push, and choose **Connect TrackaLacker push**. If Chrome asks for sign-in, sign in normally on the extension-opened TrackaLacker page and retry. Confirm the app reports enrollment success with HTTP 200 or the already-registered equivalent; opening the page alone is not a pass.
+3. Choose **Scan followed products** and confirm the bridge shows at least one exact mapping. Import the intended product route, leave it **Watch & alert only** for the first live test, turn the item On, and add the safe Notify catchall at the bottom of the strategy list.
+4. Open **Review run → Start Signals**. Confirm the review names TrackaLacker Push as ready and does not require a continuously refreshed TrackaLacker page.
+5. Wait for a genuine TrackaLacker alert for the mapped product. Confirm the normal TrackaLacker browser notification still appears, the bridge's **last alert** time advances, the local audit names the exact mapped mission, and the Notify rule creates no store navigation.
+6. Choose **Recheck push connection** once. Confirm it succeeds without adding repeated device rows or causing repeated mission actions. If the server-side device was deliberately removed, confirm Recheck repairs it.
+7. Inspect only sanitized diagnostics: state names, mapping counts, HTTP status, timestamps, and mission decisions. Confirm raw push values and authenticated headers do not appear in the app activity feed, extension console, screenshots, or saved test artifacts.
+
+Record a sanitized receipt containing the app/extension version, Chrome version, date, source readiness, mapping count, HTTP status, normal-notification result, CartSignals decision, and pass/fail. A synthetic replay validates parsing and routing but does not replace step 5.

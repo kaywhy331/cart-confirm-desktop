@@ -325,7 +325,7 @@ h1 { font-size: 21px; letter-spacing: -0.025em; }
 }
 .mission-bulk-select { display: flex; align-items: center; flex: 0 0 auto; gap: 4px; color: var(--subtle); font-size: 8.5px; font-weight: 750; }
 .mission-bulk-select input { width: 17px; height: 17px; accent-color: var(--accent-strong); }
-.mission-enabled { flex: 0 0 auto; }
+.mission-enabled { flex: 0 0 auto; gap: 4px; color: var(--subtle); font-size: 8.5px; font-weight: 800; }
 .mission-enabled input { width: 16px; height: 16px; }
 .mission-order-actions { display: grid; flex: 0 0 20px; gap: 2px; }
 .mission-icon-button {
@@ -523,7 +523,7 @@ h1 { font-size: 21px; letter-spacing: -0.025em; }
 .run-review-dialog::backdrop { background: rgba(1, 4, 10, 0.78); backdrop-filter: blur(4px); }
 .run-review-dialog .dialog-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 7px; }
 .run-review-dialog > p { color: var(--muted); font-size: 11px; line-height: 1.55; }
-.run-review-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 7px; margin: 13px 0; }
+.run-review-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(94px, 1fr)); gap: 7px; margin: 13px 0; }
 .run-review-metrics div { display: grid; gap: 3px; padding: 9px; border: 1px solid var(--line); border-radius: 9px; background: var(--panel-soft); }
 .run-review-metrics span { color: var(--subtle); font-size: 8.5px; text-transform: uppercase; }
 .run-review-metrics strong { color: #eaf4ff; font-size: 12px; }
@@ -531,6 +531,8 @@ h1 { font-size: 21px; letter-spacing: -0.025em; }
 .run-review-issues li { padding: 7px 9px; border: 1px solid rgba(253, 230, 138, 0.2); border-radius: 8px; color: var(--warning); font-size: 10px; line-height: 1.45; }
 .run-review-issues li::before { content: "• "; }
 .run-review-issues li.hard { border-color: rgba(252, 165, 165, 0.28); color: var(--danger); }
+.run-review-setup-actions { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 10px; }
+.run-review-setup-actions .button[hidden] { display: none; }
 .run-review-safety { padding: 9px 11px; border-left: 3px solid var(--accent-strong); background: rgba(14, 116, 144, 0.08); }
 .run-review-actions { justify-content: flex-end; margin-top: 14px; }
 
@@ -1287,6 +1289,7 @@ button:disabled:hover { transform: none; }
 .signal-strategy-content > small { display: block; margin-top: 3px; color: var(--muted); font-size: 9px; line-height: 1.4; }
 .signal-strategy-keywords { margin-top: 4px; overflow-wrap: anywhere; color: var(--subtle); font-size: 9px; line-height: 1.45; }
 .signal-strategy-content .signal-strategy-shadow-warning { color: var(--warning); }
+.signal-strategy-content .signal-strategy-authorization { margin-top: 5px; color: #c4b5fd; }
 .signal-strategy-row-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 5px; max-width: 185px; }
 .signal-strategy-row-actions .button { min-width: 32px; min-height: 28px; padding: 0 7px; font-size: 9px; }
 .signal-strategy-actions { margin-top: 10px; }

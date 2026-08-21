@@ -86,6 +86,20 @@ test("Test all opens every enabled mission while remaining disarmed", () => {
   assert.match(source, /async function openBuyList[\s\S]*?browserProducts = plan\.ready\.filter[\s\S]*?Promise\.all\(productsToOpen\.map/);
 });
 
+test("Connect one page has a dedicated path that can use an Off item without starting monitoring", () => {
+  const source = fs.readFileSync(path.join(__dirname, "..", "main.js"), "utf8");
+  const preload = fs.readFileSync(path.join(__dirname, "..", "preload.js"), "utf8");
+  const connect = source.slice(
+    source.indexOf("async function connectChromeCompanion"),
+    source.indexOf("async function openBuyList")
+  );
+  assert.match(preload, /connectCompanion: \(\) => ipcRenderer\.invoke\("cart-assist:connect-companion"\)/);
+  assert.match(source, /cart-assist:connect-companion[\s\S]*?connectChromeCompanion\(\)/);
+  assert.match(connect, /purchaseModeEnabled\(settings\)/);
+  assert.match(connect, /allowDisabledBootstrap: true/);
+  assert.doesNotMatch(connect, /resumeMonitoring|openBuyList|automationEnabled|signalsEnabled/);
+});
+
 test("arming Autopilot starts Target and Walmart background-first without changing manual opens", () => {
   const mainSource = fs.readFileSync(path.join(__dirname, "..", "main.js"), "utf8");
   const rendererSource = fs.readFileSync(path.join(__dirname, "..", "src", "renderer.js"), "utf8");

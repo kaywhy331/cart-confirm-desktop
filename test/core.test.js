@@ -580,6 +580,12 @@ test("rejects unsafe or ambiguous product settings", () => {
     () => normalizeSettings({ products: [{ ...PRODUCTS[0], maxPrice: 0 }], automationEnabled: true }),
     /positive maximum unit price/
   );
+  const zeroCapWatch = normalizeSettings({
+    products: [{ ...PRODUCTS[0], action: "watch", maxPrice: 0, maxOrderTotal: 0 }],
+    signalsEnabled: true
+  });
+  assert.equal(zeroCapWatch.signalsEnabled, true);
+  assert.equal(zeroCapWatch.products[0].maxPrice, 0);
   assert.throws(
     () => normalizeSettings({
       products: [{ ...PRODUCTS[0], fulfillmentMode: "manual" }],

@@ -9,8 +9,8 @@ const packageJson = require("../package.json");
 
 test("the Manifest V3 companion declares every safety script and required permission", () => {
   assert.equal(manifest.manifest_version, 3);
-  assert.equal(manifest.name, "Quick add");
-  assert.equal(manifest.short_name, "Quick add");
+  assert.equal(manifest.name, "Cart Confirm Companion");
+  assert.equal(manifest.short_name, "Cart Confirm");
   assert.equal(manifest.version, packageJson.version);
   assert.deepEqual(manifest.content_scripts[0].js, ["retailers.js", "quick-add.js", "catalog-search.js", "evidence.js", "safety.js", "schedule-gate.js", "queue-capture.js", "content.js"]);
   assert.equal(manifest.permissions.includes("activeTab"), true);
@@ -24,7 +24,7 @@ test("the Manifest V3 companion declares every safety script and required permis
   assert.equal(manifest.host_permissions.includes("https://www.trackalacker.com/*"), true);
   assert.deepEqual(manifest.content_scripts[1].js, ["trackalacker-ingest.js"]);
   assert.equal(manifest.action.default_popup, "popup.html");
-  assert.equal(manifest.action.default_title, "Quick add");
+  assert.equal(manifest.action.default_title, "Cart Confirm Companion");
 
   const assets = [
     manifest.background.service_worker,
