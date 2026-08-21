@@ -202,7 +202,7 @@ const DISCORD_ERROR_RETRY_MS = 10_000;
 const QUIET_STORES = Object.freeze(["target", "walmart"]);
 const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60_000;
 const TRACKALACKER_CHECKPOINT_PRODUCTS = 5;
-const TRACKALACKER_FOLLOWED_URL = "https://www.trackalacker.com/products/followed";
+const TRACKALACKER_EXTENSION_REQUEST_TIMEOUT_MS = 45_000;
 const backgroundLaunch = process.argv.includes("--background");
 
 let mainWindow = null;
@@ -234,6 +234,8 @@ let discordNextPollAt = 0;
 let discordConnectionEpoch = 0;
 let signalActivations = {};
 let trackalackerPushEnrollmentNonce = "";
+let trackalackerPushEnrollmentOutcome = null;
+let trackalackerPushEnrollmentRequestInFlight = null;
 let trackalackerPushStatus = {
   state: "disabled",
   ready: false,
@@ -298,11 +300,34 @@ function signalJournalPath() {
   return path.join(app.getPath("userData"), "signal-journal.json");
 }
 
-async function requestSignalBridgePermission() {
+async function waitForSignalBridgeEnrollment(nonce) {
+  const deadline = Date.now() + TRACKALACKER_EXTENSION_REQUEST_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    if (trackalackerPushEnrollmentOutcome?.nonce === nonce) {
+      if (trackalackerPushEnrollmentOutcome.ready) return trackalackerPushEnrollmentOutcome;
+      const message = trackalackerPushErrorMessage(
+        trackalackerPushEnrollmentOutcome.errorCode,
+        trackalackerPushEnrollmentOutcome.lastHttpStatus
+      );
+      throw new Error(message || "TrackaLacker push enrollment failed. Confirm the opened page is signed in, then retry.");
+    }
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+  if (trackalackerPushEnrollmentNonce === nonce) {
+    trackalackerPushEnrollmentNonce = "";
+    configVersion += 1;
+    broadcast();
+  }
+  throw new Error("The Chrome extension did not confirm TrackaLacker push enrollment within 45 seconds. Use Connect one page to confirm the companion is active, then retry from a signed-in TrackaLacker tab.");
+}
+
+async function performSignalBridgePermissionRequest() {
   if (!settings.trackalackerSignalBridgeEnabled) {
     throw new Error("Enable the TrackaLacker push bridge before connecting it.");
   }
-  trackalackerPushEnrollmentNonce = crypto.randomUUID();
+  const nonce = crypto.randomUUID();
+  trackalackerPushEnrollmentNonce = nonce;
+  trackalackerPushEnrollmentOutcome = null;
   trackalackerPushStatus = {
     ...trackalackerPushStatus,
     state: "awaiting-page",
@@ -312,8 +337,23 @@ async function requestSignalBridgePermission() {
   };
   configVersion += 1;
   broadcast();
-  const via = await openPageInChrome(TRACKALACKER_FOLLOWED_URL);
-  return { requested: true, via };
+  const outcome = await waitForSignalBridgeEnrollment(nonce);
+  return {
+    requested: true,
+    ready: true,
+    via: "extension-profile",
+    status: outcome.lastHttpStatus || 200
+  };
+}
+
+function requestSignalBridgePermission() {
+  if (trackalackerPushEnrollmentRequestInFlight) return trackalackerPushEnrollmentRequestInFlight;
+  trackalackerPushEnrollmentRequestInFlight = performSignalBridgePermissionRequest()
+    .finally(() => {
+      trackalackerPushEnrollmentRequestInFlight = null;
+      trackalackerPushEnrollmentOutcome = null;
+    });
+  return trackalackerPushEnrollmentRequestInFlight;
 }
 
 function discordTokenPath() {
@@ -1193,12 +1233,30 @@ function trackalackerCaptureRequest(input) {
   }
 }
 
+async function waitForTrackalackerImportStart(importId) {
+  const deadline = Date.now() + TRACKALACKER_EXTENSION_REQUEST_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    const active = trackalackerState.activeImport;
+    if (active?.id === importId && ["scanning", "complete"].includes(active.state)) return active;
+    if (active?.id === importId && active.state === "error") {
+      throw new Error("The extension opened TrackaLacker, but the followed-products scan could not start. Confirm that page is signed in, then retry.");
+    }
+    if (!active || active.id !== importId || !["waiting", "scanning"].includes(active.state)) {
+      throw new Error("The TrackaLacker scan request ended before the extension confirmed it.");
+    }
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+  if (trackalackerState.activeImport?.id === importId) cancelActiveTrackalackerImport();
+  throw new Error("The Chrome extension did not confirm the TrackaLacker scan within 45 seconds. Use Connect one page to confirm the companion is active, then retry.");
+}
+
 async function startTrackalackerImport() {
   if (purchaseModeEnabled(settings)) {
     throw new Error("Stop Autopilot or Signals before scanning TrackaLacker.");
   }
+  const importId = crypto.randomUUID();
   trackalackerState = beginTrackalackerImport(trackalackerState, {
-    id: crypto.randomUUID(),
+    id: importId,
     now: Date.now()
   });
   trackalackerProductsSinceCheckpoint = 0;
@@ -1206,9 +1264,12 @@ async function startTrackalackerImport() {
   persistTrackalackerState();
   configVersion += 1;
   broadcast();
-  const url = "https://www.trackalacker.com/products/followed";
-  const via = await openPageInChrome(url);
-  return { snapshot: snapshot(), via, url };
+  await waitForTrackalackerImportStart(importId);
+  return {
+    snapshot: snapshot(),
+    via: "extension-profile",
+    url: "https://www.trackalacker.com/products/followed"
+  };
 }
 
 function cancelActiveTrackalackerImport() {
@@ -1491,14 +1552,19 @@ async function openMissionProduct(productId) {
   });
 }
 
-async function ensureCompanionConnection(plan, prepCandidates) {
+async function ensureCompanionConnection(plan, prepCandidates, options = {}) {
   if (!companionPort) throw new Error("The local companion server is not running.");
   if (companionConnectionReady(status)) {
     return { connected: true, opened: false, productId: "", retailer: "", via: "existing" };
   }
 
-  const bootstrap = selectConnectionBootstrap(plan, prepCandidates);
-  if (!bootstrap) throw new Error("Enable at least one supported store option before connecting Chrome.");
+  const bootstrap = selectConnectionBootstrap(plan, prepCandidates)
+    || (options.allowDisabledBootstrap === true
+      ? selectConnectionBootstrap({ ready: settings.products || [] }, prepCandidates)
+      : null);
+  if (!bootstrap) throw new Error(options.allowDisabledBootstrap === true
+    ? "Add or import at least one supported store option before connecting Chrome. It can remain Off."
+    : "Enable at least one supported store option before connecting Chrome.");
   const startedAt = Date.now();
   const opened = await openExternalRetailer(missionOpenUrl(bootstrap), {
     productId: bootstrap.id,
@@ -1534,6 +1600,15 @@ async function ensureCompanionConnection(plan, prepCandidates) {
     retailer: bootstrap.retailer,
     via: opened.via
   };
+}
+
+async function connectChromeCompanion() {
+  if (purchaseModeEnabled(settings)) {
+    throw new Error("Stop Signals or Autopilot before opening a connection-only page.");
+  }
+  const plan = planImmediateProductOpenings(settings);
+  const prepCandidates = settings.walmartPrepCandidates || [];
+  return ensureCompanionConnection(plan, prepCandidates, { allowDisabledBootstrap: true });
 }
 
 async function openBuyList(retailer = "", options = {}) {
@@ -2365,6 +2440,12 @@ function handleTrackalackerPushStatusRequest(input = {}) {
   ]);
   const state = allowedStates.has(String(input?.state || "")) ? String(input.state) : "error";
   const errorCode = allowedErrors.has(String(input?.errorCode || "")) ? String(input.errorCode || "") : "";
+  const enrollmentNonce = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(String(input?.enrollmentNonce || ""))
+    ? String(input.enrollmentNonce)
+    : "";
+  if (trackalackerPushEnrollmentNonce && enrollmentNonce !== trackalackerPushEnrollmentNonce) {
+    return { statusCode: 200, payload: { ok: true, stale: true } };
+  }
   trackalackerPushStatus = {
     state,
     ready: state === "ready" && input?.ready === true,
@@ -2377,6 +2458,20 @@ function handleTrackalackerPushStatusRequest(input = {}) {
     lastDeliveryAt: safePushTimestamp(input?.lastDeliveryAt),
     updatedAt: new Date().toISOString()
   };
+  if (
+    enrollmentNonce
+    && enrollmentNonce === trackalackerPushEnrollmentNonce
+    && (trackalackerPushStatus.ready || state === "error")
+  ) {
+    trackalackerPushEnrollmentOutcome = {
+      nonce: enrollmentNonce,
+      ready: trackalackerPushStatus.ready,
+      errorCode,
+      lastHttpStatus: trackalackerPushStatus.lastHttpStatus
+    };
+    trackalackerPushEnrollmentNonce = "";
+    configVersion += 1;
+  }
   broadcast();
   return { statusCode: 200, payload: { ok: true } };
 }
@@ -3215,6 +3310,7 @@ function registerIpc() {
   });
 
   ipcMain.handle("cart-assist:open-product", (_event, productId) => openMissionProduct(productId));
+  ipcMain.handle("cart-assist:connect-companion", () => connectChromeCompanion());
   ipcMain.handle("cart-assist:open-buy-list", (_event, input = {}) => openBuyList("", {
     backgroundFirst: input?.backgroundFirst === true,
     ensureCompanion: true

@@ -10,6 +10,7 @@ const html = fs.readFileSync(path.join(__dirname, "..", "src", "index.html"), "u
 const configProfilesSource = fs.readFileSync(path.join(__dirname, "..", "lib", "config-profiles.js"), "utf8");
 const itemDefaultsSource = fs.readFileSync(path.join(__dirname, "..", "lib", "item-defaults.js"), "utf8");
 const itemMissionsSource = fs.readFileSync(path.join(__dirname, "..", "lib", "item-missions.js"), "utf8");
+const signalsReadinessSource = fs.readFileSync(path.join(__dirname, "..", "lib", "signals-readiness.js"), "utf8");
 const rendererSource = fs.readFileSync(path.join(__dirname, "..", "src", "renderer.js"), "utf8");
 const stylesSource = fs.readFileSync(path.join(__dirname, "..", "src", "styles.css"), "utf8");
 
@@ -124,7 +125,8 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   let pushUpdaterState = null;
   let installUpdateCalls = 0;
   let signalBridgePermissionCalls = 0;
-  let signalBridgePermissionResult = { requested: true, via: "chrome" };
+  let signalBridgePermissionResult = { requested: true, ready: true, via: "extension-profile", status: 200 };
+  let connectCompanionCalls = 0;
   let openProductCalls = 0;
   let openBuyListCalls = 0;
   let openBuyListFailure = null;
@@ -262,7 +264,7 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
       catalogClearCalls += 1;
       return snapshotFixture();
     },
-    startTrackalackerImport: async () => ({ snapshot: snapshotFixture(), via: "chrome" }),
+    startTrackalackerImport: async () => ({ snapshot: snapshotFixture(), via: "extension-profile" }),
     cancelTrackalackerImport: async () => snapshotFixture(),
     clearTrackalackerImport: async () => snapshotFixture(),
     getTrackalackerPriceHistory: async (itemId, retailer, listingId) => {
@@ -384,6 +386,10 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
         ? { count: 0, background: 0, reused: 0, deduped: 0, scheduled: 0, armed: true, connectionOpened: true, connectionProductId: "target:95298172" }
         : { count: 1, background: 0, reused: 1, deduped: 0, scheduled: 0, armed: false };
     },
+    connectCompanion: async () => {
+      connectCompanionCalls += 1;
+      return { connected: true, opened: true, productId: "target:95298172", retailer: "target", via: "chrome" };
+    },
     openCart: async () => "",
     openOrders: async () => "",
     copyAffiliateLink: async (input) => {
@@ -424,6 +430,7 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   window.eval(configProfilesSource);
   window.eval(itemDefaultsSource);
   window.eval(itemMissionsSource);
+  window.eval(signalsReadinessSource);
   window.eval(rendererSource);
   await new Promise((resolve) => setTimeout(resolve, 20));
   const doc = window.document;
@@ -459,7 +466,7 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   assert.equal(doc.getElementById("autopilotState").textContent, "STOPPED");
   assert.match(doc.getElementById("worstCase").textContent, /\$40/);
   assert.equal(doc.getElementById("readinessState").textContent, "Ready");
-  assert.equal(doc.getElementById("readinessConnection").textContent, "Connected");
+  assert.equal(doc.getElementById("readinessConnection").textContent, "Chrome connected");
   assert.equal(doc.getElementById("readinessEnabled").textContent, "1 / 1");
   assert.equal(doc.getElementById("readinessExposure").textContent, "$40");
   assert.match(doc.getElementById("readinessSummary").textContent, /1 add-only/);
@@ -484,6 +491,10 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
     "Test lives in the header next to Autopilot"
   );
   assert.equal(doc.getElementById("testButton").textContent, "Start monitoring");
+  doc.getElementById("testConnectionButton").click();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(connectCompanionCalls, 1);
+  assert.match(doc.getElementById("message").textContent, /No item was enabled and no monitoring run was started/);
   // The updater control is always visible; without a pending update it
   // offers a manual check instead of hiding.
   assert.equal(doc.getElementById("updateNotice").hidden, false);
@@ -524,6 +535,8 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   // Signal strategies use available mission stores and preserve explicit
   // first-match ordering through add, edit, reorder, and delete operations.
   assert.equal(doc.getElementById("signalStrategyCount").textContent, "Legacy mission actions");
+  assert.equal(doc.getElementById("addDefaultSignalStrategyButton").hidden, false);
+  assert.match(doc.getElementById("addDefaultSignalStrategyButton").textContent, /safe Notify catchall/);
   doc.getElementById("addSignalStrategyButton").click();
   assert.equal(doc.getElementById("signalStrategyDialog").hasAttribute("open"), true);
   const targetStoreChoice = doc.querySelector("#signalStrategyStores input[data-signal-store='target']");
@@ -542,6 +555,8 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   assert.deepEqual(JSON.parse(JSON.stringify(savedStrategies[0].stores)), ["target"]);
   assert.equal(savedStrategies[0].quantity, 2);
   assert.match(doc.querySelector(".signal-strategy-row").textContent, /Priority MSRP checkout/);
+  assert.match(doc.querySelector(".signal-strategy-authorization").textContent, /capped below the requested action/);
+  assert.match(doc.querySelector(".signal-strategy-authorization").textContent, /capped below the requested quantity/);
   [...doc.querySelectorAll(".signal-strategy-row button")].find((button) => button.textContent === "Edit").click();
   doc.getElementById("signalStrategyName").value = "Edited MSRP checkout";
   doc.getElementById("signalStrategyForm").dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true }));
@@ -564,6 +579,36 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
     .find((button) => button.textContent === "Delete").click();
   await new Promise((resolve) => setTimeout(resolve, 10));
   assert.equal(savedSettingsInputs.at(-1).signalStrategies.length, 1);
+
+  // Signals review names a missing source, blocks an inert start, and exposes
+  // both source configuration and the one-page Chrome repair action.
+  const noSignalSource = snapshotFixture();
+  noSignalSource.status.companion = "disconnected";
+  noSignalSource.signalBridge = {
+    enabled: false,
+    extensionConnected: false,
+    listenerReady: false,
+    subscriptionPresent: false,
+    mappingCount: 0
+  };
+  pushUpdate(noSignalSource);
+  doc.getElementById("signalsToggle").click();
+  assert.equal(doc.getElementById("runReviewSignalsButton").disabled, true);
+  assert.match(doc.getElementById("runReviewIssues").textContent, /at least one ready source/);
+  assert.equal(doc.getElementById("runReviewConfigureSignalsButton").hidden, false);
+  assert.equal(doc.getElementById("runReviewConnectButton").hidden, false);
+  doc.getElementById("runReviewCloseButton").click();
+
+  const allOff = snapshotFixture();
+  allOff.settings.products[0].enabled = false;
+  pushUpdate(allOff);
+  doc.getElementById("signalsToggle").click();
+  assert.equal(doc.getElementById("runReviewSummary").textContent, "Nothing is ready to run yet.");
+  assert.equal(doc.getElementById("runReviewItemsButton").hidden, false);
+  assert.equal(doc.getElementById("runReviewItemsButton").textContent, "Choose items to turn on");
+  assert.match(doc.getElementById("runReviewIssues").textContent, /Turn on at least one item/);
+  doc.getElementById("runReviewCloseButton").click();
+  pushUpdate(snapshotFixture());
 
   // Dense rows round only their display value; exact caps remain available
   // to assistive technology/tooltips and in the saved mission contract.
@@ -992,7 +1037,8 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   doc.getElementById("signalBridgePermissionButton").click();
   await new Promise((resolve) => setTimeout(resolve, 10));
   assert.equal(signalBridgePermissionCalls, 1);
-  assert.match(doc.getElementById("message").textContent, /opened in Chrome/);
+  assert.match(doc.getElementById("message").textContent, /enrollment confirmed: HTTP 200/);
+  assert.match(doc.getElementById("message").textContent, /own signed-in Chrome profile/);
 
   awaitingBridge.signalBridge = {
     supported: true,
@@ -1048,7 +1094,7 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   assert.equal(doc.getElementById("runReviewDialog").hasAttribute("open"), true);
   assert.equal(openBuyListCalls, 0, "reviewing a run does not start it");
   assert.match(doc.getElementById("runReviewSummary").textContent, /1 item will run across 1 selected store option/);
-  assert.equal(doc.getElementById("runReviewMetrics").children.length, 4);
+  assert.equal(doc.getElementById("runReviewMetrics").children.length, 5);
   doc.getElementById("runReviewAutopilotButton").click();
   assert.equal(doc.getElementById("autopilotToggle").disabled, true);
   await new Promise((resolve) => setTimeout(resolve, 10));

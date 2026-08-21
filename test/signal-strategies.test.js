@@ -166,7 +166,8 @@ test("MSRP bands use TrackaLacker semantics first and approved mission MSRP othe
   const configured = settings();
   assert.equal(signalPriceBand({ msrpStatus: "below_msrp", price: 999 }, product, configured), "below_msrp");
   assert.equal(signalPriceBand({ msrpStatus: "near_msrp" }, product, configured), "msrp");
-  assert.equal(signalPriceBand({ msrpStatus: "above_msrp" }, product, configured), "slightly_above_msrp");
+  assert.equal(signalPriceBand({ msrpStatus: "slightly_above_msrp" }, product, configured), "slightly_above_msrp");
+  assert.equal(signalPriceBand({ msrpStatus: "above_msrp" }, product, configured), "above_msrp");
   assert.equal(signalPriceBand({ msrpStatus: "price_surge" }, product, configured), "above_msrp");
   assert.equal(signalPriceBand({ price: 49.98 }, product, configured), "below_msrp");
   assert.equal(signalPriceBand({ price: 49.99 }, product, configured), "msrp");

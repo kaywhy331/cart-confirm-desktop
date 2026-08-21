@@ -3,6 +3,7 @@
 const ConfigProfiles = globalThis.CartConfirmConfigProfiles;
 const ItemDefaults = globalThis.CartConfirmItemDefaults;
 const ItemMissions = globalThis.ItemMissions;
+const SignalsReadiness = globalThis.CartConfirmSignalsReadiness;
 const MAX_MISSIONS = 100;
 const elements = {
   autopilotToggle: document.getElementById("autopilotToggle"),
@@ -19,6 +20,9 @@ const elements = {
   runReviewSummary: document.getElementById("runReviewSummary"),
   runReviewMetrics: document.getElementById("runReviewMetrics"),
   runReviewIssues: document.getElementById("runReviewIssues"),
+  runReviewItemsButton: document.getElementById("runReviewItemsButton"),
+  runReviewConfigureSignalsButton: document.getElementById("runReviewConfigureSignalsButton"),
+  runReviewConnectButton: document.getElementById("runReviewConnectButton"),
   runReviewMonitorButton: document.getElementById("runReviewMonitorButton"),
   runReviewSignalsButton: document.getElementById("runReviewSignalsButton"),
   runReviewAutopilotButton: document.getElementById("runReviewAutopilotButton"),
@@ -180,11 +184,13 @@ const elements = {
   signalBridgeDeliveryPaused: document.getElementById("signalBridgeDeliveryPaused"),
   signalBridgeDedupeSeconds: document.getElementById("signalBridgeDedupeSeconds"),
   signalBridgePermissionButton: document.getElementById("signalBridgePermissionButton"),
+  signalBridgeScanButton: document.getElementById("signalBridgeScanButton"),
   signalBridgeReplayButton: document.getElementById("signalBridgeReplayButton"),
   signalBridgeRecent: document.getElementById("signalBridgeRecent"),
   signalStrategyCount: document.getElementById("signalStrategyCount"),
   signalStrategyList: document.getElementById("signalStrategyList"),
   addSignalStrategyButton: document.getElementById("addSignalStrategyButton"),
+  addDefaultSignalStrategyButton: document.getElementById("addDefaultSignalStrategyButton"),
   signalStrategyDialog: document.getElementById("signalStrategyDialog"),
   signalStrategyDialogTitle: document.getElementById("signalStrategyDialogTitle"),
   signalStrategyCancelButton: document.getElementById("signalStrategyCancelButton"),
@@ -236,7 +242,7 @@ const ACTION_DESCRIPTIONS = Object.freeze({
 const SIGNAL_PRICE_LABELS = Object.freeze({
   any: "Any price",
   below_msrp: "Below MSRP",
-  msrp: "At / near MSRP",
+  msrp: "MSRP / source near-MSRP",
   slightly_above_msrp: "Slightly above MSRP",
   above_msrp: "Above MSRP / surge"
 });
@@ -246,6 +252,13 @@ const SIGNAL_STRATEGY_ACTION_LABELS = Object.freeze({
   prepare_checkout: "Prepare Checkout",
   submit_order: "Submit Order"
 });
+const SIGNAL_STRATEGY_TO_MISSION_ACTION = Object.freeze({
+  notify: "watch",
+  add_to_cart: "cart",
+  prepare_checkout: "review",
+  submit_order: "checkout"
+});
+const MISSION_ACTION_RANK = Object.freeze({ watch: 0, cart: 1, review: 2, checkout: 3 });
 const UNGROUPED_FILTER_VALUE = "__ungrouped__";
 const MAX_MISSION_GROUPS = 20;
 const BLOCKING_REASONS = new Set([
@@ -308,6 +321,7 @@ let currentSnapshot = null;
 let messageTimer = null;
 let openRunInFlight = false;
 let runReviewApprovedMode = "";
+let runReviewRequestedMode = "";
 let updateOperationInFlight = false;
 let updateButtonMode = "check";
 let availableUpdateVersion = "";
@@ -3147,8 +3161,8 @@ async function startTrackalackerScan() {
     const result = await window.cartAssist.startTrackalackerImport();
     render(result.snapshot);
     setMessage(
-      `TrackaLacker followed products opened in Chrome. Keep that signed-in tab open while the companion builds the preview.${result.via === "default-browser" ? " Chrome was not found, so open the page in the browser profile where Quick add is loaded." : ""}`,
-      result.via === "default-browser" ? "warn" : "success"
+      "TrackaLacker scan confirmed in the Chrome profile that owns Cart Confirm Companion. Keep that signed-in tab open while it builds the preview.",
+      "success"
     );
   } catch (error) {
     setMessage(error.message || "The TrackaLacker scan could not start.", "error");
@@ -3259,7 +3273,7 @@ async function submitCatalogSearch() {
     render(result.snapshot);
     const defaultBrowser = (result.openings || []).some((opening) => opening.via === "default-browser");
     setMessage(
-      `${result.openings?.length || input.retailers.length} official search page${input.retailers.length === 1 ? "" : "s"} opened. Visible results will arrive in this inbox.${defaultBrowser ? " Chrome was not found, so capture requires opening these searches in the Chrome profile that has Quick add loaded." : ""}`,
+      `${result.openings?.length || input.retailers.length} official search page${input.retailers.length === 1 ? "" : "s"} opened. Visible results will arrive in this inbox.${defaultBrowser ? " Chrome was not found, so capture requires opening these searches in the Chrome profile that has Cart Confirm Companion loaded." : ""}`,
       defaultBrowser ? "warn" : "success"
     );
   } catch (error) {
@@ -3701,6 +3715,11 @@ function renderReadiness(settings, status, productStatuses = {}) {
   ].filter(Boolean).join(" · ");
 
   const disconnected = status.companion !== "connected";
+  const signalSources = SignalsReadiness.sourceState({
+    ...(currentSnapshot || {}),
+    settings,
+    status
+  });
   const unpriced = enabled.filter((item) => item.action !== "watch" && item.variants.some((variant) => (
     variant.enabled !== false && Number(variant.maxPrice) <= 0
   )));
@@ -3715,7 +3734,7 @@ function renderReadiness(settings, status, productStatuses = {}) {
   const issues = [];
   if (!items.length) issues.push("Add at least one item.");
   else if (!enabled.length) issues.push("Turn on at least one item.");
-  if (disconnected) issues.push("Connect the Chrome companion.");
+  if (disconnected && !signalSources.canStart) issues.push("Connect at least one Signals source or the Chrome companion.");
   if (unpriced.length) issues.push(`${unpriced.length} active item${unpriced.length === 1 ? " needs" : "s need"} a positive cap at every selected store.`);
   if (missed.length) issues.push(`${missed.length} scheduled time${missed.length === 1 ? " has" : "s have"} passed and must be cleared or replaced.`);
   if (blocked.length) issues.push(`${blocked.length} active item${blocked.length === 1 ? " has" : "s have"} a blocking status.`);
@@ -3729,7 +3748,11 @@ function renderReadiness(settings, status, productStatuses = {}) {
     : ready ? "Ready" : items.length ? "Needs review" : "No plan";
   elements.readinessState.classList.toggle("ready", ready);
   elements.readinessState.classList.toggle("attention", !ready);
-  elements.readinessConnection.textContent = disconnected ? "Needs connection" : "Connected";
+  elements.readinessConnection.textContent = !disconnected
+    ? "Chrome connected"
+    : signalSources.canStart
+      ? `${signalSources.readyCount} signal source${signalSources.readyCount === 1 ? "" : "s"}`
+      : "Needs source";
   elements.readinessEnabled.textContent = `${enabled.length} / ${items.length}`;
   elements.readinessScheduled.textContent = String(scheduled.length);
   elements.readinessExposure.textContent = total > 0 ? compactMissionPrice(total) : "$0";
@@ -3742,7 +3765,7 @@ function renderReadiness(settings, status, productStatuses = {}) {
     ? issues.join(" ")
     : autoBuyCount
       ? `${autoBuyCount} item${autoBuyCount === 1 ? " can" : "s can"} submit one real order through the first successful store after live verification.`
-      : "No blockers found. Choose Signals for event-driven attempts or Autopilot for continuous monitoring.";
+      : `${signalSources.summary}${disconnected ? " Autopilot still needs one connected Chrome store page." : ""}`;
   elements.readinessNote.classList.toggle("attention", Boolean(issues.length));
   elements.readinessReviewButton.textContent = issues.length ? `Review ${lastReadinessIssueItemIds.size || "run"} issue${lastReadinessIssueItemIds.size === 1 ? "" : "s"}` : "Review & start";
 }
@@ -3762,16 +3785,33 @@ function runReviewModel() {
   const blocked = enabled.filter((item) => item.variants.some((variant) => (
     variant.enabled !== false && BLOCKING_REASONS.has(statuses[variant.id]?.reason)
   )));
+  const signalSources = SignalsReadiness.sourceState(currentSnapshot || {});
   const hardIssues = [];
   const warnings = [];
   if (!items.length) hardIssues.push("Add at least one item.");
   else if (!enabled.length) hardIssues.push("Turn on at least one item.");
   if (unpriced.length) hardIssues.push(`${unpriced.length} purchase item${unpriced.length === 1 ? " needs" : "s need"} a cap at every selected store.`);
   if (missed.length) hardIssues.push(`${missed.length} item${missed.length === 1 ? " has" : "s have"} a missed schedule.`);
-  if (status.companion !== "connected") warnings.push("Chrome is not connected yet; starting will open one safe item page to connect it.");
+  const signalHardIssues = signalSources.hardIssue ? [signalSources.hardIssue] : [];
+  const signalWarnings = signalSources.configuredProblems.map((source) => `${source.label}: ${source.detail}`);
+  if (status.companion !== "connected") warnings.push("Autopilot and browser-page signals need one connected Chrome store page. Use Connect one Chrome page first.");
   if (blocked.length) warnings.push(`${blocked.length} item${blocked.length === 1 ? " currently has" : "s currently have"} a blocking store status; unaffected items can continue.`);
   const exposure = missionMaximumExposure(settings.products);
-  return { items, enabled, due, scheduled, unpriced, missed, blocked, hardIssues, warnings, exposure };
+  return {
+    items,
+    enabled,
+    due,
+    scheduled,
+    unpriced,
+    missed,
+    blocked,
+    hardIssues,
+    warnings,
+    signalHardIssues,
+    signalWarnings,
+    signalSources,
+    exposure
+  };
 }
 
 function closeRunReview() {
@@ -3779,17 +3819,20 @@ function closeRunReview() {
   else elements.runReviewDialog.removeAttribute("open");
 }
 
-function openRunReview() {
+function openRunReview(requestedMode = "") {
+  runReviewRequestedMode = requestedMode || activePurchaseMode() || "";
   const model = runReviewModel();
+  const reviewingSignals = runReviewRequestedMode === "signals";
   const routes = model.enabled.reduce((count, item) => count + item.variants.filter((variant) => variant.enabled !== false).length, 0);
   elements.runReviewSummary.textContent = model.enabled.length
-    ? `${model.enabled.length} item${model.enabled.length === 1 ? "" : "s"} will run across ${routes} selected store option${routes === 1 ? "" : "s"}. ${model.due.length} ${model.due.length === 1 ? "is" : "are"} due now; ${model.scheduled.length} will wait for the schedule.`
+    ? `${model.enabled.length} item${model.enabled.length === 1 ? "" : "s"} will run across ${routes} selected store option${routes === 1 ? "" : "s"}. ${model.due.length} ${model.due.length === 1 ? "is" : "are"} due now; ${model.scheduled.length} will wait for the schedule.${reviewingSignals ? ` ${model.signalSources.summary}` : ""}`
     : "Nothing is ready to run yet.";
   const metrics = [
     ["Items on", `${model.enabled.length} / ${model.items.length}`],
     ["Due now", String(model.due.length)],
     ["Auto-buy", String(model.exposure.autoBuyCount)],
-    ["Maximum exposure", compactMissionPrice(model.exposure.total)]
+    ["Maximum exposure", compactMissionPrice(model.exposure.total)],
+    ["Signal sources", String(model.signalSources.readyCount)]
   ];
   elements.runReviewMetrics.replaceChildren(...metrics.map(([label, value]) => {
     const node = document.createElement("div");
@@ -3802,7 +3845,14 @@ function openRunReview() {
   }));
   const issueEntries = [
     ...model.hardIssues.map((text) => ({ text, hard: true })),
-    ...model.warnings.map((text) => ({ text, hard: false }))
+    ...(reviewingSignals
+      ? model.signalHardIssues.map((text) => ({ text, hard: true }))
+      : !runReviewRequestedMode
+        ? model.signalHardIssues.map((text) => ({ text: `Signals: ${text}`, hard: false }))
+        : []),
+    ...(reviewingSignals
+      ? model.signalWarnings.map((text) => ({ text, hard: false }))
+      : model.warnings.map((text) => ({ text, hard: false })))
   ];
   elements.runReviewIssues.replaceChildren(...(issueEntries.length ? issueEntries : [{ text: "No run blockers found.", hard: false }]).map((issue) => {
     const row = document.createElement("li");
@@ -3812,10 +3862,15 @@ function openRunReview() {
   }));
   elements.runReviewMonitorButton.disabled = model.enabled.length === 0 || openRunInFlight || isArmed();
   elements.runReviewMonitorButton.textContent = isArmed() ? `Stop ${activePurchaseModeLabel()} before monitoring only` : "Start monitoring only";
-  elements.runReviewSignalsButton.disabled = model.hardIssues.length > 0 || openRunInFlight || isSignalsMode();
+  elements.runReviewSignalsButton.disabled = model.hardIssues.length > 0 || model.signalHardIssues.length > 0 || openRunInFlight || isSignalsMode();
   elements.runReviewSignalsButton.textContent = isSignalsMode() ? "Signals already active" : isAutopilot() ? "Switch to Signals" : "Start Signals";
   elements.runReviewAutopilotButton.disabled = model.hardIssues.length > 0 || openRunInFlight || isAutopilot();
   elements.runReviewAutopilotButton.textContent = isAutopilot() ? "Autopilot already active" : isSignalsMode() ? "Switch to Autopilot" : "Start Autopilot";
+  elements.runReviewItemsButton.hidden = model.enabled.length > 0;
+  elements.runReviewItemsButton.textContent = model.items.length ? "Choose items to turn on" : "Add first item";
+  elements.runReviewConfigureSignalsButton.hidden = !reviewingSignals && Boolean(runReviewRequestedMode);
+  const browserReady = model.signalSources.sources.find((source) => source.id === "browser")?.ready === true;
+  elements.runReviewConnectButton.hidden = browserReady || (reviewingSignals && model.signalSources.canStart);
   if (typeof elements.runReviewDialog.showModal === "function") elements.runReviewDialog.showModal();
   else elements.runReviewDialog.setAttribute("open", "");
 }
@@ -3860,7 +3915,7 @@ function companionStepState() {
     return {
       done: false,
       label: "Reload the extension",
-      hint: `Chrome has companion v${hello.version} but this app is v${appVersion}. In chrome://extensions, click the reload arrow on the Quick add card.`
+      hint: `Chrome has companion v${hello.version} but this app is v${appVersion}. In chrome://extensions, click the reload arrow on the Cart Confirm Companion card.`
     };
   }
   if (hello.reason === "pairing-mismatch") {
@@ -4313,6 +4368,36 @@ function signalStrategySummary(strategy = {}) {
   ].join(" · ");
 }
 
+function signalStrategyAuthorizationPreview(strategy = {}, settings = currentSnapshot?.settings) {
+  if (strategy.enabled === false) return "Authorization preview: this strategy is Off.";
+  const routes = (settings?.products || []).filter((product) => (
+    product.enabled === true
+    && (!(strategy.stores || []).length || strategy.stores.includes(product.retailer))
+  ));
+  if (!routes.length) {
+    return "Authorization preview: no enabled mission routes are in this rule's store scope.";
+  }
+  const requestedAction = SIGNAL_STRATEGY_TO_MISSION_ACTION[strategy.action] || "watch";
+  const requestedRank = MISSION_ACTION_RANK[requestedAction];
+  const effectiveActions = new Set();
+  let actionCapped = 0;
+  let quantityCapped = 0;
+  for (const route of routes) {
+    const missionAction = MISSION_ACTION_RANK[route.action] === undefined ? "watch" : route.action;
+    const effectiveAction = MISSION_ACTION_RANK[missionAction] < requestedRank ? missionAction : requestedAction;
+    effectiveActions.add(ACTION_DESCRIPTIONS[effectiveAction] || effectiveAction);
+    if (effectiveAction !== requestedAction) actionCapped += 1;
+    if (strategy.quantity !== "max" && Number(route.quantity || 1) < Number(strategy.quantity)) quantityCapped += 1;
+  }
+  const parts = [
+    `Authorization preview: ${routes.length} enabled route${routes.length === 1 ? "" : "s"} can resolve to ${[...effectiveActions].join(" or ")} on a match.`
+  ];
+  if (actionCapped) parts.push(`${actionCapped} route${actionCapped === 1 ? " is" : "s are"} capped below the requested action by its mission.`);
+  if (quantityCapped) parts.push(`${quantityCapped} route${quantityCapped === 1 ? " is" : "s are"} capped below the requested quantity.`);
+  if (strategy.quantity === "max") parts.push("Max Allowed still obeys each mission quantity and any fresh retailer limit.");
+  return parts.join(" ");
+}
+
 function signalStrategyControl(label, title, handler, disabled = false) {
   const button = document.createElement("button");
   button.type = "button";
@@ -4378,7 +4463,10 @@ function buildSignalStrategyRow(strategy, index, strategies, armed) {
     include ? `Include: ${include}` : "Include: catchall",
     exclude ? `Exclude: ${exclude}` : ""
   ].filter(Boolean).join(" · ");
-  content.append(heading, summary, keywords);
+  const authorization = document.createElement("small");
+  authorization.className = "signal-strategy-authorization";
+  authorization.textContent = signalStrategyAuthorizationPreview(strategy);
+  content.append(heading, summary, keywords, authorization);
   if (signalStrategyIsGlobalCatchall(strategy) && index < strategies.length - 1) {
     const warning = document.createElement("small");
     warning.className = "signal-strategy-shadow-warning";
@@ -4420,6 +4508,11 @@ function renderSignalStrategies(settings = {}) {
     : strategies.length >= 25
       ? "The 25-strategy limit has been reached."
       : "Add another first-match signal rule.";
+  elements.addDefaultSignalStrategyButton.hidden = strategies.length > 0;
+  elements.addDefaultSignalStrategyButton.disabled = armed;
+  elements.addDefaultSignalStrategyButton.title = armed
+    ? "Turn off Signals or Autopilot before adding a strategy."
+    : "Create one bottom-priority catchall that only notifies and never opens a store page.";
 }
 
 function newSignalStrategyId() {
@@ -4561,6 +4654,10 @@ function renderSignalBridge(bridge = {}, settings = {}) {
   elements.signalBridgePermissionButton.textContent = connecting
     ? "Connecting TrackaLacker push…"
     : bridge.listenerReady ? "Recheck push connection" : "Connect TrackaLacker push";
+  elements.signalBridgeScanButton.disabled = isArmed() || trackalackerOperationInFlight;
+  elements.signalBridgeScanButton.textContent = Number(bridge.mappingCount || 0) > 0
+    ? "Rescan followed products"
+    : "Scan followed products";
   elements.signalBridgeReplayButton.disabled = false;
   const recent = Array.isArray(bridge.recentSignals) ? bridge.recentSignals.slice(0, 20) : [];
   if (!recent.length) {
@@ -4722,7 +4819,7 @@ elements.autopilotToggle.addEventListener("click", async () => {
       setMessage("Choose Finish editing before starting Autopilot.", "error");
       return;
     }
-    openRunReview();
+    openRunReview("autopilot");
     return;
   }
   setMissionOpenBusy(true);
@@ -4807,7 +4904,7 @@ elements.signalsToggle.addEventListener("click", async () => {
       setMessage("Choose Finish editing before starting Signals.", "error");
       return;
     }
-    openRunReview();
+    openRunReview("signals");
     return;
   }
   setMissionOpenBusy(true);
@@ -4900,8 +4997,30 @@ elements.readinessReviewButton.addEventListener("click", () => {
   }
   panel?.scrollIntoView?.({ behavior: "smooth", block: "start" });
 });
-elements.runReviewOpenButton.addEventListener("click", openRunReview);
+elements.runReviewOpenButton.addEventListener("click", () => openRunReview());
 elements.runReviewCloseButton.addEventListener("click", closeRunReview);
+elements.runReviewItemsButton.addEventListener("click", async () => {
+  closeRunReview();
+  if (!await beginPlanEditSession()) return;
+  if (!(currentSnapshot?.settings?.products || []).length) {
+    await startEdit(null);
+    setMessage("Add the first item, select its store, review its action, then turn it On before starting Signals.", "warn");
+    return;
+  }
+  clearMissionFilters();
+  elements.missionActiveFilter.value = "inactive";
+  renderMissions();
+  document.getElementById("missionsPanel")?.scrollIntoView?.({ behavior: "smooth", block: "start" });
+  setMessage("Choose only the items you want Signals to use, review their action and caps, then select them and choose Turn on.", "warn");
+});
+elements.runReviewConfigureSignalsButton.addEventListener("click", () => {
+  closeRunReview();
+  showSignalConfiguration();
+});
+elements.runReviewConnectButton.addEventListener("click", () => {
+  closeRunReview();
+  elements.testConnectionButton.click();
+});
 elements.runReviewMonitorButton.addEventListener("click", () => {
   closeRunReview();
   elements.testButton.click();
@@ -4916,9 +5035,7 @@ elements.runReviewAutopilotButton.addEventListener("click", () => {
   closeRunReview();
   elements.autopilotToggle.click();
 });
-elements.testConnectionButton.addEventListener("click", () => {
-  elements.testButton.click();
-});
+elements.testConnectionButton.addEventListener("click", () => void connectOneChromePage());
 elements.newMissionButton.addEventListener("click", () => void startEdit(null));
 elements.newMissionGroupButton.addEventListener("click", () => {
   const requested = window.prompt("Name this item group", "New group");
@@ -5302,16 +5419,19 @@ elements.clearSelectedMissionSchedulesButton.addEventListener("click", () => voi
   return cleared;
 }, (cleared) => `${cleared} selected item schedule${cleared === 1 ? "" : "s"} cleared.`));
 
-elements.showDiscordButton.addEventListener("click", () => {
+function showSignalConfiguration() {
   elements.discordLauncher.hidden = true;
   elements.signalPanel.hidden = false;
   elements.showDiscordButton.setAttribute("aria-expanded", "true");
   const toggle = elements.signalPanel.querySelector(".panel-toggle");
   if (toggle) {
     setPanelExpanded(toggle, true);
-    toggle.focus();
   }
-});
+  elements.signalPanel.scrollIntoView?.({ behavior: "smooth", block: "start" });
+  setTimeout(() => elements.signalBridgeEnabled.focus(), 250);
+}
+
+elements.showDiscordButton.addEventListener("click", showSignalConfiguration);
 
 async function saveSignalBridgeSettings(changes) {
   const next = await window.cartAssist.saveSettings({
@@ -5323,6 +5443,24 @@ async function saveSignalBridgeSettings(changes) {
 }
 
 elements.addSignalStrategyButton.addEventListener("click", () => openSignalStrategyDialog());
+elements.addDefaultSignalStrategyButton.addEventListener("click", () => void runAction(async () => {
+  if (isArmed()) throw new Error("Turn off Signals or Autopilot before adding a signal strategy.");
+  const strategies = currentSnapshot?.settings?.signalStrategies || [];
+  if (strategies.length) throw new Error("A strategy already exists. Add or edit rules in the ordered list instead.");
+  const strategy = {
+    id: newSignalStrategyId(),
+    name: "Default notifications",
+    enabled: true,
+    priceBand: "any",
+    stores: [],
+    action: "notify",
+    quantity: "max",
+    includeKeywords: "",
+    excludeKeywords: ""
+  };
+  await saveSignalStrategies([strategy]);
+  return strategy;
+}, "Safe Notify catchall added at the bottom. It can alert, but it cannot open a store page or exceed any mission authorization."));
 elements.signalStrategyCancelButton.addEventListener("click", closeSignalStrategyDialog);
 elements.signalStrategyDialog.addEventListener("close", () => {
   editingSignalStrategyId = "";
@@ -5373,10 +5511,19 @@ elements.signalBridgeDedupeSeconds.addEventListener("change", () => void runActi
 
 elements.signalBridgePermissionButton.addEventListener("click", () => void runAction(
   () => window.cartAssist.requestSignalBridgePermission(),
-  (result) => result?.via === "default-browser"
-    ? "TrackaLacker opened in the default browser. Complete enrollment in the Chrome profile that has the CartCollect extension."
-    : "TrackaLacker opened in Chrome. Keep the page signed in while the extension completes push enrollment."
+  (result) => result?.ready
+    ? `TrackaLacker push enrollment confirmed${result.status ? `: HTTP ${result.status}` : ""}. The extension used its own signed-in Chrome profile.`
+    : "TrackaLacker push enrollment was requested in the Chrome profile that owns the companion extension."
 ));
+
+elements.signalBridgeScanButton.addEventListener("click", () => {
+  if (isArmed()) {
+    setMessage("Stop Signals or Autopilot before rescanning followed products.", "warn");
+    return;
+  }
+  elements.trackalackerLauncherButton.click();
+  void startTrackalackerScan();
+});
 
 elements.signalBridgeReplayButton.addEventListener("click", () => void runAction(async () => {
   const item = currentSnapshot?.trackalacker?.items?.find((candidate) => candidate?.stores?.length);
@@ -5486,8 +5633,25 @@ function setMissionOpenBusy(busy) {
   elements.autopilotToggle.disabled = busy;
   elements.signalsToggle.disabled = busy;
   elements.testButton.disabled = busy;
+  elements.testConnectionButton.disabled = busy;
   elements.openAllButton.disabled = busy;
   elements.planEditButton.disabled = busy;
+}
+
+async function connectOneChromePage() {
+  if (openRunInFlight) return;
+  setMissionOpenBusy(true);
+  setMessage("Opening one configured store page and waiting for the Chrome companion…");
+  try {
+    await runAction(
+      () => window.cartAssist.connectCompanion(),
+      (result) => result?.opened
+        ? "Chrome companion connected on one page. No item was enabled and no monitoring run was started."
+        : "Chrome companion is already connected. No item was enabled and no monitoring run was started."
+    );
+  } finally {
+    setMissionOpenBusy(false);
+  }
 }
 
 elements.testButton.addEventListener("click", async () => {

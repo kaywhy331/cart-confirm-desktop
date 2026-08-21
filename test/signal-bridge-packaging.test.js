@@ -67,3 +67,16 @@ test("the renderer offers Chrome push setup without package installation", () =>
   assert.match(renderer, /without server polling/);
   assert.match(renderer, /elements\.signalBridgeEnabled\.disabled = false/);
 });
+
+test("manual enrollment is opened by the owning extension profile and waits for a correlated receipt", () => {
+  assert.match(background, /TRACKALACKER_FOLLOWED_URL/);
+  assert.match(background, /chrome\.tabs\.query\(\{ url: TRACKALACKER_TAB_PATTERNS \}\)/);
+  assert.match(background, /chrome\.tabs\.create\(\{ url: TRACKALACKER_FOLLOWED_URL, active: true \}\)/);
+  assert.match(background, /enrollmentNonce: String\(enrollmentNonce/);
+  assert.match(background, /const explicitEnrollment = Boolean\(config\.trackalackerPush\.enrollmentNonce\)/);
+  assert.match(background, /if \(!explicitEnrollment && fingerprint && current\.registeredFingerprint === fingerprint\)/);
+  assert.match(main, /waitForSignalBridgeEnrollment\(nonce\)/);
+  assert.match(main, /enrollmentNonce === trackalackerPushEnrollmentNonce/);
+  assert.match(main, /via: "extension-profile"/);
+  assert.doesNotMatch(main, /openPageInChrome\(TRACKALACKER_FOLLOWED_URL\)/);
+});

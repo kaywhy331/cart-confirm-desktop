@@ -6,6 +6,12 @@ update dialog shows exactly these bullets. Keep every entry short, plain, and
 about what the user will notice — one bullet per change, no internals.
 Publishing fails if the version being released has no section here.
 
+## 3.8.4
+- Signals now shows a guided setup path and blocks Start Signals until at least one item and one real browser, TrackaLacker, or Discord source are ready
+- Connect one page can establish the Chrome observation path without turning on an item, while Watch-only items no longer require a purchase price cap
+- TrackaLacker Connect/Recheck now opens in the installed companion's Chrome profile, waits for a confirmed enrollment result, and can repair a deleted registration without recurring polling
+- Signal strategies now include a safe Notify catchall shortcut and preview the effective action and quantity that each enabled mission can actually authorize
+
 ## 3.8.3
 - New ordered Signal strategies let you choose a price band, available stores, include and exclude keywords, an action, and quantity 1–5 or Max Allowed
 - Strategies run from top to bottom and the first enabled match wins; an empty keyword rule acts as a catchall, with a warning when it would hide rules below it
