@@ -3,7 +3,7 @@
 This checklist is the manual half of Cart Confirm's safety model. It exists because
 the automated safety checks in `extension/retailers.js` and `extension/content.js`
 never choose your payment method, delivery address, or pickup store. For auto-submit,
-the operator approves the visible final-review state while Autopilot is off; the
+the operator approves the visible final-review state while Signals and Autopilot are off; the
 extension converts the selected destination/store and complete payment set to keyed
 HMAC fingerprints, persists no readable labels, and requires the same state before
 submission. The human must still verify that the visible labels are intended.
@@ -108,8 +108,8 @@ For each of Target, Walmart, and Amazon you plan to automate:
 - [ ] In **Item defaults**, leave one product type without prices and approve a different type for Target, Walmart, and Amazon. Import matching and nonmatching catalog results with an explicitly selected profile. Confirm matching rows receive only their retailer's approved MSRP and selected profile; unknown rows retain the profile fields but stay Off at $0. Confirm displayed listing prices never become caps.
 - [ ] Use Catalog Inbox **Select all** and **Select none**, import one result only once, and confirm existing missions are skipped and the 100-mission limit is never exceeded.
 - [ ] Sign in to TrackaLacker in the companion-browser profile, open **TrackaLacker** from Items, and scan followed products. Confirm pagination progresses sequentially, one product card owns all supported store toggles, and each card shows the expected thumbnail plus working TrackaLacker, exact **Store**, and **History** links. Cancel during a scan and confirm no later capture is accepted; start again and confirm the preview is rebuilt without duplicate products.
-- [ ] Compare several TrackaLacker listing histories manually. Confirm normal/MSRP-like observations produce the same expected store price shown in the preview, while Price Surge, Above MSRP, and higher/scalper observations are excluded. Confirm a store with only the followed-product estimate stays Off after import until its cap is reviewed.
-- [ ] Import two supported stores for one TrackaLacker product and confirm they appear as toggles under one shared item, retain their store-specific exact routes and history metadata, and consume two of the 100 store-option slots. Import them again and confirm both are skipped as duplicates. Confirm TrackaLacker credentials and cookies never appear in settings, runtime, logs, or `trackalacker-import.json`.
+- [ ] Compare several TrackaLacker listing histories manually. Confirm the preview’s **Latest**, **Low**, **High**, trend, sample count, and timestamps match the newest-first vendor history. Expand **Price history** and confirm every available point (up to 50) appears with a chart and its Normal, Surge, Above MSRP, or Unclassified label. Confirm the newest normal/MSRP-like point—not an older frequently repeated price—becomes the proposed cap. Confirm a latest surge remains visible and marked but does not replace the normal cap; a store with no normal point and only the followed-product estimate stays Off until reviewed.
+- [ ] Import two supported stores for one TrackaLacker product and confirm they appear as toggles under one shared item, retain their store-specific exact routes and compact latest/range/trend/surge summaries, and consume two of the 100 store-option slots. Rescan after changing a test fixture’s normal reference and confirm the mission row shows the fresh exact-listing summary and flags that its saved cap remains unchanged. Confirm detailed history stays in local `trackalacker-import.json`, is loaded on demand in the preview, and is absent from browser automation configuration. Import the stores again and confirm both are skipped as duplicates. Confirm TrackaLacker credentials and cookies never appear in settings, runtime, logs, or `trackalacker-import.json`.
 - [ ] Select one harmless exact Walmart result with an approved Walmart MSRP and item profile, choose a future **Known Walmart drop time**, and select **Monitor selected for Walmart prep**. Confirm the candidate appears separately from Missions and Autopilot can arm with only that candidate. Observe that the first public-page response establishes a baseline and does not add a Mission; an unchanged or `304` response, timeout, and network failure also do not. In a controlled local/mock test, confirm a `200` to `404`/`503` transition, recovery to `200`, embedded availability/price change, or `/qp` redirect moves only that exact item into Missions while preserving its profile, approved caps, and drop time. Confirm no browser page opens before that time.
 - [ ] While a harmless Walmart prep check is in flight, press **Stop everything**. Confirm the request is aborted, the cached observation is cleared, the configured candidate and its future time remain saved, and a late response cannot create a Mission. Re-arm and confirm the candidate establishes a fresh baseline before monitoring changes again. Confirm prep checks rotate one at a time no faster than every 30 seconds, consume the shared 120-action/hour Walmart budget, respect overload cooldowns, and never request a private inventory, checkout, ticket, or signature endpoint.
 
@@ -156,6 +156,52 @@ For each of Target, Walmart, and Amazon you plan to automate:
       confirm exactly one updated run starts. Repeat, but press **Stop everything**
       during the session; confirm finishing or cancelling an open editor cannot
       re-arm the app.
+- [ ] Start **Signals** with at least two harmless enabled missions. Confirm no
+      broad item sweep, quiet public watcher, combined checkout, or scheduled
+      opening starts. On one already-open exact retailer page, expose an eligible
+      first-party offer under its cap and confirm the inbox records a **Browser**
+      signal, only that `retailer:SKU` becomes authorized, and the other mission
+      stays disabled in companion configuration. Repeat with a fresh matched
+      Discord test message, then with a stale, unmatched, over-cap, calendar-owned,
+      and below-configured-quantity-limit message; confirm only the fresh exact
+      match can start a bounded browser attempt and the live page still blocks an
+      over-cap or third-party offer. Turn Signals off and confirm all in-memory
+      authorizations disappear; restart and confirm the app returns **STOPPED**.
+- [ ] While Signals is active, start an edit and confirm it pauses once. Finish
+      the plan session and confirm Signals—not Autopilot—resumes as one new run.
+      Press **Stop everything** during a second edit and confirm finishing cannot
+      restore either purchase mode.
+- [ ] Install the signed AppX build on Windows, enable the TrackaLacker alert
+      bridge, and grant the operating-system notification-listener permission.
+      Confirm the dashboard and tray show **Ready**, the last completed pre-sync
+      mapping count, zero pending signals, and no secret/token value. Revoke the
+      permission in Windows Settings and confirm both surfaces report the warning
+      without claiming the listener is ready. Confirm unsigned installer and
+      portable builds say that the signed Windows package is required.
+- [ ] Send representative TrackaLacker Chrome fixtures for Walmart, Amazon, and
+      Target in-stock/restock/preorder alerts. Confirm exact title + retailer
+      resolves the intended pre-synced listing in under 50 ms, while an unrelated
+      Chrome notification, a lookalike domain, unknown retailer, malformed alert,
+      Booster Box/Bundle variant, and an ambiguous duplicate title are retained or
+      ignored as appropriate and never activate a mission. Confirm a real
+      TrackaLacker test notification and **Run dry-run replay** cannot open Chrome.
+- [ ] With Signals armed, send an exact under-cap TrackaLacker alert and confirm
+      its durable audit receipt says queued before the store page starts opening.
+      Repeat with no mission, disabled mission, over-cap price, stale timestamp,
+      and Signals off; confirm the local bridge acknowledges each delivery but
+      CartCollect records the business rejection and performs no action. Repeat the
+      same notification ID and an equivalent product/store/event/price alert across
+      a five-minute bucket boundary; confirm one receipt gains an occurrence and no
+      second opening occurs. Change only price and confirm it becomes a new event.
+- [ ] Pause TrackaLacker delivery, generate a harmless alert, close/restart the
+      dashboard, then resume delivery. Confirm capture continues, the pending file
+      survives, bounded retry wakes CartCollect when needed, and the signal is
+      acknowledged exactly once. Leave Signals armed with **Start bridge at Windows
+      login** enabled and sign out/in: confirm the app starts hidden with a fresh
+      Signals run. Repeat with Signals off and confirm login starts capture-only.
+      Close the window and confirm tray capture continues; choose tray **Exit** and
+      confirm the helper stops. Observe network traffic and confirm there is no
+      recurring TrackaLacker, Discord, Walmart, Amazon, or Target polling.
 - [ ] Give two harmless missions future **Open at** times, press **Stop everything**,
       and restart the app. Confirm both times remain present while no schedule can
       fire in the stopped state. Use **Edit plan → Clear selected times** and

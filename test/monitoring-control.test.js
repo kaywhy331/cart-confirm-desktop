@@ -48,7 +48,7 @@ test("the desktop Stop path aborts quiet checks and internal stock opens cannot 
   assert.match(source, /cart-assist:stop-all[\s\S]*?quietAbortRegistry\.abortAll\(\)[\s\S]*?resetQuietMonitorSchedule/);
   assert.match(contentSource, /if \(!await automationStillActive\(product\)\) return false;[\s\S]*?element\.click\(\)/);
   assert.match(backgroundSource, /function automationActive\(config\)[\s\S]*?config\.monitoringPaused !== true/);
-  assert.match(backgroundSource, /resolveProductKnownNoOrder[\s\S]*?if \(config\.automationEnabled\) return \{ ok: false, reason: "automation-armed"/);
+  assert.match(backgroundSource, /resolveProductKnownNoOrder[\s\S]*?if \(config\.automationEnabled \|\| config\.signalsEnabled\) return \{ ok: false, reason: "automation-armed"/);
 });
 
 test("quiet public reads cannot consume the browser, cart, or checkout action ledger", () => {
@@ -82,7 +82,7 @@ test("quiet public reads cannot consume the browser, cart, or checkout action le
 
 test("Test all opens every enabled mission while remaining disarmed", () => {
   const source = fs.readFileSync(path.join(__dirname, "..", "main.js"), "utf8");
-  assert.match(source, /cart-assist:test-event[\s\S]*?if \(settings\.automationEnabled\)[\s\S]*?return openBuyList\("", \{ ensureCompanion: true \}\);/);
+  assert.match(source, /cart-assist:test-event[\s\S]*?if \(purchaseModeEnabled\(settings\)\)[\s\S]*?return openBuyList\("", \{ ensureCompanion: true \}\);/);
   assert.match(source, /async function openBuyList[\s\S]*?browserProducts = plan\.ready\.filter[\s\S]*?Promise\.all\(productsToOpen\.map/);
 });
 
@@ -93,7 +93,7 @@ test("arming Autopilot starts Target and Walmart background-first without changi
     mainSource.indexOf("async function openBuyList"),
     mainSource.indexOf("async function openStorePage")
   );
-  assert.match(rendererSource, /autopilotToggle[\s\S]*?saveSettings\(\{ \.\.\.saved, automationEnabled: true \}\)[\s\S]*?openBuyList\(\{ backgroundFirst: true \}\)/);
+  assert.match(rendererSource, /autopilotToggle[\s\S]*?saveSettings\(\{ \.\.\.saved, automationEnabled: true, signalsEnabled: false \}\)[\s\S]*?openBuyList\(\{ backgroundFirst: true \}\)/);
   assert.match(mainSource, /cart-assist:open-buy-list[\s\S]*?ensureCompanion: true/);
   assert.match(openBuyList, /ensureCompanion[\s\S]*?ensureCompanionConnection\(plan, prepCandidates\)/);
   assert.match(rendererSource, /waiting for[\s\S]*?calendar time/);

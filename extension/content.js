@@ -86,6 +86,10 @@
     return product?.executionMode === "blitz";
   }
 
+  function purchaseModeLabel() {
+    return config?.signalsEnabled ? "Signals" : "Autopilot";
+  }
+
   function watcherIntervalSeconds() {
     return Math.max(30, Number(config?.watcherIntervalSeconds || 60));
   }
@@ -1307,10 +1311,12 @@
     }, `availability:${product.id}:${offer.available}`, OBSERVATION_DEDUPE_MS);
     const eligibleMessage = result.eligible
       ? !config.automationEnabled
-        ? `${adapter.label} verified an eligible first-party offer at $${offer.price.toFixed(2)}. Test mode is observation-only, so no purchase action was attempted.`
+        ? config.signalsEnabled
+          ? `${adapter.label} verified an eligible first-party offer at $${offer.price.toFixed(2)}. It was reported as a browser signal so the desktop can authorize only this exact mission.`
+          : `${adapter.label} verified an eligible first-party offer at $${offer.price.toFixed(2)}. Test mode is observation-only, so no purchase action was attempted.`
         : product.action === "watch"
           ? `${adapter.label} verified an eligible first-party offer at $${offer.price.toFixed(2)}. This item is Watch & alert only, so no purchase action was attempted.`
-          : `${adapter.label} verified an eligible first-party offer at $${offer.price.toFixed(2)}. Autopilot is starting the ${product.action === "cart" ? "add-to-cart" : product.action === "review" ? "checkout-review" : "auto-buy"} workflow.`
+          : `${adapter.label} verified an eligible first-party offer at $${offer.price.toFixed(2)}. ${purchaseModeLabel()} is starting the ${product.action === "cart" ? "add-to-cart" : product.action === "review" ? "checkout-review" : "auto-buy"} workflow.`
       : "";
     const offerReport = send("offer-observed", product, {
       availability: offer.available ? "available" : "unavailable",
@@ -1323,18 +1329,29 @@
       message: eligibleMessage
     }, `offer:${product.id}:${offer.price}:${offer.seller}:${result.reason}:${eligibleMessage}`, OBSERVATION_DEDUPE_MS);
 
+    // Signals starts fail-closed, so this page's projected mission is disabled
+    // until the desktop accepts the exact observed offer. Complete that one
+    // authorization round trip now and fetch the newly scoped config instead
+    // of waiting for the normal five-second refresh interval.
+    if (config.signalsEnabled && !config.automationEnabled && result.eligible) {
+      await offerReport;
+      await refreshConfig(true);
+      if (config.automationEnabled && activeProduct()?.enabled) scheduleScan(0);
+      return;
+    }
+
     if (!config.automationEnabled || !product.enabled) return;
     if (!state) state = await productAutomationState(product);
     if (!state.ok) {
       await send("automation-blocked", product, {
         reason: "manual-action-required",
-        message: `Autopilot could not read this store option's durable state (${state.reason || "unknown state error"}). Its store lane was released so the remaining items can continue.`
+        message: `${purchaseModeLabel()} could not read this store option's durable state (${state.reason || "unknown state error"}). Its store lane was released so the remaining items can continue.`
       }, `product-state-error:${product.id}:${state.reason}`, 30_000);
       return;
     }
     if (state.completed) {
       await send("automation-status", product, {
-        message: "This item is already complete for the current Autopilot run, so Cart Confirm will not purchase it twice."
+        message: `This item is already complete for the current ${purchaseModeLabel()} run, so Cart Confirm will not purchase it twice.`
       }, `already-completed:${product.id}:${config.automationRunId}`, Number.MAX_SAFE_INTEGER);
       return;
     }
@@ -2223,8 +2240,8 @@
     const latest = await requestConfig(true);
     if (!latest) return { ok: false, reason: "desktop-not-found", error: "Cart Confirm desktop is not reachable." };
     config = latest;
-    if (config.automationEnabled) {
-      return { ok: false, reason: "automation-armed", error: "Switch Autopilot off before approving checkout preflight." };
+    if (config.automationEnabled || config.signalsEnabled) {
+      return { ok: false, reason: "automation-armed", error: "Stop Autopilot or Signals before approving checkout preflight." };
     }
     const product = activeProduct();
     if (!product || !product.enabled || product.action !== "checkout") {
@@ -2710,6 +2727,7 @@
     const fingerprint = JSON.stringify({
       run: next.automationRunId,
       armed: next.automationEnabled,
+      signals: next.signalsEnabled,
       paused: next.monitoringPaused,
       version: next.configVersion,
       products: next.products,

@@ -42,6 +42,9 @@ jobs:
         with:
           node-version: 24
           cache: npm
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 8.0.x
       - name: Require an unused unsigned version tag
         shell: pwsh
         env:
@@ -140,6 +143,7 @@ jobs:
             "## Unsigned prerelease",
             "",
             "These Windows executables are intentionally **unsigned**. Windows will show **Unknown publisher** and may display a Microsoft Defender SmartScreen warning. This is not the signed stable release.",
+            "The native TrackaLacker Windows notification listener requires package identity and is therefore available only in the signed stable AppX release, not in these unsigned installer/portable artifacts.",
             "",
             "Built by GitHub Actions from merged main commit $env:GITHUB_SHA. Source verification, the test suite, npm audit, Windows packaging, checksums, and the absence of Authenticode signatures all passed before publication.",
             "",

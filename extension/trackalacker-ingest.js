@@ -11,6 +11,7 @@
   const MAX_PAGES = 50;
   const MAX_PRODUCTS = 500;
   const MAX_LISTINGS = 24;
+  const MAX_HISTORY_ENTRIES = 50;
   const FETCH_RETRIES = 2;
   const FETCH_TIMEOUT_MS = 12_000;
   const STORE_NAMES = Object.freeze({
@@ -232,7 +233,10 @@
         outboundUrl: cleanText(outbound?.href || outbound?.getAttribute("href"), 2_048),
         historyUrl,
         currentPrice: parseMoney(row.textContent),
-        status: listingStatus(row.textContent)
+        status: listingStatus(row.textContent),
+        currentPriceChangedAt: "",
+        currentMsrpCode: "",
+        currentAssessment: ""
       });
     }
     return {
@@ -279,6 +283,7 @@
       if (!historyUrl) continue;
       seen.add(listingId);
       const current = raw?.current_status && typeof raw.current_status === "object" ? raw.current_status : {};
+      const currentMsrp = current.msrp_state && typeof current.msrp_state === "object" ? current.msrp_state : {};
       const store = providerName || (retailer ? STORE_NAMES[retailer] : "Other store");
       listings.push({
         listingId,
@@ -287,7 +292,10 @@
         outboundUrl,
         historyUrl,
         currentPrice: numericPrice(current.price ?? raw?.price),
-        status: cleanText(current.short_stock_status_text || current.msrp_state?.short_text, 60)
+        status: cleanText(current.short_stock_status_text || currentMsrp.short_text, 60),
+        currentPriceChangedAt: parseUtcTimestamp(current.price_changed_at),
+        currentMsrpCode: cleanText(currentMsrp.code_str, 40).toLowerCase(),
+        currentAssessment: cleanText([currentMsrp.code_str, currentMsrp.full_text, currentMsrp.tooltip].filter(Boolean).join(" "), 500)
       });
     }
     return {
@@ -308,64 +316,136 @@
     const hydration = reactPropsFor(doc, "products/listings/RecentChanges");
     const hydratedStatuses = hydration.value?.statuses;
     if (Array.isArray(hydratedStatuses)) {
-      return hydratedStatuses.slice(0, 50).map((entry) => {
+      return hydratedStatuses.slice(0, MAX_HISTORY_ENTRIES).map((entry) => {
         const msrp = entry?.msrp_state && typeof entry.msrp_state === "object" ? entry.msrp_state : {};
-        return {
-          observedAt: parseUtcTimestamp(entry?.price_changed_at || entry?.created_at),
+        const historyEntry = {
+          observedAt: parseUtcTimestamp(entry?.created_at || entry?.updated_at || entry?.price_changed_at),
+          priceChangedAt: parseUtcTimestamp(entry?.price_changed_at),
           price: numericPrice(entry?.price),
           status: cleanText(entry?.short_stock_status_text, 60),
+          msrpCode: cleanText(msrp.code_str, 40).toLowerCase(),
           assessment: cleanText([msrp.code_str, msrp.full_text, msrp.tooltip].filter(Boolean).join(" "), 500)
         };
+        return { ...historyEntry, classification: classifyHistoryEntry(historyEntry) };
       });
     }
     const entries = [];
-    for (const row of [...doc.querySelectorAll("table tbody tr")].slice(0, 50)) {
+    for (const row of [...doc.querySelectorAll("table tbody tr")].slice(0, MAX_HISTORY_ENTRIES)) {
       const cells = [...row.querySelectorAll("th,td")];
       if (cells.length < 3) continue;
       const price = parseMoney(cells[1].textContent);
       const status = cleanText(cells[2].textContent, 60);
       const assessment = cleanText(cells[2].querySelector("[title]")?.getAttribute("title"), 500);
-      entries.push({
+      const historyEntry = {
         observedAt: parseUtcTimestamp(cells[0].textContent),
+        priceChangedAt: parseUtcTimestamp(cells[0].textContent),
         price,
         status,
+        msrpCode: "",
         assessment
-      });
+      };
+      entries.push({ ...historyEntry, classification: classifyHistoryEntry(historyEntry) });
     }
     return entries;
   }
 
+  function classifyHistoryEntry(entry) {
+    const code = cleanText(entry?.msrpCode, 40).toLowerCase().replaceAll("-", "_");
+    if (code === "price_surge") return "surge";
+    if (["slightly_above", "above_msrp", "greater_than"].includes(code)) return "above";
+    if (["equal_to", "less_than", "close_to", "below_msrp", "at_msrp"].includes(code)) return "normal";
+    const signal = `${entry?.status || ""} ${entry?.assessment || ""}`.toLowerCase().replaceAll("_", " ");
+    if (/price surge|scalper/.test(signal)) return "surge";
+    if (/(?:slightly )?above msrp|higher than (?:the )?(?:original )?msrp/.test(signal)) return "above";
+    if (/basically the same|same as (?:the )?(?:original )?msrp|equal to|at msrp|below (?:the )?(?:original )?msrp|under msrp|lower than/.test(signal)) return "normal";
+    if (!entry?.assessment && /\b(?:in stock|out of stock|available|pre-?order|sale)\b/.test(signal)) return "normal";
+    return "unknown";
+  }
+
   function trustworthyHistoryEntry(entry) {
     if (!Number.isFinite(entry?.price) || entry.price <= 0) return false;
-    const signal = `${entry.status || ""} ${entry.assessment || ""}`.toLowerCase().replaceAll("_", " ");
-    if (/price surge|(?:slightly )?above msrp|higher than (?:the )?(?:original )?msrp|scalper/.test(signal)) return false;
-    if (/basically the same|same as (?:the )?(?:original )?msrp|equal to|at msrp|below (?:the )?(?:original )?msrp|under msrp|lower than/.test(signal)) return true;
-    return !entry.assessment && /\b(?:in stock|out of stock|available|pre-?order|sale)\b/.test(signal);
+    return classifyHistoryEntry(entry) === "normal";
+  }
+
+  function historyTimestamp(entry) {
+    const timestamp = new Date(entry?.observedAt || entry?.priceChangedAt || "").getTime();
+    return Number.isFinite(timestamp) ? timestamp : 0;
+  }
+
+  function analyzePriceHistory(entries = []) {
+    const history = entries
+      .map((entry, index) => ({
+        observedAt: parseUtcTimestamp(entry?.observedAt),
+        priceChangedAt: parseUtcTimestamp(entry?.priceChangedAt),
+        price: numericPrice(entry?.price),
+        status: cleanText(entry?.status, 60),
+        msrpCode: cleanText(entry?.msrpCode, 40).toLowerCase(),
+        assessment: cleanText(entry?.assessment, 500),
+        classification: classifyHistoryEntry(entry),
+        isCurrent: entry?.isCurrent === true,
+        sourceIndex: index
+      }))
+      .filter((entry) => Number.isFinite(entry.price))
+      .sort((left, right) => historyTimestamp(right) - historyTimestamp(left) || left.sourceIndex - right.sourceIndex)
+      .slice(0, MAX_HISTORY_ENTRIES)
+      // The long TrackaLacker explanation is used locally for classification,
+      // then omitted so a worst-case three-store capture stays below the
+      // desktop's bounded loopback request size.
+      .map(({ sourceIndex, assessment, ...entry }) => entry);
+    const latest = history[0] || null;
+    // Classification happened while the full TrackaLacker explanation was
+    // still present. Use that result after the prose is stripped for capture.
+    const trusted = history.filter((entry) => entry.classification === "normal");
+    const reference = trusted[0] || null;
+    let previous = latest
+      ? history.slice(1).find((entry) => Math.round(entry.price * 100) !== Math.round(latest.price * 100)) || null
+      : null;
+    if (!previous && history.length > 1) previous = history[1];
+    const prices = history.map((entry) => entry.price);
+    const normalPrices = trusted.map((entry) => entry.price);
+    const changeAmount = latest && previous ? Math.round((latest.price - previous.price) * 100) / 100 : null;
+    const trend = changeAmount === null ? "unknown" : changeAmount > 0 ? "up" : changeAmount < 0 ? "down" : "steady";
+    return {
+      history,
+      reference,
+      summary: history.length ? {
+        sampleCount: history.length,
+        trustedSamples: trusted.length,
+        surgeSamples: history.filter((entry) => entry.classification === "surge").length,
+        aboveSamples: history.filter((entry) => entry.classification === "above").length,
+        latestPrice: latest.price,
+        latestObservedAt: latest.observedAt,
+        latestPriceChangedAt: latest.priceChangedAt,
+        latestClassification: latest.classification,
+        lowestPrice: Math.min(...prices),
+        highestPrice: Math.max(...prices),
+        normalLowPrice: normalPrices.length ? Math.min(...normalPrices) : null,
+        normalHighPrice: normalPrices.length ? Math.max(...normalPrices) : null,
+        referencePrice: reference?.price ?? null,
+        referenceObservedAt: reference?.observedAt || "",
+        referencePriceChangedAt: reference?.priceChangedAt || "",
+        previousPrice: previous?.price ?? null,
+        changeAmount,
+        trend
+      } : null
+    };
   }
 
   function estimateHistoryPrice(entries = []) {
-    const candidates = entries.filter(trustworthyHistoryEntry);
-    if (!candidates.length) return null;
-    const byCents = new Map();
-    candidates.forEach((entry, index) => {
-      const cents = Math.round(entry.price * 100);
-      const current = byCents.get(cents) || { cents, count: 0, firstIndex: index, observedAt: entry.observedAt || "" };
-      current.count += 1;
-      byCents.set(cents, current);
-    });
-    const winner = [...byCents.values()].sort((left, right) => (
-      right.count - left.count || left.firstIndex - right.firstIndex || left.cents - right.cents
-    ))[0];
+    const analysis = analyzePriceHistory(entries);
+    if (!analysis.reference) return null;
     return {
-      price: winner.cents / 100,
+      price: analysis.reference.price,
       confidence: "history",
-      samples: candidates.length,
-      observedAt: winner.observedAt
+      samples: analysis.summary.trustedSamples,
+      observedAt: analysis.reference.priceChangedAt || analysis.reference.observedAt,
+      priceChangedAt: analysis.reference.priceChangedAt
     };
   }
 
   function listingScore(listing) {
     return (listing.priceConfidence === "history" ? 100 : listing.priceConfidence === "product" ? 25 : 0)
+      + Math.min(10, Number(listing.historySamples) || 0)
       + (listing.status && !/surge|above msrp/i.test(listing.status) ? 5 : 0)
       + (listing.productUrl ? 10 : 0);
   }
@@ -383,6 +463,8 @@
         listing.historyObservedAt = estimate?.observedAt || "";
       }
       candidates.sort((left, right) => listingScore(right) - listingScore(left)
+        || new Date(right.priceHistorySummary?.latestPriceChangedAt || right.priceHistorySummary?.latestObservedAt || 0).getTime()
+          - new Date(left.priceHistorySummary?.latestPriceChangedAt || left.priceHistorySummary?.latestObservedAt || 0).getTime()
         || Number(left.listingId) - Number(right.listingId));
       const chosen = candidates[0];
       stores.push({
@@ -396,6 +478,8 @@
         priceConfidence: chosen.priceConfidence,
         historySamples: chosen.historySamples,
         historyObservedAt: chosen.historyObservedAt,
+        priceHistory: chosen.priceHistory || [],
+        priceHistorySummary: chosen.priceHistorySummary || null,
         status: chosen.status,
         alternateCount: candidates.length - 1
       });
@@ -484,6 +568,32 @@
     return Boolean(claim?.ok && claim.claimed);
   }
 
+  function mergeCurrentPriceHistory(entries, listing, observedAt = new Date().toISOString()) {
+    const history = [...(Array.isArray(entries) ? entries : [])];
+    if (!Number.isFinite(listing?.currentPrice)) return history;
+    const currentEntry = {
+      observedAt: parseUtcTimestamp(observedAt),
+      priceChangedAt: parseUtcTimestamp(listing.currentPriceChangedAt),
+      price: listing.currentPrice,
+      status: listing.status,
+      msrpCode: listing.currentMsrpCode || "",
+      assessment: listing.currentAssessment || "",
+      isCurrent: true
+    };
+    currentEntry.classification = classifyHistoryEntry(currentEntry);
+    const matchingIndex = history.findIndex((entry, index) => (
+      Math.round(entry.price * 100) === Math.round(currentEntry.price * 100)
+      && (
+        currentEntry.priceChangedAt
+          ? parseUtcTimestamp(entry.priceChangedAt) === currentEntry.priceChangedAt
+          : index === 0 && entry.status === currentEntry.status
+      )
+    ));
+    if (matchingIndex >= 0) history[matchingIndex] = { ...history[matchingIndex], ...currentEntry };
+    else history.unshift(currentEntry);
+    return history;
+  }
+
   async function discoverFollowedProducts(importId) {
     const items = [];
     const seen = new Set();
@@ -533,9 +643,21 @@
     });
     if (!resolved?.ok) return { ...listing, resolutionError: resolved?.reason || "link-unresolved" };
     let historyEstimate = null;
+    let priceHistory = [];
+    let priceHistorySummary = null;
     try {
       const history = await fetchDocument(listing.historyUrl);
-      historyEstimate = estimateHistoryPrice(parseHistoryPage(history.doc));
+      const entries = mergeCurrentPriceHistory(parseHistoryPage(history.doc), listing);
+      const analysis = analyzePriceHistory(entries);
+      priceHistory = analysis.history;
+      priceHistorySummary = analysis.summary;
+      historyEstimate = analysis.reference ? {
+        price: analysis.reference.price,
+        confidence: "history",
+        samples: analysis.summary.trustedSamples,
+        observedAt: analysis.reference.priceChangedAt || analysis.reference.observedAt,
+        priceChangedAt: analysis.reference.priceChangedAt
+      } : null;
     } catch {
       // The exact retailer route is still useful; the product fallback remains
       // review-only if its history page cannot be read.
@@ -544,7 +666,9 @@
       ...listing,
       productUrl: resolved.productUrl,
       sku: resolved.sku,
-      historyEstimate
+      historyEstimate,
+      priceHistory,
+      priceHistorySummary
     };
   }
 
@@ -676,10 +800,13 @@
     FOLLOWED_URL,
     MAX_PAGES,
     MAX_PRODUCTS,
+    analyzePriceHistory,
     chooseStoreListings,
+    classifyHistoryEntry,
     cleanText,
     estimateHistoryPrice,
     install,
+    mergeCurrentPriceHistory,
     parseFollowedPage,
     parseHistoryPage,
     parseMoney,

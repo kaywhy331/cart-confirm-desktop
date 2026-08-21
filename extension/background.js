@@ -64,11 +64,16 @@ async function setBadge(config) {
     return;
   }
   const armed = Boolean(config.automationEnabled);
+  const signals = Boolean(config.signalsEnabled);
   const paused = Boolean(config.monitoringPaused);
-  await chrome.action.setBadgeText({ text: armed ? "ARM" : paused ? "STOP" : "IDLE" });
-  await chrome.action.setBadgeBackgroundColor({ color: armed ? "#991b1b" : paused ? "#475569" : "#075985" });
+  await chrome.action.setBadgeText({ text: signals ? "SIG" : armed ? "ARM" : paused ? "STOP" : "IDLE" });
+  await chrome.action.setBadgeBackgroundColor({ color: signals ? "#6d28d9" : armed ? "#991b1b" : paused ? "#475569" : "#075985" });
   await chrome.action.setTitle({
-    title: armed
+    title: signals
+      ? armed
+        ? "Cart Confirm Signals authorized an exact matched mission"
+        : "Cart Confirm Signals is listening; purchase actions wait for an exact match"
+      : armed
       ? "Cart Confirm automation is armed"
       : paused
         ? "Cart Confirm is stopped; monitoring is paused"
@@ -154,6 +159,7 @@ function publicConfig(config) {
   return {
     products,
     automationEnabled: Boolean(config.automationEnabled),
+    signalsEnabled: Boolean(config.signalsEnabled),
     monitoringPaused: Boolean(config.monitoringPaused),
     automationRunId: String(config.automationRunId || ""),
     queueCaptures,
@@ -937,8 +943,8 @@ async function postQuickAddMission(product) {
 async function postCheckoutPreflight(productId, evidence) {
   let config = await discoverConfig(true);
   if (!config) return { ok: false, reason: "desktop-not-found", error: "Cart Confirm desktop is not reachable." };
-  if (config.automationEnabled) {
-    return { ok: false, reason: "automation-armed", error: "Switch Autopilot off before approving checkout preflight." };
+  if (config.automationEnabled || config.signalsEnabled) {
+    return { ok: false, reason: "automation-armed", error: "Stop Autopilot or Signals before approving checkout preflight." };
   }
   const product = (config.products || []).find((candidate) => (
     candidate.id === String(productId || "")
@@ -1454,7 +1460,7 @@ async function resolveProductKnownNoOrder(input, sender) {
   if (!config) return { ok: false, reason: "desktop-not-found", released: false };
   // A paused run remains armed. Releasing a held post-mutation workflow while
   // it could resume would make duplicate-order prevention depend on timing.
-  if (config.automationEnabled) return { ok: false, reason: "automation-armed", released: false };
+  if (config.automationEnabled || config.signalsEnabled) return { ok: false, reason: "automation-armed", released: false };
   if (input?.checkedOrderHistory !== true || input?.abandonMission !== true) {
     return { ok: false, reason: "operator-acknowledgment-required", released: false };
   }

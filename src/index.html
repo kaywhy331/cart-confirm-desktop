@@ -37,6 +37,10 @@
           <span class="autopilot-label">Autopilot</span>
           <span class="autopilot-state" id="autopilotState">OFF</span>
         </button>
+        <button class="autopilot signals-mode" id="signalsToggle" type="button" title="Wait for an exact TrackaLacker, browser, or Discord signal, then authorize only the matched mission">
+          <span class="autopilot-label">Signals</span>
+          <span class="autopilot-state" id="signalsState">OFF</span>
+        </button>
         <button class="button secondary" id="testButton" type="button" title="Checks every enabled item that does not have a calendar time; nothing is added">Monitor only</button>
         <button class="button danger" id="disarmButton" type="button" title="Autopilot off, monitoring paused, and queued openings cancelled; your item plan and scheduled times stay saved">Stop everything</button>
       </div>
@@ -541,15 +545,15 @@
 
         <div class="discord-launcher" id="discordLauncher">
           <button class="button secondary discord-launcher-button" id="showDiscordButton" type="button" aria-controls="signalPanel" aria-expanded="false">
-            Show Discord
+            Show signals
           </button>
         </div>
 
         <section class="panel signal-panel collapsible-panel" id="signalPanel" hidden>
           <div class="panel-heading">
             <div>
-              <span class="eyebrow">Official bot connection</span>
-              <h2>Discord restock signals</h2>
+              <span class="eyebrow">TrackaLacker + browser + official bot ingestion</span>
+              <h2>Restock signals</h2>
             </div>
             <div class="action-row">
               <span class="step-state" id="discordState">Not connected</span>
@@ -557,7 +561,33 @@
             </div>
           </div>
           <div class="panel-content" id="signalPanelBody">
-            <p class="step-hint" id="discordHint">Connect a bot that can view the signal channel and read its message history. Discord user tokens and self-bots are never accepted.</p>
+            <section class="signal-bridge-card" aria-labelledby="signalBridgeTitle">
+              <div class="signal-bridge-heading">
+                <div>
+                  <strong id="signalBridgeTitle">TrackaLacker Windows alert bridge</strong>
+                  <p id="signalBridgeHint">Install the signed Windows package to listen for exact TrackaLacker Chrome notifications without polling.</p>
+                </div>
+                <span class="step-state" id="signalBridgeState">Disabled</span>
+              </div>
+              <div class="signal-bridge-metrics" id="signalBridgeMetrics" aria-live="polite"></div>
+              <div class="signal-bridge-controls">
+                <label class="toggle-row"><input id="signalBridgeEnabled" type="checkbox"><span>Capture TrackaLacker Chrome alerts</span></label>
+                <label class="toggle-row"><input id="signalBridgeDeliveryPaused" type="checkbox"><span>Pause delivery, keep capture queued</span></label>
+                <label class="toggle-row"><input id="signalBridgeStartAtLogin" type="checkbox"><span>Start bridge at Windows login</span></label>
+                <label class="field signal-dedupe-field"><span>Dedupe window (seconds)</span><input id="signalBridgeDedupeSeconds" type="number" min="30" max="3600" step="1" value="300"></label>
+              </div>
+              <div class="action-row signal-bridge-actions">
+                <button class="button secondary compact" id="signalBridgePermissionButton" type="button">Grant notification access</button>
+                <button class="button ghost compact" id="signalBridgeReplayButton" type="button">Run dry-run replay</button>
+              </div>
+              <small class="row-help">The listener accepts only Google Chrome notifications attributed exactly to trackalacker.com. Synthetic replays exercise the production parser and resolver but can never open a store or place an order.</small>
+              <details class="signal-audit-details">
+                <summary>Recent TrackaLacker signal audit</summary>
+                <div class="signal-audit-list" id="signalBridgeRecent"><div class="empty-state">No TrackaLacker alerts recorded yet.</div></div>
+              </details>
+            </section>
+            <div class="catalog-section-divider" role="separator"></div>
+            <p class="step-hint" id="discordHint">Eligible offers verified in open store tabs appear here automatically. You can also connect a Discord bot that can view the signal channel and read its message history. Discord user tokens and self-bots are never accepted.</p>
             <div class="discord-setup">
               <label class="field">
                 <span>Bot token</span>
@@ -628,9 +658,10 @@
     <p id="runReviewSummary"></p>
     <div class="run-review-metrics" id="runReviewMetrics"></div>
     <ul class="run-review-issues" id="runReviewIssues"></ul>
-    <p class="run-review-safety">Store options are alternatives for one item. The first selected store to reach the protected purchase boundary claims that item for this run; sibling stores cannot buy it again.</p>
+    <p class="run-review-safety">Signals keeps every mission dormant until an exact TrackaLacker, browser, or Discord match; Autopilot monitors every due mission. In either mode, the first selected store to claim an item blocks sibling stores from buying it again.</p>
     <div class="dialog-actions run-review-actions">
       <button class="button secondary" id="runReviewMonitorButton" type="button">Start monitoring only</button>
+      <button class="button signals-primary" id="runReviewSignalsButton" type="button">Start Signals</button>
       <button class="button primary" id="runReviewAutopilotButton" type="button">Start Autopilot</button>
     </div>
   </dialog>
