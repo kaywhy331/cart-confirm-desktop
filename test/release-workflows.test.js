@@ -11,6 +11,7 @@ const unsigned = fs.readFileSync(
   path.join(root, ".github", "workflows", "unsigned-prerelease.yml"),
   "utf8"
 );
+const ci = fs.readFileSync(path.join(root, ".github", "workflows", "ci.yml"), "utf8");
 const main = fs.readFileSync(path.join(root, "main.js"), "utf8");
 const packageJson = require(path.join(root, "package.json"));
 
@@ -64,4 +65,10 @@ test("the unsigned lane verifies artifacts and refuses signed executables", () =
   assert.match(unsigned, /CSC_IDENTITY_AUTO_DISCOVERY: "false"/);
   assert.doesNotMatch(unsigned, /WINDOWS_CERTIFICATE/);
   assert.doesNotMatch(unsigned, /setup-dotnet|dotnet/i);
+});
+
+test("extension-only Windows packaging does not provision the retired native toolchain", () => {
+  assert.doesNotMatch(ci, /setup-dotnet|dotnet/i);
+  assert.doesNotMatch(unsigned, /setup-dotnet|dotnet/i);
+  assert.doesNotMatch(signed, /setup-dotnet|dotnet/i);
 });

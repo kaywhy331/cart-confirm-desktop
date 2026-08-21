@@ -39,9 +39,6 @@ jobs:
         with:
           node-version: 24
           cache: npm
-      - uses: actions/setup-dotnet@v5
-        with:
-          dotnet-version: 8.0.x
       - run: npm ci --no-fund
       - run: npm run verify
       - run: npm run dist:win
