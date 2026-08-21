@@ -27,6 +27,8 @@ test("the signed AppX declares native notification access and opt-in startup", (
 test("the Windows helper uses UserNotificationListener and a durable local queue without inventory polling", () => {
   assert.match(project, /net8\.0-windows10\.0\.19041\.0/);
   assert.match(project, /<PublishSingleFile>true<\/PublishSingleFile>/);
+  assert.match(helper, /using System\.IO;/);
+  assert.match(helper, /using System\.Net\.Http;/);
   assert.match(helper, /UserNotificationListener\.Current/);
   assert.match(helper, /StartupTask\.GetAsync\("CartCollectSignalBridgeStartup"\)/);
   assert.match(helper, /RequestEnableAsync\(\)/);
