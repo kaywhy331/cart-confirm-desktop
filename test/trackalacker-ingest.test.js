@@ -8,7 +8,8 @@ const {
   estimateHistoryPrice,
   parseFollowedPage,
   parseHistoryPage,
-  parseProductPage
+  parseProductPage,
+  parseProductPayload
 } = require("../extension/trackalacker-ingest");
 
 function doc(html, url = "https://www.trackalacker.com/products/followed") {
@@ -35,6 +36,47 @@ test("followed pages expose stable product identity, source URL, image, price, a
     imageUrl: "https://static.trackalacker.com/cdn-cgi/image/width=300/item.jpg",
     displayPrice: 49.99
   }]);
+});
+
+test("followed pages read products and pagination from TrackaLacker React hydration data", () => {
+  const props = {
+    searchResultsProps: {
+      results: [{
+        product_id: 67890,
+        name: "Scarlet & Violet Booster Bundle",
+        show_path: "/products/showcase/scarlet-violet-booster-bundle",
+        min_price: "26.94",
+        max_price: "26.94",
+        display_price: "$26.94",
+        photo_items: [{ pad_300_300: "https://static.trackalacker.com/images/booster.jpg" }]
+      }],
+      pagination: { page: 1, total_pages: 9, total: 413 }
+    }
+  };
+  const parsed = parseFollowedPage(doc(`
+    <div data-react-class="products/YourProductsApp" data-react-props='${JSON.stringify(props)}'></div>
+  `));
+  assert.equal(parsed.requiresLogin, false);
+  assert.equal(parsed.requiresChallenge, false);
+  assert.equal(parsed.dataUnreadable, false);
+  assert.equal(parsed.totalPages, 9);
+  assert.deepEqual(parsed.items, [{
+    sourceProductId: "67890",
+    sourceUrl: "https://www.trackalacker.com/products/showcase/scarlet-violet-booster-bundle",
+    title: "Scarlet & Violet Booster Bundle",
+    imageUrl: "https://static.trackalacker.com/images/booster.jpg",
+    displayPrice: 26.94
+  }]);
+});
+
+test("followed pages distinguish a browser security challenge from a signed-out session", () => {
+  const parsed = parseFollowedPage(doc(`
+    <title>Just a moment...</title>
+    <main>Performing security verification before continuing.</main>
+  `));
+  assert.equal(parsed.requiresChallenge, true);
+  assert.equal(parsed.requiresLogin, false);
+  assert.deepEqual(parsed.items, []);
 });
 
 test("product pages itemize supported and future stores with listing history links", () => {
@@ -65,6 +107,42 @@ test("product pages itemize supported and future stores with listing history lin
   assert.equal(parsed.listings[0].historyUrl, "https://www.trackalacker.com/products/showcase/pokemon-box/listings/301/pokemon-box");
 });
 
+test("product JSON itemizes exact retailer URLs and future stores", () => {
+  const parsed = parseProductPayload({
+    product: {
+      name: "Scarlet & Violet Booster Bundle",
+      slug: "scarlet-violet-booster-bundle",
+      listings: [{
+        id: 401,
+        provider: { display_name: "Target" },
+        url: "https://howl.link/target-route",
+        preferred_product_url: "https://www.target.com/p/item/-/A-91234567",
+        show_path: "/products/showcase/scarlet-violet-booster-bundle/listings/401/item",
+        current_status: { price: "26.94", short_stock_status_text: "In Stock" }
+      }, {
+        id: 402,
+        provider: { display_name: "Best Buy" },
+        url: "https://www.bestbuy.com/site/item/12345.p",
+        show_path: "/products/showcase/scarlet-violet-booster-bundle/listings/402/item",
+        current_status: { price: 29.99, short_stock_status_text: "Out of Stock" }
+      }]
+    }
+  }, {
+    sourceProductId: "67890",
+    sourceUrl: "https://www.trackalacker.com/products/showcase/scarlet-violet-booster-bundle",
+    title: "Fallback"
+  });
+  assert.equal(parsed.title, "Scarlet & Violet Booster Bundle");
+  assert.equal(parsed.listings.length, 2);
+  assert.deepEqual(parsed.listings.map((listing) => [listing.listingId, listing.retailer, listing.store]), [
+    ["401", "target", "Target"],
+    ["402", "", "Best Buy"]
+  ]);
+  assert.equal(parsed.listings[0].outboundUrl, "https://www.target.com/p/item/-/A-91234567");
+  assert.equal(parsed.listings[0].currentPrice, 26.94);
+  assert.equal(parsed.listings[0].historyUrl, "https://www.trackalacker.com/products/showcase/scarlet-violet-booster-bundle/listings/401/item");
+});
+
 test("history estimates reject surge and above-MSRP observations and use the stable normal price", () => {
   const entries = parseHistoryPage(doc(`
     <table><tbody>
@@ -79,6 +157,35 @@ test("history estimates reject surge and above-MSRP observations and use the sta
   assert.equal(estimate.price, 49.99);
   assert.equal(estimate.confidence, "history");
   assert.equal(estimate.samples, 3);
+  assert.equal(estimate.observedAt, "2026-07-10T15:36:23.000Z");
+});
+
+test("history estimates read TrackaLacker React hydration data", () => {
+  const props = {
+    statuses: [{
+      price: "69.99",
+      price_changed_at: "2026-08-18T09:04:02Z",
+      short_stock_status_text: "Preorder",
+      msrp_state: { code_str: "above_msrp", full_text: "Above MSRP" }
+    }, {
+      price: "49.99",
+      price_changed_at: "2026-07-10T15:36:23Z",
+      short_stock_status_text: "Out of Stock",
+      msrp_state: { code_str: "equal_to", full_text: "At MSRP" }
+    }, {
+      price: 49.99,
+      price_changed_at: "2026-07-09T15:36:23Z",
+      short_stock_status_text: "In Stock",
+      msrp_state: { code_str: "equal_to", full_text: "At MSRP" }
+    }]
+  };
+  const entries = parseHistoryPage(doc(`
+    <div data-react-class="products/listings/RecentChanges" data-react-props='${JSON.stringify(props)}'></div>
+  `));
+  const estimate = estimateHistoryPrice(entries);
+  assert.equal(entries.length, 3);
+  assert.equal(estimate.price, 49.99);
+  assert.equal(estimate.samples, 2);
   assert.equal(estimate.observedAt, "2026-07-10T15:36:23.000Z");
 });
 

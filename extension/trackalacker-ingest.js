@@ -23,14 +23,19 @@
     return String(value || "").replace(/\s+/g, " ").trim().slice(0, maximum);
   }
 
+  function numericPrice(value) {
+    if (value === null || value === undefined || value === "") return null;
+    const price = Number(value);
+    return Number.isFinite(price) && price > 0 && price <= 1_000_000
+      ? Math.round(price * 100) / 100
+      : null;
+  }
+
   function parseMoney(value) {
     const match = String(value || "").replace(/\u00a0/g, " ")
       .match(/\$\s*([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]{1,2})?|[0-9]+(?:\.[0-9]{1,2})?)/);
     if (!match) return null;
-    const price = Number(match[1].replaceAll(",", ""));
-    return Number.isFinite(price) && price > 0 && price <= 1_000_000
-      ? Math.round(price * 100) / 100
-      : null;
+    return numericPrice(match[1].replaceAll(",", ""));
   }
 
   function trackalackerUrl(value, base = FOLLOWED_URL) {
@@ -84,9 +89,55 @@
     return fallback;
   }
 
+  function reactPropsFor(doc, componentName) {
+    const root = [...doc.querySelectorAll("[data-react-class][data-react-props]")]
+      .find((candidate) => candidate.getAttribute("data-react-class") === componentName);
+    if (!root) return { found: false, value: null };
+    const raw = root.getAttribute("data-react-props") || "";
+    if (!raw || raw.length > 5_000_000) return { found: true, value: null };
+    try {
+      const value = JSON.parse(raw);
+      return { found: true, value: value && typeof value === "object" ? value : null };
+    } catch {
+      return { found: true, value: null };
+    }
+  }
+
   function parseFollowedPage(doc, pageUrl = FOLLOWED_URL) {
     const items = [];
     const seen = new Set();
+    function addItem(value) {
+      const sourceProductId = cleanText(value?.sourceProductId, 30);
+      const sourceUrl = trackalackerUrl(value?.sourceUrl, pageUrl);
+      const title = cleanText(value?.title, 80);
+      if (!/^\d{1,20}$/.test(sourceProductId) || !sourceUrl || !title || seen.has(sourceProductId)) return;
+      seen.add(sourceProductId);
+      items.push({
+        sourceProductId,
+        sourceUrl,
+        title,
+        imageUrl: trackalackerImageUrl(value?.imageUrl, pageUrl),
+        displayPrice: numericPrice(value?.displayPrice)
+      });
+    }
+
+    const hydration = reactPropsFor(doc, "products/YourProductsApp");
+    const searchResults = hydration.value?.searchResultsProps;
+    for (const result of (Array.isArray(searchResults?.results) ? searchResults.results : []).slice(0, MAX_PRODUCTS)) {
+      const photos = Array.isArray(result?.photo_items) ? result.photo_items : [];
+      const minimum = numericPrice(result?.min_price);
+      const maximum = numericPrice(result?.max_price);
+      addItem({
+        sourceProductId: result?.product_id ?? result?.id,
+        sourceUrl: result?.show_path || (result?.slug ? `/products/showcase/${result.slug}` : ""),
+        title: result?.name,
+        imageUrl: photos[0]?.pad_300_300 || photos[0]?.pad_600_600 || result?.canonical_image_url,
+        displayPrice: numericPrice(result?.default_price)
+          ?? (minimum !== null && minimum === maximum ? minimum : null)
+          ?? parseMoney(result?.display_price)
+      });
+    }
+
     for (const card of doc.querySelectorAll("div.mb-4.border-bottom.pb-4")) {
       const button = [...card.querySelectorAll("button")].find((candidate) => (
         /testing-track-all-false-product-\d+-button/.test(String(candidate.className || ""))
@@ -96,10 +147,8 @@
       const anchor = sourceProductLink(card, pageUrl);
       const sourceUrl = trackalackerUrl(anchor?.getAttribute("href"), pageUrl);
       const title = cleanText(anchor?.textContent || anchor?.getAttribute("title"), 80);
-      if (!sourceProductId || !sourceUrl || !title || seen.has(sourceProductId)) continue;
-      seen.add(sourceProductId);
       const image = card.querySelector("img[src], img[data-src]");
-      items.push({
+      addItem({
         sourceProductId,
         sourceUrl,
         title,
@@ -108,16 +157,32 @@
       });
     }
 
-    let totalPages = 1;
+    const hydratedPages = Number(searchResults?.pagination?.total_pages);
+    let totalPages = Number.isInteger(hydratedPages) && hydratedPages > 0
+      ? Math.min(MAX_PAGES, hydratedPages)
+      : 1;
     for (const anchor of doc.querySelectorAll("a[href*='/products/followed']")) {
       const href = trackalackerUrl(anchor.getAttribute("href"), pageUrl);
       if (!href) continue;
       const page = Number(new URL(href).searchParams.get("page") || 1);
       if (Number.isInteger(page) && page > totalPages) totalPages = Math.min(MAX_PAGES, page);
     }
+    const pageText = cleanText(doc.body?.textContent, 2_000);
+    const requiresChallenge = /\b(?:just a moment|performing security verification|verify you are human|checking your browser)\b/i.test(
+      `${doc.title || ""} ${pageText}`
+    );
     const requiresLogin = Boolean(doc.querySelector("input[type='password']"))
       || /\b(?:log in|sign in)\b/i.test(cleanText(doc.querySelector("main form")?.textContent, 400));
-    return { items, totalPages, requiresLogin };
+    const hydrationUnreadable = hydration.found && (
+      !hydration.value || !Array.isArray(searchResults?.results)
+    );
+    return {
+      items,
+      totalPages,
+      requiresLogin,
+      requiresChallenge,
+      dataUnreadable: hydrationUnreadable
+    };
   }
 
   function retailerForStore(value) {
@@ -177,6 +242,61 @@
     };
   }
 
+  function retailerForUrl(value) {
+    try {
+      const host = new URL(String(value || "")).hostname.toLowerCase();
+      if (host === "target.com" || host.endsWith(".target.com")) return "target";
+      if (host === "walmart.com" || host.endsWith(".walmart.com")) return "walmart";
+      if (host === "amazon.com" || host.endsWith(".amazon.com")) return "amazon";
+      return "";
+    } catch {
+      return "";
+    }
+  }
+
+  function parseProductPayload(payload, summary = {}) {
+    const source = payload?.product && typeof payload.product === "object" ? payload.product : {};
+    const listings = [];
+    const seen = new Set();
+    for (const raw of (Array.isArray(source.listings) ? source.listings : []).slice(0, MAX_LISTINGS)) {
+      const listingId = cleanText(raw?.id, 30);
+      if (!/^\d{1,20}$/.test(listingId) || seen.has(listingId)) continue;
+      const candidates = [raw?.url, raw?.preferred_product_url, raw?.purchase_url, raw?.affiliate_url]
+        .map((value) => cleanText(value, 2_048))
+        .filter(Boolean);
+      const provider = raw?.provider && typeof raw.provider === "object" ? raw.provider : {};
+      const providerName = cleanText(provider.display_name || provider.short_display_name, 50);
+      const retailer = retailerForStore(providerName)
+        || candidates.map(retailerForUrl).find(Boolean)
+        || "";
+      const direct = candidates.find((candidate) => retailerForUrl(candidate) === retailer);
+      const outboundUrl = direct || candidates[0] || "";
+      const sourceUrl = String(summary.sourceUrl || "").replace(/\/$/, "");
+      const historyUrl = trackalackerUrl(
+        raw?.show_path || `${sourceUrl}/listings/${listingId}/${source.slug || "item"}`,
+        summary.sourceUrl
+      );
+      if (!historyUrl) continue;
+      seen.add(listingId);
+      const current = raw?.current_status && typeof raw.current_status === "object" ? raw.current_status : {};
+      const store = providerName || (retailer ? STORE_NAMES[retailer] : "Other store");
+      listings.push({
+        listingId,
+        store: retailer ? STORE_NAMES[retailer] : store,
+        retailer,
+        outboundUrl,
+        historyUrl,
+        currentPrice: numericPrice(current.price ?? raw?.price),
+        status: cleanText(current.short_stock_status_text || current.msrp_state?.short_text, 60)
+      });
+    }
+    return {
+      ...summary,
+      title: cleanText(source.name, 80) || summary.title,
+      listings
+    };
+  }
+
   function parseUtcTimestamp(value) {
     const text = cleanText(value, 80);
     if (!text) return "";
@@ -185,6 +305,19 @@
   }
 
   function parseHistoryPage(doc) {
+    const hydration = reactPropsFor(doc, "products/listings/RecentChanges");
+    const hydratedStatuses = hydration.value?.statuses;
+    if (Array.isArray(hydratedStatuses)) {
+      return hydratedStatuses.slice(0, 50).map((entry) => {
+        const msrp = entry?.msrp_state && typeof entry.msrp_state === "object" ? entry.msrp_state : {};
+        return {
+          observedAt: parseUtcTimestamp(entry?.price_changed_at || entry?.created_at),
+          price: numericPrice(entry?.price),
+          status: cleanText(entry?.short_stock_status_text, 60),
+          assessment: cleanText([msrp.code_str, msrp.full_text, msrp.tooltip].filter(Boolean).join(" "), 500)
+        };
+      });
+    }
     const entries = [];
     for (const row of [...doc.querySelectorAll("table tbody tr")].slice(0, 50)) {
       const cells = [...row.querySelectorAll("th,td")];
@@ -204,9 +337,9 @@
 
   function trustworthyHistoryEntry(entry) {
     if (!Number.isFinite(entry?.price) || entry.price <= 0) return false;
-    const signal = `${entry.status || ""} ${entry.assessment || ""}`.toLowerCase();
-    if (/price surge|above msrp|higher than (?:the )?(?:original )?msrp|scalper/.test(signal)) return false;
-    if (/basically the same|same as (?:the )?(?:original )?msrp|below (?:the )?(?:original )?msrp|lower than/.test(signal)) return true;
+    const signal = `${entry.status || ""} ${entry.assessment || ""}`.toLowerCase().replaceAll("_", " ");
+    if (/price surge|(?:slightly )?above msrp|higher than (?:the )?(?:original )?msrp|scalper/.test(signal)) return false;
+    if (/basically the same|same as (?:the )?(?:original )?msrp|equal to|at msrp|below (?:the )?(?:original )?msrp|under msrp|lower than/.test(signal)) return true;
     return !entry.assessment && /\b(?:in stock|out of stock|available|pre-?order|sale)\b/.test(signal);
   }
 
@@ -307,6 +440,32 @@
     }
   }
 
+  async function fetchJson(url, attempt = 0) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+    try {
+      const response = await fetch(url, {
+        credentials: "include",
+        redirect: "follow",
+        cache: "no-store",
+        headers: { Accept: "application/json" },
+        signal: controller.signal
+      });
+      if (!response.ok) throw new Error(`TrackaLacker returned HTTP ${response.status}.`);
+      const data = await response.json();
+      if (!data || typeof data !== "object" || Array.isArray(data)) {
+        throw new Error("TrackaLacker returned unreadable product data.");
+      }
+      return { data, url: response.url };
+    } catch (error) {
+      if (attempt >= FETCH_RETRIES) throw error;
+      await delay(500 * (attempt + 1));
+      return fetchJson(url, attempt + 1);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   async function postCapture(importId, payload) {
     const result = await runtimeMessage({
       type: "CART_CONFIRM_TRACKALACKER_CAPTURE",
@@ -334,8 +493,14 @@
       const url = page === 1 ? FOLLOWED_URL : `${FOLLOWED_URL}?page=${page}`;
       const fetched = await fetchDocument(url);
       const parsed = parseFollowedPage(fetched.doc, fetched.url);
+      if (parsed.requiresChallenge) {
+        throw new Error("Complete TrackaLacker's browser security verification, then start the scan again.");
+      }
       if (parsed.requiresLogin || /\/(?:login|sign[_-]?in)(?:\/|$)/i.test(new URL(fetched.url).pathname)) {
         throw new Error("Sign in to TrackaLacker in this browser, then start the scan again.");
+      }
+      if (parsed.dataUnreadable) {
+        throw new Error("TrackaLacker's followed-product data could not be read. Refresh the page, then start the scan again.");
       }
       pages = Math.min(MAX_PAGES, Math.max(pages, parsed.totalPages));
       for (const item of parsed.items) {
@@ -352,7 +517,9 @@
       });
       await delay(175);
     }
-    if (!items.length) throw new Error("No followed products were found. Confirm that this browser is signed in to TrackaLacker.");
+    if (!items.length) {
+      throw new Error("No followed products were available to import. Refresh the followed-products page and confirm it shows your products, then start the scan again.");
+    }
     return { items, pages };
   }
 
@@ -405,8 +572,9 @@
           message: `Reading store links and price history for ${summary.title}…`
         });
         try {
-          const detail = await fetchDocument(summary.sourceUrl);
-          const product = parseProductPage(detail.doc, summary);
+          const detailUrl = `${summary.sourceUrl.replace(/\/$/, "")}.json`;
+          const detail = await fetchJson(detailUrl);
+          const product = parseProductPayload(detail.data, summary);
           const enriched = [];
           for (const listing of product.listings) {
             if (!listing.retailer) continue;
@@ -516,6 +684,7 @@
     parseHistoryPage,
     parseMoney,
     parseProductPage,
+    parseProductPayload,
     retailerForStore,
     trustworthyHistoryEntry
   });

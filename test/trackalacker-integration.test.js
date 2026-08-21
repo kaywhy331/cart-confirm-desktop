@@ -18,6 +18,10 @@ test("TrackaLacker ingestion crosses only the authenticated extension-to-loopbac
   assert.equal(manifest.host_permissions.includes("https://howl.link/*"), true);
   assert.deepEqual(manifest.content_scripts[1].js, ["trackalacker-ingest.js"]);
   assert.match(content, /credentials: "include"/);
+  assert.match(content, /products\/YourProductsApp/);
+  assert.match(content, /products\/listings\/RecentChanges/);
+  assert.match(content, /fetchJson/);
+  assert.match(content, /const detailUrl = `[^`\n]*\.json`;/);
   assert.match(content, /CART_CONFIRM_CLAIM_TRACKALACKER_IMPORT/);
   assert.match(content, /CART_CONFIRM_TRACKALACKER_CAPTURE/);
   assert.match(background, /senderIsTrackalacker\(sender\)[\s\S]*?postTrackalackerCapture/);
