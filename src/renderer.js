@@ -178,7 +178,6 @@ const elements = {
   signalBridgeMetrics: document.getElementById("signalBridgeMetrics"),
   signalBridgeEnabled: document.getElementById("signalBridgeEnabled"),
   signalBridgeDeliveryPaused: document.getElementById("signalBridgeDeliveryPaused"),
-  signalBridgeStartAtLogin: document.getElementById("signalBridgeStartAtLogin"),
   signalBridgeDedupeSeconds: document.getElementById("signalBridgeDedupeSeconds"),
   signalBridgePermissionButton: document.getElementById("signalBridgePermissionButton"),
   signalBridgeReplayButton: document.getElementById("signalBridgeReplayButton"),
@@ -4256,68 +4255,44 @@ function buildSignalAuditRow(record) {
 }
 
 function renderSignalBridge(bridge = {}, settings = {}) {
-  const supported = Boolean(bridge.supported);
-  const packageReady = supported && bridge.helperInstalled !== false;
-  const installSupported = Boolean(bridge.installSupported);
-  const install = bridge.install && typeof bridge.install === "object" ? bridge.install : {};
-  const installStatus = String(install.status || "idle");
-  const installBusy = Boolean(bridge.installInFlight) || [
-    "checking",
-    "checksum",
-    "downloading",
-    "verifying",
-    "opening"
-  ].includes(installStatus);
-  const recoveryLabel = supported ? "Listener package repair required" : "Signed Windows package required";
-  const installLabel = installStatus === "checking"
-    ? "Checking signed package…"
-    : installStatus === "checksum"
-      ? "Checking release…"
-      : installStatus === "downloading"
-        ? `Downloading AppX ${Number(install.percent || 0)}%`
-        : installStatus === "verifying"
-          ? "Verifying AppX…"
-          : installStatus === "opening"
-            ? "Opening App Installer…"
-            : installStatus === "installer-opened"
-              ? "App Installer opened"
-              : installStatus === "error"
-                ? "AppX install failed"
-                : recoveryLabel;
-  const ready = Boolean(packageReady && bridge.listenerReady && bridge.enabled && !bridge.deliveryPaused);
+  const bridgeState = String(bridge.helperState || "disabled");
+  const connecting = ["subscribing", "registering"].includes(bridgeState);
+  const ready = Boolean(bridge.listenerReady && bridge.enabled && !bridge.deliveryPaused);
   const attention = Boolean(bridge.lastError || bridge.enabled && !bridge.listenerReady);
   elements.signalBridgeState.className = `step-state ${ready ? "ready" : attention ? "attention" : ""}`.trim();
-  elements.signalBridgeState.textContent = !packageReady
-    ? installLabel
-    : !bridge.enabled
-      ? "Disabled"
-      : bridge.deliveryPaused
-        ? "Delivery paused"
-        : ready ? "Ready" : bridge.helperState || "Starting…";
+  elements.signalBridgeState.textContent = !bridge.enabled
+    ? "Disabled"
+    : bridge.deliveryPaused
+      ? "Delivery paused"
+      : ready
+        ? "Ready"
+        : bridgeState === "awaiting-page"
+          ? "Needs TrackaLacker tab"
+          : bridgeState === "subscribing"
+            ? "Creating subscription…"
+            : bridgeState === "registering"
+              ? "Registering device…"
+              : bridgeState === "error"
+                ? "Needs attention"
+                : "Waiting for extension";
   elements.signalBridgeHint.textContent = bridge.lastError
-    || (!packageReady
-      ? install.message
-        || (installStatus === "installer-opened"
-          ? "Finish in Windows App Installer, close the currently running copy, then launch CartCollect from the Start menu."
-          : installStatus === "release-page-opened"
-            ? "The official releases page is open. A compatible stable release must include Cart-Confirm-Signals-<version>-x64.appx."
-            : installStatus === "unavailable"
-              ? "No compatible stable signed AppX is published yet. Browser and Discord signals remain available in this copy."
-              : installSupported
-                ? supported
-                  ? "The signed package identity is active, but its listener helper is missing. Repair from the verified stable AppX before granting notification access."
-                  : "This copy has no Windows package identity. Install the verified signed AppX to enable native TrackaLacker Chrome notification capture."
-                : "Native notification capture is available only in the signed Windows AppX package.")
-      : bridge.startAtLogin && ["disabledbyuser", "disabledbypolicy"].includes(bridge.startupState)
-        ? "Windows has blocked login startup. Re-enable CartCollect in Windows Settings > Apps > Startup, or leave Start at login off."
-      : bridge.notificationPermission !== "allowed"
-        ? "Enable the bridge, then grant Windows notification access. Capture is event-driven and does not poll TrackaLacker or retailers."
-        : "TrackaLacker Chrome alerts are resolved against the last completed pre-sync snapshot and evaluated by the existing mission engine.");
+    || (!bridge.enabled
+      ? "Enable the bridge, then connect from a normal signed-in TrackaLacker Chrome tab."
+      : !bridge.extensionConnected
+        ? "CartCollect is waiting for the bundled Chrome extension. Reload it from chrome://extensions if it is not running."
+        : bridgeState === "awaiting-page"
+          ? "Choose Connect TrackaLacker push. Keep the opened TrackaLacker page signed in while Chrome enrolls this extension device."
+          : connecting
+            ? "Chrome is creating and enrolling the extension's Web Push subscription using the signed-in TrackaLacker page."
+            : ready
+              ? "TrackaLacker Web Push events are sent into CartSignals and evaluated against active missions without server polling."
+              : "Open a signed-in TrackaLacker tab and retry the push connection.");
   const latency = bridge.latency || {};
   const metrics = [
     `${Number(bridge.mappingCount || 0).toLocaleString()} mappings`,
     `${Number(bridge.pendingSignals || 0).toLocaleString()} pending`,
-    bridge.startAtLogin ? `login ${bridge.startupState || "unknown"}` : "login off",
+    bridge.extensionConnected ? "extension connected" : "extension waiting",
+    bridge.subscriptionPresent ? "push subscribed" : "push not subscribed",
     latency.medianMs === null || latency.medianMs === undefined ? "latency —" : `median ${latency.medianMs} ms`,
     latency.p95Ms === null || latency.p95Ms === undefined ? "p95 —" : `p95 ${latency.p95Ms} ms`,
     bridge.lastNotificationAt ? `last alert ${relativeTime(bridge.lastNotificationAt)}` : "no alerts yet"
@@ -4333,27 +4308,15 @@ function renderSignalBridge(bridge = {}, settings = {}) {
   if (document.activeElement !== elements.signalBridgeDeliveryPaused) {
     elements.signalBridgeDeliveryPaused.checked = settings.trackalackerSignalDeliveryPaused === true;
   }
-  if (document.activeElement !== elements.signalBridgeStartAtLogin) {
-    elements.signalBridgeStartAtLogin.checked = settings.trackalackerSignalStartAtLogin === true;
-  }
   if (document.activeElement !== elements.signalBridgeDedupeSeconds) {
     elements.signalBridgeDedupeSeconds.value = settings.trackalackerSignalDedupeWindowSeconds || 300;
   }
-  elements.signalBridgeEnabled.disabled = !packageReady;
-  elements.signalBridgeDeliveryPaused.disabled = !packageReady || !bridge.enabled;
-  elements.signalBridgeStartAtLogin.disabled = !packageReady || !bridge.enabled;
-  elements.signalBridgePermissionButton.disabled = packageReady
-    ? !bridge.enabled
-    : !installSupported || installBusy;
-  elements.signalBridgePermissionButton.textContent = packageReady
-    ? "Grant notification access"
-    : installBusy
-      ? installLabel
-      : installStatus === "installer-opened"
-        ? "Open AppX installer again"
-        : installSupported
-          ? supported ? "Repair signed listener package" : "Install signed listener package"
-          : recoveryLabel;
+  elements.signalBridgeEnabled.disabled = false;
+  elements.signalBridgeDeliveryPaused.disabled = !bridge.enabled;
+  elements.signalBridgePermissionButton.disabled = !bridge.enabled || connecting;
+  elements.signalBridgePermissionButton.textContent = connecting
+    ? "Connecting TrackaLacker push…"
+    : bridge.listenerReady ? "Recheck push connection" : "Connect TrackaLacker push";
   elements.signalBridgeReplayButton.disabled = false;
   const recent = Array.isArray(bridge.recentSignals) ? bridge.recentSignals.slice(0, 20) : [];
   if (!recent.length) {
@@ -5117,8 +5080,8 @@ async function saveSignalBridgeSettings(changes) {
 elements.signalBridgeEnabled.addEventListener("change", () => void runAction(
   () => saveSignalBridgeSettings({ trackalackerSignalBridgeEnabled: elements.signalBridgeEnabled.checked }),
   () => elements.signalBridgeEnabled.checked
-    ? "TrackaLacker notification capture enabled. Grant Windows access if the listener is not ready."
-    : "TrackaLacker notification capture disabled. Existing audit history was retained."
+    ? "TrackaLacker Web Push enabled. Connect it from a signed-in TrackaLacker Chrome tab."
+    : "TrackaLacker Web Push disabled. Existing audit history was retained."
 ));
 
 elements.signalBridgeDeliveryPaused.addEventListener("change", () => void runAction(
@@ -5126,13 +5089,6 @@ elements.signalBridgeDeliveryPaused.addEventListener("change", () => void runAct
   () => elements.signalBridgeDeliveryPaused.checked
     ? "TrackaLacker delivery paused. New alerts remain in the durable local queue."
     : "TrackaLacker delivery resumed; queued alerts will be acknowledged without duplicate mission actions."
-));
-
-elements.signalBridgeStartAtLogin.addEventListener("change", () => void runAction(
-  () => saveSignalBridgeSettings({ trackalackerSignalStartAtLogin: elements.signalBridgeStartAtLogin.checked }),
-  () => elements.signalBridgeStartAtLogin.checked
-    ? "The signal bridge will start quietly at Windows login. Signals purchase mode resumes only if it was explicitly left armed."
-    : "Windows login startup disabled."
 ));
 
 elements.signalBridgeDedupeSeconds.addEventListener("change", () => void runAction(async () => {
@@ -5147,17 +5103,9 @@ elements.signalBridgeDedupeSeconds.addEventListener("change", () => void runActi
 
 elements.signalBridgePermissionButton.addEventListener("click", () => void runAction(
   () => window.cartAssist.requestSignalBridgePermission(),
-  (result) => result?.status === "installer-opened"
-    ? "Windows App Installer opened. Finish installation, close the currently running copy, and launch CartCollect from the Start menu."
-    : result?.status === "release-page-opened"
-      ? "Official releases opened. Install a compatible Cart-Confirm-Signals AppX when one is published."
-      : result?.status === "unavailable"
-        ? "No compatible stable signed AppX is published yet."
-        : result?.status === "cancelled"
-          ? "Signed listener installation cancelled."
-          : result?.status === "busy"
-            ? "The signed listener package is already being prepared."
-            : "Windows notification access requested. Approve the operating-system prompt, then return here to confirm Ready."
+  (result) => result?.via === "default-browser"
+    ? "TrackaLacker opened in the default browser. Complete enrollment in the Chrome profile that has the CartCollect extension."
+    : "TrackaLacker opened in Chrome. Keep the page signed in while the extension completes push enrollment."
 ));
 
 elements.signalBridgeReplayButton.addEventListener("click", () => void runAction(async () => {

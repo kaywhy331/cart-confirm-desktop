@@ -110,6 +110,30 @@ test("the bridge rejects unrelated applications, domains, transports, and malfor
   assert.equal(malformed.actionable, false);
 });
 
+test("extension Web Push is accepted only when the authenticated route explicitly allows it", () => {
+  const pushEnvelope = envelope({
+    signalId: "push:trackalacker:12345678",
+    source: {
+      ...envelope().source,
+      transport: "chrome_extension_web_push",
+      notificationId: "push:trackalacker:12345678",
+      applicationName: "CartCollect Chrome extension",
+      applicationId: "kmpoonjaidgnldeobaaopfhfhlalclhd"
+    }
+  });
+  assert.throws(() => validateTrackalackerSignalEnvelope(pushEnvelope), /transport/);
+  const accepted = validateTrackalackerSignalEnvelope(pushEnvelope, {
+    allowedTransports: ["chrome_extension_web_push"]
+  });
+  assert.equal(accepted.source.transport, "chrome_extension_web_push");
+  assert.throws(() => validateTrackalackerSignalEnvelope({
+    ...pushEnvelope,
+    source: { ...pushEnvelope.source, domain: "example.com" }
+  }, {
+    allowedTransports: ["chrome_extension_web_push"]
+  }), /trackalacker\.com/);
+});
+
 test("real TrackaLacker test notifications are parsed but never actionable", () => {
   const parsed = parseTrackalackerNotification(envelope({
     notification: {

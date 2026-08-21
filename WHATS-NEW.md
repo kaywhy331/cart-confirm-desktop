@@ -6,6 +6,12 @@ update dialog shows exactly these bullets. Keep every entry short, plain, and
 about what the user will notice — one bullet per change, no internals.
 Publishing fails if the version being released has no section here.
 
+## 3.8.2
+- TrackaLacker signals now arrive through the bundled Chrome extension's own Web Push subscription, using your existing signed-in TrackaLacker tab for one-time device enrollment and no recurring TrackaLacker polling
+- The setup screen now connects Chrome push directly; the AppX listener, native notification permission, and separate listener package are no longer required
+- Push registration and delivery diagnostics expose only safe status, while subscription keys, cookies, CSRF values, and session data remain inside the live browser request
+- Check for updates now installs the desktop app and matching bundled Chrome extension files together, then the companion reloads the updated folder automatically; Chrome may ask once to approve the new notification permission
+
 ## 3.8.1
 - Unsigned Windows builds now offer an Install signed listener package action that finds a same-version or newer stable CartCollect AppX, verifies its release checksum, and opens Windows App Installer; native alert capture stays locked until the signed copy launches
 

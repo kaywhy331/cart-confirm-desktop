@@ -171,24 +171,21 @@ For each of Target, Walmart, and Amazon you plan to automate:
       the plan session and confirm Signals—not Autopilot—resumes as one new run.
       Press **Stop everything** during a second edit and confirm finishing cannot
       restore either purchase mode.
-- [ ] Install the signed AppX build on Windows, enable the TrackaLacker alert
-      bridge, and grant the operating-system notification-listener permission.
-      Confirm the dashboard and tray show **Ready**, the last completed pre-sync
-      mapping count, zero pending signals, and no secret/token value. Revoke the
-      permission in Windows Settings and confirm both surfaces report the warning
-      without claiming the listener is ready. From an unsigned installer or
-      portable build, confirm native capture is disabled and **Install signed
-      listener package** is available. Reject the prompt and confirm nothing
-      opens. Approve it and confirm CartCollect accepts only a same-version or
-      newer stable `v*` release, verifies the AppX against `SHA256SUMS.txt`, and
-      opens Windows App Installer without invoking PowerShell. Finish the install,
-      close the unsigned copy, launch CartCollect from Start, and confirm the
-      control changes to **Grant notification access**. With no compatible signed
-      AppX published, confirm CartCollect offers only the official releases page.
-- [ ] Send representative TrackaLacker Chrome fixtures for Walmart, Amazon, and
+- [ ] Load the bundled extension in Chrome 121 or newer, sign in normally to
+      TrackaLacker, enable the push bridge, and choose **Connect TrackaLacker
+      push**. Confirm the opened TrackaLacker tab makes one same-origin
+      `POST /api/v1/users/devices` with the exact nested `device` payload and a
+      real Chrome PushSubscription, then the dashboard and tray show **Ready**.
+      Do not copy its endpoint, keys, cookies, or CSRF value into notes or test
+      artifacts. Reload and recheck the connection; confirm the stored endpoint
+      fingerprint prevents another registration POST. Confirm an appropriate
+      already-enrolled response is also Ready, while signed-out/HTTP failures are
+      reported without a login prompt or Cloudflare bypass. Trigger a normal
+      TrackaLacker browser notification and confirm it still appears unchanged.
+- [ ] Send representative TrackaLacker Web Push fixtures for Walmart, Amazon, and
       Target in-stock/restock/preorder alerts. Confirm exact title + retailer
       resolves the intended pre-synced listing in under 50 ms, while an unrelated
-      Chrome notification, a lookalike domain, unknown retailer, malformed alert,
+      push payload, a lookalike domain, unknown retailer, malformed alert,
       Booster Box/Bundle variant, and an ambiguous duplicate title are retained or
       ignored as appropriate and never activate a mission. Confirm a real
       TrackaLacker test notification and **Run dry-run replay** cannot open Chrome.
@@ -201,14 +198,13 @@ For each of Target, Walmart, and Amazon you plan to automate:
       a five-minute bucket boundary; confirm one receipt gains an occurrence and no
       second opening occurs. Change only price and confirm it becomes a new event.
 - [ ] Pause TrackaLacker delivery, generate a harmless alert, close/restart the
-      dashboard, then resume delivery. Confirm capture continues, the pending file
-      survives, bounded retry wakes CartCollect when needed, and the signal is
-      acknowledged exactly once. Leave Signals armed with **Start bridge at Windows
-      login** enabled and sign out/in: confirm the app starts hidden with a fresh
-      Signals run. Repeat with Signals off and confirm login starts capture-only.
-      Close the window and confirm tray capture continues; choose tray **Exit** and
-      confirm the helper stops. Observe network traffic and confirm there is no
-      recurring TrackaLacker, Discord, Walmart, Amazon, or Target polling.
+      dashboard, then resume delivery. Confirm capture continues, the bounded
+      Chrome storage queue survives, and the signal is acknowledged exactly once.
+      Close the desktop app, deliver another harmless push, reopen CartCollect,
+      and confirm the extension drains it through the authenticated localhost
+      route. Observe network traffic and confirm there is no recurring
+      TrackaLacker registration/product poll or new Discord, Walmart, Amazon, or
+      Target polling.
 - [ ] Give two harmless missions future **Open at** times, press **Stop everything**,
       and restart the app. Confirm both times remain present while no schedule can
       fire in the stopped state. Use **Edit plan → Clear selected times** and

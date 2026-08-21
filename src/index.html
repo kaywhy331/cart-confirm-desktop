@@ -564,23 +564,22 @@
             <section class="signal-bridge-card" aria-labelledby="signalBridgeTitle">
               <div class="signal-bridge-heading">
                 <div>
-                  <strong id="signalBridgeTitle">TrackaLacker Windows alert bridge</strong>
-                  <p id="signalBridgeHint">Install the signed Windows package to listen for exact TrackaLacker Chrome notifications without polling.</p>
+                  <strong id="signalBridgeTitle">TrackaLacker Chrome push bridge</strong>
+                  <p id="signalBridgeHint">Connect the bundled Chrome extension to TrackaLacker's existing Web Push delivery without polling.</p>
                 </div>
                 <span class="step-state" id="signalBridgeState">Disabled</span>
               </div>
               <div class="signal-bridge-metrics" id="signalBridgeMetrics" aria-live="polite"></div>
               <div class="signal-bridge-controls">
-                <label class="toggle-row"><input id="signalBridgeEnabled" type="checkbox"><span>Capture TrackaLacker Chrome alerts</span></label>
-                <label class="toggle-row"><input id="signalBridgeDeliveryPaused" type="checkbox"><span>Pause delivery, keep capture queued</span></label>
-                <label class="toggle-row"><input id="signalBridgeStartAtLogin" type="checkbox"><span>Start bridge at Windows login</span></label>
+                <label class="toggle-row"><input id="signalBridgeEnabled" type="checkbox"><span>Receive TrackaLacker Web Push signals</span></label>
+                <label class="toggle-row"><input id="signalBridgeDeliveryPaused" type="checkbox"><span>Pause delivery, keep push signals queued in Chrome</span></label>
                 <label class="field signal-dedupe-field"><span>Dedupe window (seconds)</span><input id="signalBridgeDedupeSeconds" type="number" min="30" max="3600" step="1" value="300"></label>
               </div>
               <div class="action-row signal-bridge-actions">
-                <button class="button secondary compact" id="signalBridgePermissionButton" type="button">Grant notification access</button>
+                <button class="button secondary compact" id="signalBridgePermissionButton" type="button">Connect TrackaLacker push</button>
                 <button class="button ghost compact" id="signalBridgeReplayButton" type="button">Run dry-run replay</button>
               </div>
-              <small class="row-help">The listener accepts only Google Chrome notifications attributed exactly to trackalacker.com. Synthetic replays exercise the production parser and resolver but can never open a store or place an order.</small>
+              <small class="row-help">Setup opens TrackaLacker in Chrome and uses that page's existing signed-in session to enroll the extension's real PushSubscription. No account credentials or push keys are stored by CartCollect. Synthetic replays exercise the production parser and resolver but can never open a store or place an order.</small>
               <details class="signal-audit-details">
                 <summary>Recent TrackaLacker signal audit</summary>
                 <div class="signal-audit-list" id="signalBridgeRecent"><div class="empty-state">No TrackaLacker alerts recorded yet.</div></div>

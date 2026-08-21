@@ -28,12 +28,13 @@ test("the stable release lane remains signed and tag-gated", () => {
   assert.match(signed, /IsNullOrWhiteSpace\(\$env:CSC_KEY_PASSWORD\)/);
   assert.match(signed, /Get-AuthenticodeSignature/);
   assert.match(signed, /Status -ne "Valid"/);
-  assert.match(signed, /Expected exactly three checksum entries/);
-  assert.match(signed, /one signed AppX package/);
+  assert.match(signed, /Expected exactly two checksum entries/);
+  assert.match(signed, /Expected two signed Windows executables/);
   assert.match(signed, /Malformed checksum entry/);
   assert.match(signed, /Duplicate checksum entry/);
   assert.match(signed, /Checksum names an unexpected artifact/);
-  assert.match(signed, /Where-Object Extension -In '\.exe', '\.appx'/);
+  assert.match(signed, /Get-ChildItem dist -Filter \*\.exe/);
+  assert.doesNotMatch(signed, /\.appx/i);
   assert.match(signed, /Resolve-Path dist\/SHA256SUMS\.txt/);
   assert.match(signed, /& gh @arguments/);
   assert.doesNotMatch(signed, /dist\/\*\.exe/);
@@ -62,4 +63,5 @@ test("the unsigned lane verifies artifacts and refuses signed executables", () =
   assert.match(unsigned, /Status -ne "NotSigned"/);
   assert.match(unsigned, /CSC_IDENTITY_AUTO_DISCOVERY: "false"/);
   assert.doesNotMatch(unsigned, /WINDOWS_CERTIFICATE/);
+  assert.doesNotMatch(unsigned, /setup-dotnet|dotnet/i);
 });
