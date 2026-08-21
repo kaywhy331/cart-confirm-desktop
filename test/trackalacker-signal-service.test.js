@@ -112,6 +112,24 @@ test("a known under-cap signal is durably queued before its store action begins"
   assert.equal(result.record.timing.missionEvaluatedAt, new Date(NOW).toISOString());
 });
 
+test("an authenticated extension Web Push signal enters the same mission pipeline", () => {
+  const input = envelope({
+    signalId: "push:trackalacker:12345678",
+    source: {
+      transport: "chrome_extension_web_push",
+      notificationId: "push:trackalacker:12345678",
+      applicationName: "CartCollect Chrome extension",
+      applicationId: "kmpoonjaidgnldeobaaopfhfhlalclhd"
+    }
+  });
+  const result = process(input, {
+    validation: { allowedTransports: ["chrome_extension_web_push"] }
+  });
+  assert.equal(result.shouldOpen, true);
+  assert.equal(result.record.transport, "chrome_extension_web_push");
+  assert.equal(result.response.action, "queued");
+});
+
 test("mission rejection is an acknowledged bridge delivery, not an infrastructure error", () => {
   const result = process(envelope({
     notification: { body: "Pokemon Perfect Order Booster Display Box\nin stock for $199.99 (Above MSRP)\nwww.trackalacker.com" }

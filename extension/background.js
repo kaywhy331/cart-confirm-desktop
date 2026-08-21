@@ -6,6 +6,7 @@ importScripts(
   "automation-state.js",
   "retailers.js",
   "trackalacker-links.js",
+  "trackalacker-push.js",
   "tab-context.js",
   "open-request-tabs.js",
   "update-state.js"
@@ -14,6 +15,7 @@ importScripts(
 const Traffic = globalThis.CartConfirmTraffic;
 const Retailers = globalThis.CartConfirmRetailers;
 const TrackalackerLinks = globalThis.CartConfirmTrackalackerLinks;
+const TrackalackerPush = globalThis.CartConfirmTrackalackerPush;
 const ScheduleGate = globalThis.CartConfirmScheduleGate;
 const AutomationState = globalThis.CartConfirmAutomationState;
 const TabContext = globalThis.CartConfirmTabContext;
@@ -30,6 +32,9 @@ const FAST_MODE_PAUSE_KEY = "cartConfirmFastModePausedUntil";
 const PAIRED_TOKEN_KEY = "cartConfirmPairedDesktopTokenV1";
 const VERSION_RELOAD_STATE_KEY = "cartConfirmVersionReloadStateV1";
 const TAB_PRODUCT_CONTEXT_KEY = "cartConfirmTabProductContextV1";
+const TRACKALACKER_PUSH_STATE_KEY = "cartConfirmTrackalackerPushStateV1";
+const TRACKALACKER_PUSH_QUEUE_KEY = "cartConfirmTrackalackerPushQueueV1";
+const TRACKALACKER_PUSH_QUEUE_LIMIT = 50;
 // One authorized click can fan out into several commerce XHRs. Treat their
 // overload responses as one incident instead of exponentially extending the
 // cooldown for every response in the same burst.
@@ -43,6 +48,12 @@ let tabContextQueue = Promise.resolve();
 let trafficSyncInFlight = false;
 const recentAuthorizedStoreActions = new Map();
 let trackalackerImportOwner = null;
+let trackalackerPushEnrollmentInFlight = null;
+let trackalackerPushDrainInFlight = null;
+let trackalackerPushStateQueue = Promise.resolve();
+let trackalackerPushQueueQueue = Promise.resolve();
+let lastTrackalackerPushStatusSignature = "";
+let lastTrackalackerPushStatusAt = 0;
 
 async function fetchWithTimeout(url, options = {}, timeoutMs = REQUEST_TIMEOUT_MS) {
   const controller = new AbortController();
@@ -56,6 +67,181 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = REQUEST_TIMEOUT_M
   } finally {
     clearTimeout(timer);
   }
+}
+
+function normalizeTrackalackerPushState(value = {}) {
+  const allowedStates = new Set([
+    "disabled",
+    "awaiting-page",
+    "subscribing",
+    "registering",
+    "ready",
+    "error"
+  ]);
+  const state = allowedStates.has(String(value.state || "")) ? String(value.state) : "disabled";
+  const allowedErrors = new Set([
+    "",
+    "push-api-unavailable",
+    "push-subscription-read-failed",
+    "subscription-key-mismatch",
+    "push-subscribe-failed",
+    "push-enrollment-failed",
+    "missing-subscription",
+    "incomplete-subscription",
+    "subscription-fingerprint-failed",
+    "page-bridge-failed",
+    "network-error",
+    "http-error",
+    "push-payload-unreadable",
+    "signal-delivery-rejected",
+    "signal-delivery-http",
+    "desktop-unreachable"
+  ]);
+  const errorCode = String(value.errorCode || "");
+  return {
+    enabled: value.enabled === true,
+    deliveryPaused: value.deliveryPaused === true,
+    state,
+    ready: value.ready === true,
+    subscriptionPresent: value.subscriptionPresent === true,
+    registeredFingerprint: /^[a-f0-9]{64}$/.test(String(value.registeredFingerprint || ""))
+      ? String(value.registeredFingerprint)
+      : "",
+    lastHttpStatus: Math.max(0, Math.min(599, Number(value.lastHttpStatus) || 0)),
+    errorCode: allowedErrors.has(errorCode) ? errorCode : "",
+    lastRegistrationAt: String(value.lastRegistrationAt || "").slice(0, 40),
+    lastNotificationAt: String(value.lastNotificationAt || "").slice(0, 40),
+    lastDeliveryAt: String(value.lastDeliveryAt || "").slice(0, 40),
+    updatedAt: String(value.updatedAt || "").slice(0, 40)
+  };
+}
+
+async function readTrackalackerPushState() {
+  const stored = await chrome.storage.local.get(TRACKALACKER_PUSH_STATE_KEY);
+  return normalizeTrackalackerPushState(stored[TRACKALACKER_PUSH_STATE_KEY]);
+}
+
+function updateTrackalackerPushState(changes = {}) {
+  const task = trackalackerPushStateQueue.then(async () => {
+    const current = await readTrackalackerPushState();
+    const proposed = normalizeTrackalackerPushState({
+      ...current,
+      ...changes,
+      updatedAt: current.updatedAt
+    });
+    if (JSON.stringify(proposed) === JSON.stringify(current)) return current;
+    const next = { ...proposed, updatedAt: new Date().toISOString() };
+    await chrome.storage.local.set({ [TRACKALACKER_PUSH_STATE_KEY]: next });
+    return next;
+  });
+  trackalackerPushStateQueue = task.catch(() => {});
+  return task;
+}
+
+function normalizeTrackalackerPushQueue(value) {
+  if (!Array.isArray(value)) return [];
+  const output = [];
+  for (const entry of value.slice(-TRACKALACKER_PUSH_QUEUE_LIMIT)) {
+    if (!entry || typeof entry !== "object" || entry.source?.transport !== "chrome_extension_web_push") continue;
+    const sanitized = TrackalackerPush.signalEnvelopeFromPush({
+      title: entry.notification?.title,
+      body: entry.notification?.body
+    }, entry.signalId, entry.source?.receivedAt, chrome.runtime.id);
+    if (sanitized) output.push(sanitized);
+  }
+  return output;
+}
+
+async function readTrackalackerPushQueue() {
+  const stored = await chrome.storage.local.get(TRACKALACKER_PUSH_QUEUE_KEY);
+  return normalizeTrackalackerPushQueue(stored[TRACKALACKER_PUSH_QUEUE_KEY]);
+}
+
+function mutateTrackalackerPushQueue(mutator) {
+  const task = trackalackerPushQueueQueue.then(async () => {
+    const current = await readTrackalackerPushQueue();
+    const next = normalizeTrackalackerPushQueue(mutator(current));
+    await chrome.storage.local.set({ [TRACKALACKER_PUSH_QUEUE_KEY]: next });
+    return next;
+  });
+  trackalackerPushQueueQueue = task.catch(() => {});
+  return task;
+}
+
+async function enqueueTrackalackerPush(envelope) {
+  return mutateTrackalackerPushQueue((current) => (
+    current.some((entry) => entry.signalId === envelope.signalId)
+      ? current
+      : [...current, envelope]
+  ));
+}
+
+async function removeQueuedTrackalackerPush(signalId) {
+  return mutateTrackalackerPushQueue((current) => current.filter((entry) => entry.signalId !== signalId));
+}
+
+function publicTrackalackerPushStatus(state, pendingSignals) {
+  return {
+    state: state.state,
+    ready: state.ready,
+    subscriptionPresent: state.subscriptionPresent,
+    pendingSignals: Math.max(0, Math.min(TRACKALACKER_PUSH_QUEUE_LIMIT, Number(pendingSignals) || 0)),
+    lastHttpStatus: state.lastHttpStatus,
+    errorCode: state.errorCode,
+    lastRegistrationAt: state.lastRegistrationAt,
+    lastNotificationAt: state.lastNotificationAt,
+    lastDeliveryAt: state.lastDeliveryAt,
+    updatedAt: state.updatedAt
+  };
+}
+
+async function postTrackalackerPushStatus(config, state = null, options = {}) {
+  if (!config?.baseUrl || !config?.token) return false;
+  const current = state || await readTrackalackerPushState();
+  const pending = await readTrackalackerPushQueue();
+  const payload = publicTrackalackerPushStatus(current, pending.length);
+  const signature = JSON.stringify(payload);
+  if (
+    options.force !== true
+    && signature === lastTrackalackerPushStatusSignature
+    && Date.now() - lastTrackalackerPushStatusAt < 30_000
+  ) return true;
+  try {
+    const response = await fetchWithTimeout(`${config.baseUrl}/trackalacker/push/status`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Cart-Assist-Token": config.token
+      },
+      body: JSON.stringify(payload)
+    });
+    if (!response.ok) return false;
+    lastTrackalackerPushStatusSignature = signature;
+    lastTrackalackerPushStatusAt = Date.now();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function syncTrackalackerPushConfig(config) {
+  const current = await readTrackalackerPushState();
+  const enabled = config?.trackalackerPush?.enabled === true;
+  const deliveryPaused = config?.trackalackerPush?.deliveryPaused === true;
+  const state = await updateTrackalackerPushState({
+    enabled,
+    deliveryPaused,
+    state: enabled
+      ? current.ready && current.registeredFingerprint
+        ? "ready"
+        : current.state === "error" ? "error" : "awaiting-page"
+      : "disabled",
+    ready: enabled && current.ready && Boolean(current.registeredFingerprint),
+    errorCode: enabled ? current.errorCode : ""
+  });
+  void postTrackalackerPushStatus(config, state).catch(() => {});
+  if (enabled && !deliveryPaused) void drainTrackalackerPushQueue(config).catch(() => {});
+  return state;
 }
 
 async function setBadge(config) {
@@ -187,8 +373,15 @@ function publicConfig(config) {
           id: String(config.trackalackerImport.id || ""),
           startedAt: String(config.trackalackerImport.startedAt || ""),
           expiresAt: String(config.trackalackerImport.expiresAt || "")
-        }
+      }
       : null,
+    trackalackerPush: config.trackalackerPush && typeof config.trackalackerPush === "object"
+      ? {
+          enabled: config.trackalackerPush.enabled === true,
+          deliveryPaused: config.trackalackerPush.deliveryPaused === true,
+          enrollmentNonce: String(config.trackalackerPush.enrollmentNonce || "").slice(0, 80)
+        }
+      : { enabled: false, deliveryPaused: false, enrollmentNonce: "" },
     configVersion: config.configVersion,
     appVersion: config.appVersion
   };
@@ -558,7 +751,10 @@ async function broadcastBackgroundTick() {
 if (chrome.alarms?.create && chrome.alarms?.onAlarm) {
   chrome.alarms.create(BACKGROUND_TICK_ALARM, { periodInMinutes: 0.5 });
   chrome.alarms.onAlarm.addListener((alarm) => {
-    if (alarm.name === BACKGROUND_TICK_ALARM) void broadcastBackgroundTick();
+    if (alarm.name === BACKGROUND_TICK_ALARM) {
+      void broadcastBackgroundTick();
+      void drainTrackalackerPushQueue().catch(() => {});
+    }
   });
 }
 
@@ -842,6 +1038,7 @@ async function discoverConfig(force = false) {
       await applyFastMode(cached.fastMode && !cached.monitoringPaused).catch(() => {});
       void syncActiveTrafficCooldowns(cached).catch(() => {});
       void processOpenRequests(cached).catch(() => {});
+      void syncTrackalackerPushConfig(cached).catch(() => {});
       return cached;
     } catch {
       // Try the next local port.
@@ -1063,6 +1260,356 @@ async function postTrackalackerCapture(capture) {
     await setDisconnectedBadge();
     return { ok: false, reason: "desktop-unreachable", error: "Cart Confirm desktop became unreachable." };
   }
+}
+
+async function sendTrackalackerPushEnvelope(envelope, initialConfig) {
+  let config = initialConfig || await discoverConfig(false);
+  if (!config) return { delivered: false, retryable: true, status: 0 };
+  const send = (activeConfig) => fetchWithTimeout(`${activeConfig.baseUrl}/trackalacker/push/signal`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Idempotency-Key": envelope.signalId,
+      "X-Cart-Assist-Token": activeConfig.token
+    },
+    body: JSON.stringify(envelope)
+  }, 5_000);
+  try {
+    let response = await send(config);
+    if (response.status === 401) {
+      cached = null;
+      config = await discoverConfig(true);
+      if (!config) return { delivered: false, retryable: true, status: 401 };
+      response = await send(config);
+    }
+    return {
+      delivered: response.ok,
+      retryable: response.status >= 500 || response.status === 408 || response.status === 429,
+      status: response.status
+    };
+  } catch {
+    cached = null;
+    return { delivered: false, retryable: true, status: 0 };
+  }
+}
+
+async function drainTrackalackerPushQueue(initialConfig = null) {
+  if (trackalackerPushDrainInFlight) return trackalackerPushDrainInFlight;
+  trackalackerPushDrainInFlight = (async () => {
+    let config = initialConfig || await discoverConfig(false);
+    const state = await readTrackalackerPushState();
+    if (!config || !state.enabled || state.deliveryPaused) return { delivered: 0 };
+    let delivered = 0;
+    while (true) {
+      const queue = await readTrackalackerPushQueue();
+      const envelope = queue[0];
+      if (!envelope) break;
+      const result = await sendTrackalackerPushEnvelope(envelope, config);
+      if (result.delivered) {
+        await removeQueuedTrackalackerPush(envelope.signalId);
+        delivered += 1;
+        await updateTrackalackerPushState({
+          lastDeliveryAt: new Date().toISOString(),
+          errorCode: ""
+        });
+        continue;
+      }
+      if (!result.retryable && result.status) {
+        // A structurally invalid event must not block later valid pushes. The
+        // rejected envelope contains only sanitized notification text.
+        await removeQueuedTrackalackerPush(envelope.signalId);
+        await updateTrackalackerPushState({
+          errorCode: "signal-delivery-rejected",
+          lastHttpStatus: result.status
+        });
+        continue;
+      }
+      await updateTrackalackerPushState({
+        errorCode: result.status ? "signal-delivery-http" : "desktop-unreachable",
+        lastHttpStatus: result.status
+      });
+      break;
+    }
+    const next = await readTrackalackerPushState();
+    await postTrackalackerPushStatus(config, next, { force: delivered > 0 });
+    return { delivered };
+  })().finally(() => {
+    trackalackerPushDrainInFlight = null;
+  });
+  return trackalackerPushDrainInFlight;
+}
+
+async function extensionPushSubscription(applicationServerKey) {
+  const pushManager = globalThis.registration?.pushManager;
+  if (!pushManager?.getSubscription || !pushManager?.subscribe) {
+    return { ok: false, reason: "push-api-unavailable", subscription: null };
+  }
+  let subscription;
+  try {
+    subscription = await pushManager.getSubscription();
+  } catch {
+    return { ok: false, reason: "push-subscription-read-failed", subscription: null };
+  }
+  if (subscription) {
+    try {
+      if (!TrackalackerPush.applicationServerKeyMatches(subscription, applicationServerKey)) {
+        return { ok: false, reason: "subscription-key-mismatch", subscription: null };
+      }
+    } catch {
+      return { ok: false, reason: "push-api-unavailable", subscription: null };
+    }
+  }
+  if (!subscription) {
+    try {
+      subscription = await pushManager.subscribe({
+        userVisibleOnly: false,
+        applicationServerKey
+      });
+    } catch {
+      return { ok: false, reason: "push-subscribe-failed", subscription: null };
+    }
+  }
+  return subscription
+    ? { ok: true, reason: "", subscription }
+    : { ok: false, reason: "missing-subscription", subscription: null };
+}
+
+async function inspectTrackalackerPagePush(tabId) {
+  try {
+    const executions = await chrome.scripting.executeScript({
+      target: { tabId },
+      world: "MAIN",
+      func: TrackalackerPush.inspectPagePushSubscription,
+      args: []
+    });
+    const result = executions?.[0]?.result;
+    const applicationServerKey = /^[A-Za-z0-9_-]{80,100}$/.test(String(result?.applicationServerKey || ""))
+      ? String(result.applicationServerKey)
+      : "";
+    return {
+      subscriptionPresent: result?.subscriptionPresent === true,
+      applicationServerKey
+    };
+  } catch {
+    return { subscriptionPresent: false, applicationServerKey: "" };
+  }
+}
+
+function safeEnrollmentResult(value = {}) {
+  const status = Math.max(0, Math.min(599, Number(value.status) || 0));
+  const allowedCodes = new Set(["enrolled", "already-registered", "http-error", "network-error"]);
+  return {
+    ok: value.ok === true,
+    duplicate: value.duplicate === true,
+    pageSubscriptionPresent: value.pageSubscriptionPresent === true,
+    status,
+    code: allowedCodes.has(String(value.code || "")) ? String(value.code) : status ? "http-error" : "network-error"
+  };
+}
+
+async function performTrackalackerPushEnrollment(tabId) {
+  const config = await discoverConfig(true);
+  if (!config?.trackalackerPush?.enabled) {
+    const disabled = await updateTrackalackerPushState({ enabled: false, state: "disabled", ready: false });
+    if (config) await postTrackalackerPushStatus(config, disabled, { force: true });
+    return { ok: false, reason: "bridge-disabled" };
+  }
+  let state = await updateTrackalackerPushState({
+    enabled: true,
+    deliveryPaused: config.trackalackerPush.deliveryPaused === true,
+    state: "subscribing",
+    ready: false,
+    errorCode: "",
+    lastHttpStatus: 0
+  });
+  await postTrackalackerPushStatus(config, state, { force: true });
+
+  const pagePush = await inspectTrackalackerPagePush(tabId);
+  let applicationServerKey;
+  try {
+    applicationServerKey = pagePush.applicationServerKey
+      ? TrackalackerPush.applicationServerKeyFromBase64Url(pagePush.applicationServerKey)
+      : TrackalackerPush.vapidApplicationServerKey();
+  } catch {
+    applicationServerKey = TrackalackerPush.vapidApplicationServerKey();
+  }
+  const found = await extensionPushSubscription(applicationServerKey);
+  if (!found.ok) {
+    state = await updateTrackalackerPushState({
+      state: "error",
+      ready: false,
+      subscriptionPresent: false,
+      errorCode: found.reason,
+      lastHttpStatus: 0
+    });
+    await postTrackalackerPushStatus(config, state, { force: true });
+    return { ok: false, reason: found.reason, diagnostic: "Push subscription unavailable" };
+  }
+
+  const subscription = found.subscription;
+  const fingerprint = await TrackalackerPush.subscriptionFingerprint(subscription).catch(() => "");
+  const current = await readTrackalackerPushState();
+  if (fingerprint && current.registeredFingerprint === fingerprint) {
+    state = await updateTrackalackerPushState({
+      state: "ready",
+      ready: true,
+      subscriptionPresent: true,
+      errorCode: "",
+      lastHttpStatus: current.lastHttpStatus || 200
+    });
+    await postTrackalackerPushStatus(config, state, { force: true });
+    return {
+      ok: true,
+      alreadyRegistered: true,
+      pageSubscriptionPresent: pagePush.subscriptionPresent,
+      diagnostic: "Device already registered"
+    };
+  }
+
+  let registration;
+  try {
+    registration = TrackalackerPush.deviceRegistrationPayload(
+      subscription,
+      `CartCollect Chrome extension v${chrome.runtime.getManifest().version}`
+    );
+  } catch {
+    registration = { ok: false, reason: "incomplete-subscription" };
+  }
+  if (!registration.ok || !fingerprint) {
+    state = await updateTrackalackerPushState({
+      state: "error",
+      ready: false,
+      subscriptionPresent: true,
+      errorCode: registration.reason || "subscription-fingerprint-failed",
+      lastHttpStatus: 0
+    });
+    await postTrackalackerPushStatus(config, state, { force: true });
+    return { ok: false, reason: registration.reason || "incomplete-subscription", diagnostic: "Push subscription unavailable" };
+  }
+
+  state = await updateTrackalackerPushState({
+    state: "registering",
+    ready: false,
+    subscriptionPresent: true,
+    errorCode: "",
+    lastHttpStatus: 0
+  });
+  await postTrackalackerPushStatus(config, state, { force: true });
+
+  let result;
+  try {
+    const executions = await chrome.scripting.executeScript({
+      target: { tabId },
+      world: "MAIN",
+      func: TrackalackerPush.registerDeviceInPage,
+      args: [registration.payload]
+    });
+    result = safeEnrollmentResult(executions?.[0]?.result);
+  } catch {
+    result = { ok: false, duplicate: false, status: 0, code: "page-bridge-failed" };
+  }
+
+  if (result.ok) {
+    state = await updateTrackalackerPushState({
+      state: "ready",
+      ready: true,
+      subscriptionPresent: true,
+      registeredFingerprint: fingerprint,
+      errorCode: "",
+      lastHttpStatus: result.status || 200,
+      lastRegistrationAt: new Date().toISOString()
+    });
+  } else {
+    state = await updateTrackalackerPushState({
+      state: "error",
+      ready: false,
+      subscriptionPresent: true,
+      errorCode: result.code,
+      lastHttpStatus: result.status
+    });
+  }
+  await postTrackalackerPushStatus(config, state, { force: true });
+  return {
+    ok: result.ok,
+    alreadyRegistered: result.duplicate,
+    pageSubscriptionPresent: result.pageSubscriptionPresent || pagePush.subscriptionPresent,
+    status: result.status,
+    reason: result.ok ? "" : result.code,
+    diagnostic: TrackalackerPush.safeRegistrationDiagnostic(result)
+  };
+}
+
+function ensureTrackalackerPushEnrollment(tabId) {
+  if (!Number.isInteger(tabId) || tabId < 0) return Promise.resolve({ ok: false, reason: "trackalacker-tab-required" });
+  if (trackalackerPushEnrollmentInFlight) return trackalackerPushEnrollmentInFlight;
+  trackalackerPushEnrollmentInFlight = performTrackalackerPushEnrollment(tabId)
+    .catch(async () => {
+      const state = await updateTrackalackerPushState({
+        state: "error",
+        ready: false,
+        errorCode: "push-enrollment-failed",
+        lastHttpStatus: 0
+      }).catch(() => null);
+      const config = cached || await discoverConfig(false).catch(() => null);
+      if (config && state) await postTrackalackerPushStatus(config, state, { force: true }).catch(() => {});
+      return { ok: false, reason: "push-enrollment-failed", diagnostic: "Device registration failed" };
+    })
+    .finally(() => {
+      trackalackerPushEnrollmentInFlight = null;
+    });
+  return trackalackerPushEnrollmentInFlight;
+}
+
+async function handleTrackalackerPushEvent(event) {
+  const state = await readTrackalackerPushState();
+  if (!state.enabled) return;
+  let payload;
+  try {
+    payload = event.data?.json();
+  } catch {
+    payload = null;
+  }
+  const receivedAt = new Date().toISOString();
+  const envelope = TrackalackerPush.signalEnvelopeFromPush(
+    payload,
+    `push:trackalacker:${crypto.randomUUID()}`,
+    receivedAt,
+    chrome.runtime.id
+  );
+  if (!envelope) {
+    const failed = await updateTrackalackerPushState({ errorCode: "push-payload-unreadable" });
+    const config = cached || await discoverConfig(false);
+    if (config) await postTrackalackerPushStatus(config, failed, { force: true });
+    return;
+  }
+  const queue = await enqueueTrackalackerPush(envelope);
+  const next = await updateTrackalackerPushState({
+    lastNotificationAt: receivedAt,
+    errorCode: ""
+  });
+  const config = cached || await discoverConfig(false);
+  if (config) await postTrackalackerPushStatus(config, next, { force: true });
+  if (!next.deliveryPaused) await drainTrackalackerPushQueue(config);
+  return { queued: queue.length };
+}
+
+async function handleTrackalackerPushSubscriptionChange() {
+  const current = await readTrackalackerPushState();
+  const state = await updateTrackalackerPushState({
+    registeredFingerprint: "",
+    ready: false,
+    subscriptionPresent: false,
+    state: current.enabled ? "awaiting-page" : "disabled",
+    errorCode: ""
+  });
+  const config = cached || await discoverConfig(false);
+  if (config) await postTrackalackerPushStatus(config, state, { force: true });
+  if (!state.enabled) return;
+  const tabs = await chrome.tabs.query({
+    url: ["https://trackalacker.com/*", "https://www.trackalacker.com/*"]
+  }).catch(() => []);
+  const tab = tabs.find((candidate) => Number.isInteger(candidate?.id));
+  if (tab) await ensureTrackalackerPushEnrollment(tab.id);
 }
 
 async function resolveTrackalackerLink(rawUrl, expectedRetailer) {
@@ -1713,6 +2260,9 @@ async function handleMessage(message, sender) {
     case "CART_CONFIRM_TRACKALACKER_CAPTURE":
       if (!senderIsTrackalacker(sender)) return { ok: false, reason: "trackalacker-tab-required" };
       return postTrackalackerCapture(message.capture);
+    case "CART_CONFIRM_TRACKALACKER_PUSH_PAGE_READY":
+      if (!senderIsTrackalacker(sender)) return { ok: false, reason: "trackalacker-tab-required" };
+      return ensureTrackalackerPushEnrollment(sender?.tab?.id);
     case "CART_CONFIRM_RESOLVE_TRACKALACKER_LINK":
       if (!senderIsTrackalacker(sender)) return { ok: false, reason: "trackalacker-tab-required" };
       return resolveTrackalackerLink(String(message.url || ""), String(message.retailer || ""));
@@ -1818,6 +2368,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   return true;
 });
 
+self.addEventListener("push", (event) => {
+  event.waitUntil(handleTrackalackerPushEvent(event));
+});
+
+self.addEventListener("pushsubscriptionchange", (event) => {
+  event.waitUntil(handleTrackalackerPushSubscriptionChange());
+});
+
 chrome.tabs.onRemoved.addListener((tabId) => {
   void clearTabProductContext(tabId).catch(() => {});
   if (trackalackerImportOwner?.tabId === tabId) trackalackerImportOwner = null;
@@ -1856,16 +2414,40 @@ chrome.webRequest.onBeforeRequest.addListener((details) => {
   types: ["main_frame"]
 });
 
+async function refreshTrackalackerPushSubscriptionState() {
+  const current = await readTrackalackerPushState();
+  let subscription = null;
+  try {
+    subscription = await globalThis.registration?.pushManager?.getSubscription?.();
+  } catch {
+    subscription = null;
+  }
+  const fingerprint = subscription
+    ? await TrackalackerPush.subscriptionFingerprint(subscription).catch(() => "")
+    : "";
+  return updateTrackalackerPushState({
+    subscriptionPresent: Boolean(subscription),
+    ready: Boolean(subscription && fingerprint && current.registeredFingerprint === fingerprint),
+    state: current.enabled
+      ? subscription && fingerprint && current.registeredFingerprint === fingerprint ? "ready" : "awaiting-page"
+      : "disabled"
+  });
+}
+
 chrome.runtime.onInstalled.addListener(() => {
   appliedFastMode = null;
   lastHelloAtByPort.clear();
-  void discoverConfig(true);
+  void refreshTrackalackerPushSubscriptionState()
+    .then(() => discoverConfig(true))
+    .catch(() => discoverConfig(true));
 });
 
 chrome.runtime.onStartup.addListener(() => {
   appliedFastMode = null;
   lastHelloAtByPort.clear();
-  void discoverConfig(true);
+  void refreshTrackalackerPushSubscriptionState()
+    .then(() => discoverConfig(true))
+    .catch(() => discoverConfig(true));
 });
 
 // Clicking the toolbar icon is a manual re-check: force a fresh discovery and

@@ -9,7 +9,9 @@ Cart Confirm has two deliberately separate release lanes:
   verified `v*` tag and fails closed without the Windows signing certificate.
 
 An unsigned prerelease never weakens or substitutes for the signed stable lane.
-This doc keeps both paths explicit and auditable.
+Both lanes include the same extension-only TrackaLacker Web Push bridge; neither
+builds or requires a separate listener package. This doc keeps both paths
+explicit and auditable.
 
 Publishing either lane requires explicit repo-owner authorization. Do not infer
 release authority from ordinary implementation, merge, or packaging requests.
@@ -28,13 +30,10 @@ The manual workflow:
 6. Creates a GitHub **prerelease**, never a stable release, with the unsigned and
    SmartScreen warning in its release notes.
 
-The native TrackaLacker notification listener is not published in this lane as
-an installable package. Windows notification access requires the signed AppX
-identity from the stable lane. An unsigned Windows build can offer to locate a
-same-version or newer AppX from an official stable `v*` release, verify the AppX
-against that release's `SHA256SUMS.txt`, and open it with Windows App Installer.
-That explicit handoff does not grant the unsigned process notification access;
-the user must finish installation and launch the signed Start-menu app.
+TrackaLacker signals use the bundled Chrome extension's Web Push subscription.
+The unsigned installer and portable executable therefore have the same push
+capability as the stable desktop build once the unpacked extension is loaded in
+Chrome 121 or newer and enrolled from a normal signed-in TrackaLacker tab.
 
 To publish, open **Actions → Unsigned Windows prerelease → Run workflow**, select
 `main`, and enter the confirmation phrase. Bump `package.json` before publishing
@@ -55,10 +54,9 @@ The first explicitly authorized unsigned prerelease is available as
 3. Requires the tag to be **GPG/SSH-verified by GitHub** (`verification.verified`
    from the GitHub API) — an unsigned annotated tag also fails.
 4. Requires `secrets.WINDOWS_CERTIFICATE` to be non-empty.
-5. After building, requires exactly two `.exe` artifacts plus one notification-
-   capable `.appx` in `dist/`, each with a `Valid` signature status, and
-   cross-checks all three files in `dist/SHA256SUMS.txt` against freshly computed
-   hashes.
+5. After building, requires exactly two `.exe` artifacts in `dist/`, each with a
+   `Valid` signature status, and cross-checks both files in
+   `dist/SHA256SUMS.txt` against freshly computed hashes.
 
 If any of these fail, no stable GitHub Release is created. There is no unsigned
 override in the stable workflow; use the separately labeled prerelease lane.
@@ -100,9 +98,9 @@ override in the stable workflow; use the separately labeled prerelease lane.
    certificate checks, nothing was built or published — fix the underlying
    secret/tag issue and push a new tag rather than retrying blindly.
 5. Once the workflow succeeds, confirm the GitHub Release has both `.exe`
-   artifacts, `Cart-Confirm-Signals-…appx`, and `SHA256SUMS.txt` attached. Install
-   the AppX on a Windows test account, grant notification access, and spot-check
-   one checksum before announcing the release.
+   artifacts and `SHA256SUMS.txt` attached. Spot-check one checksum, load the
+   bundled extension in Chrome, and validate one signed-in TrackaLacker push
+   enrollment before announcing the release.
 
 ## Current release status
 

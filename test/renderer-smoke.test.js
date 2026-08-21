@@ -123,7 +123,7 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   let pushUpdaterState = null;
   let installUpdateCalls = 0;
   let signalBridgePermissionCalls = 0;
-  let signalBridgePermissionResult = { status: "installer-opened", version: "3.8.0" };
+  let signalBridgePermissionResult = { requested: true, via: "chrome" };
   let openProductCalls = 0;
   let openBuyListCalls = 0;
   let openBuyListFailure = null;
@@ -906,82 +906,73 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   assert.equal(signalPanel.classList.contains("is-collapsed"), false);
   assert.equal(doc.getElementById("signalPanelBody").hidden, false);
 
-  // An unsigned Windows build cannot enable capture directly, but it offers
-  // an explicit verified AppX recovery action through the same control that
-  // grants notification access once the signed package is active.
-  const unsignedBridge = snapshotFixture();
-  unsignedBridge.signalBridge = {
-    supported: false,
-    installSupported: true,
-    installInFlight: false,
-    install: { status: "idle" },
+  // Extension Web Push is available without Windows package identity. Setup
+  // remains explicit and uses a signed-in TrackaLacker Chrome tab.
+  const disabledBridge = snapshotFixture();
+  disabledBridge.signalBridge = {
+    supported: true,
+    extensionConnected: true,
     enabled: false,
+    helperState: "disabled",
+    listenerReady: false,
+    subscriptionPresent: false,
     mappingCount: 0,
     pendingSignals: 0,
     latency: {}
   };
-  pushUpdate(unsignedBridge);
-  assert.equal(doc.getElementById("signalBridgeState").textContent, "Signed Windows package required");
-  assert.equal(doc.getElementById("signalBridgeEnabled").disabled, true);
+  pushUpdate(disabledBridge);
+  assert.equal(doc.getElementById("signalBridgeState").textContent, "Disabled");
+  assert.equal(doc.getElementById("signalBridgeEnabled").disabled, false);
+  assert.equal(doc.getElementById("signalBridgePermissionButton").disabled, true);
+  assert.equal(doc.getElementById("signalBridgePermissionButton").textContent, "Connect TrackaLacker push");
+
+  const awaitingBridge = snapshotFixture();
+  awaitingBridge.settings.trackalackerSignalBridgeEnabled = true;
+  awaitingBridge.signalBridge = {
+    supported: true,
+    extensionConnected: true,
+    enabled: true,
+    helperState: "awaiting-page",
+    listenerReady: false,
+    subscriptionPresent: false,
+    mappingCount: 0,
+    pendingSignals: 0,
+    latency: {}
+  };
+  pushUpdate(awaitingBridge);
+  assert.equal(doc.getElementById("signalBridgeState").textContent, "Needs TrackaLacker tab");
+  assert.equal(doc.getElementById("signalBridgeEnabled").disabled, false);
+  assert.equal(doc.getElementById("signalBridgePermissionButton").textContent, "Connect TrackaLacker push");
   assert.equal(doc.getElementById("signalBridgePermissionButton").disabled, false);
-  assert.equal(doc.getElementById("signalBridgePermissionButton").textContent, "Install signed listener package");
   doc.getElementById("signalBridgePermissionButton").click();
   await new Promise((resolve) => setTimeout(resolve, 10));
   assert.equal(signalBridgePermissionCalls, 1);
-  assert.match(doc.getElementById("message").textContent, /Windows App Installer opened/);
+  assert.match(doc.getElementById("message").textContent, /opened in Chrome/);
 
-  unsignedBridge.signalBridge.installInFlight = true;
-  unsignedBridge.signalBridge.install = { status: "downloading", percent: 42, version: "3.8.0" };
-  pushUpdate(unsignedBridge);
+  awaitingBridge.signalBridge = {
+    supported: true,
+    extensionConnected: true,
+    enabled: true,
+    helperState: "registering",
+    listenerReady: false,
+    subscriptionPresent: true,
+    mappingCount: 0,
+    pendingSignals: 0,
+    latency: {}
+  };
+  pushUpdate(awaitingBridge);
+  assert.equal(doc.getElementById("signalBridgePermissionButton").textContent, "Connecting TrackaLacker push…");
   assert.equal(doc.getElementById("signalBridgePermissionButton").disabled, true);
-  assert.equal(doc.getElementById("signalBridgePermissionButton").textContent, "Downloading AppX 42%");
 
-  const signedBridge = snapshotFixture();
-  signedBridge.settings.trackalackerSignalBridgeEnabled = true;
-  signedBridge.signalBridge = {
-    supported: true,
-    helperInstalled: false,
-    packageReady: false,
-    installSupported: true,
-    installInFlight: false,
-    install: { status: "idle" },
-    enabled: true,
-    helperState: "missing",
-    notificationPermission: "unknown",
-    listenerReady: false,
-    mappingCount: 0,
-    pendingSignals: 0,
-    latency: {}
+  awaitingBridge.signalBridge = {
+    ...awaitingBridge.signalBridge,
+    helperState: "ready",
+    listenerReady: true
   };
-  pushUpdate(signedBridge);
-  assert.equal(doc.getElementById("signalBridgeEnabled").disabled, true);
-  assert.equal(doc.getElementById("signalBridgePermissionButton").textContent, "Repair signed listener package");
-  assert.equal(doc.getElementById("signalBridgePermissionButton").disabled, false);
-
-  signedBridge.signalBridge = {
-    supported: true,
-    helperInstalled: true,
-    packageReady: true,
-    installSupported: false,
-    installInFlight: false,
-    install: { status: "idle" },
-    enabled: true,
-    helperState: "permission-required",
-    notificationPermission: "unknown",
-    listenerReady: false,
-    mappingCount: 0,
-    pendingSignals: 0,
-    latency: {}
-  };
-  signalBridgePermissionResult = { requested: true };
-  pushUpdate(signedBridge);
-  assert.equal(doc.getElementById("signalBridgeEnabled").disabled, false);
-  assert.equal(doc.getElementById("signalBridgePermissionButton").textContent, "Grant notification access");
-  assert.equal(doc.getElementById("signalBridgePermissionButton").disabled, false);
-  doc.getElementById("signalBridgePermissionButton").click();
-  await new Promise((resolve) => setTimeout(resolve, 10));
-  assert.equal(signalBridgePermissionCalls, 2);
-  assert.match(doc.getElementById("message").textContent, /notification access requested/);
+  pushUpdate(awaitingBridge);
+  assert.equal(doc.getElementById("signalBridgeState").textContent, "Ready");
+  assert.equal(doc.getElementById("signalBridgePermissionButton").textContent, "Recheck push connection");
+  assert.match(doc.getElementById("signalBridgeHint").textContent, /without server polling/);
   pushUpdate(snapshotFixture());
 
   for (const panelId of ["missionsPanel", "activityPanel"]) {

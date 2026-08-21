@@ -778,9 +778,20 @@
 
   function install(scope) {
     let runningImportId = "";
+    let handledPushEnrollmentNonce = "";
     async function check() {
       if (runningImportId) return;
       const configResult = await runtimeMessage({ type: "CART_CONFIRM_GET_CONFIG", force: true });
+      const pushConfig = configResult?.config?.trackalackerPush;
+      if (pushConfig?.enabled === true) {
+        const nonce = String(pushConfig.enrollmentNonce || "").slice(0, 80);
+        if (nonce && nonce !== handledPushEnrollmentNonce) {
+          handledPushEnrollmentNonce = nonce;
+          await runtimeMessage({ type: "CART_CONFIRM_TRACKALACKER_PUSH_PAGE_READY" });
+        }
+      } else {
+        handledPushEnrollmentNonce = "";
+      }
       const session = configResult?.config?.trackalackerImport;
       if (!session?.id) return;
       const claim = await runtimeMessage({ type: "CART_CONFIRM_CLAIM_TRACKALACKER_IMPORT", importId: session.id });

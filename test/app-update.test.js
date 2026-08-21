@@ -11,8 +11,6 @@ const {
   parseChecksumManifest,
   parseVersion,
   releasePlan,
-  signedAppxReleasePlan,
-  selectSignedAppx,
   selectUpdate,
   userFacingReleaseNotes
 } = require("../lib/app-update");
@@ -32,13 +30,6 @@ function githubRelease(version, options = {}) {
       browser_download_url: `${base}/SHA256SUMS.txt`
     }
   ];
-  if (options.appx) {
-    assets.push({
-      name: `Cart-Confirm-Signals-${version}-x64.appx`,
-      size: 110,
-      browser_download_url: `${base}/Cart-Confirm-Signals-${version}-x64.appx`
-    });
-  }
   return {
     tag_name: tag,
     name: `Cart Confirm v${version}`,
@@ -70,44 +61,6 @@ test("selects the highest complete newer GitHub release", () => {
   assert.equal(selected.version, "3.5.0");
   assert.equal(selected.setupAsset.name, "Cart-Confirm-Setup-3.5.0-x64.exe");
   assert.equal(selectUpdate([current], "3.3.1"), null);
-});
-
-test("selects a same-version or newer signed AppX only from stable v-tags", () => {
-  const older = githubRelease("3.7.9", { appx: true });
-  const current = githubRelease("3.8.0", { appx: true });
-  const newer = githubRelease("3.9.0", { appx: true });
-  const unsigned = githubRelease("4.0.0", {
-    appx: true,
-    tag: "unsigned-v4.0.0",
-    prerelease: true
-  });
-  const prerelease = githubRelease("4.1.0", { appx: true, prerelease: true });
-  const unverifiedShape = githubRelease("4.2.0", { appx: true, tag: "4.2.0" });
-
-  assert.equal(selectSignedAppx([older, current], "3.8.0").version, "3.8.0");
-  assert.equal(
-    selectSignedAppx([older, current, newer, unsigned, prerelease, unverifiedShape], "3.8.0").version,
-    "3.9.0"
-  );
-  assert.equal(selectSignedAppx([older, unsigned], "3.8.0"), null);
-  assert.equal(signedAppxReleasePlan(unsigned), null);
-  assert.equal(signedAppxReleasePlan(prerelease), null);
-  assert.equal(signedAppxReleasePlan(unverifiedShape), null);
-});
-
-test("requires the exact official signed AppX asset and release path", () => {
-  const release = githubRelease("3.8.0", { appx: true });
-  const plan = signedAppxReleasePlan(release);
-  assert.equal(plan.appxAsset.name, "Cart-Confirm-Signals-3.8.0-x64.appx");
-  assert.equal(plan.pageUrl, "https://github.com/kaywhy331/cart-confirm-desktop/releases/tag/v3.8.0");
-
-  const wrongRepository = githubRelease("3.8.0", { appx: true });
-  wrongRepository.assets.find((asset) => asset.name.endsWith(".appx")).browser_download_url =
-    "https://github.com/other/repository/releases/download/v3.8.0/Cart-Confirm-Signals-3.8.0-x64.appx";
-  assert.throws(() => signedAppxReleasePlan(wrongRepository), /official Cart Confirm release path/);
-
-  const missingAppx = githubRelease("3.8.0");
-  assert.equal(signedAppxReleasePlan(missingAppx), null);
 });
 
 test("requires official repository release assets", () => {
@@ -160,6 +113,26 @@ test("the updater control is always reachable with an on-demand check", () => {
   assert.match(renderer, /if \(updateButtonMode === "install"\) void requestAppUpdate\(\);\s*else void requestUpdateCheck\(\);/);
   assert.match(renderer, /Up to date/);
   assert.match(html, /Check for updates<\/button>/);
+});
+
+test("Check for updates installs and reloads the matching bundled extension", () => {
+  const root = path.join(__dirname, "..");
+  const packageJson = require(path.join(root, "package.json"));
+  const manifest = require(path.join(root, "extension", "manifest.json"));
+  const main = fs.readFileSync(path.join(root, "main.js"), "utf8");
+  const background = fs.readFileSync(path.join(root, "extension", "background.js"), "utf8");
+  const extensionResource = packageJson.build.extraResources.find((entry) => entry.from === "extension");
+
+  assert.deepEqual(extensionResource, {
+    from: "extension",
+    to: "extension",
+    filter: ["**/*"]
+  });
+  assert.equal(manifest.version, packageJson.version);
+  assert.match(main, /path\.join\(process\.resourcesPath, "extension"\)/);
+  assert.match(main, /install the desktop app and bundled Chrome extension files together/);
+  assert.match(background, /String\(config\.appVersion \|\| ""\) !== extensionVersion/);
+  assert.match(background, /setTimeout\(\(\) => chrome\.runtime\.reload\(\), 250\)/);
 });
 
 test("the update dialog shows only user-facing bullets from the release body", () => {

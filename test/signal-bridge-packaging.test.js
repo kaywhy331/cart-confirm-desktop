@@ -7,52 +7,53 @@ const test = require("node:test");
 
 const root = path.resolve(__dirname, "..");
 const main = fs.readFileSync(path.join(root, "main.js"), "utf8");
-const helper = fs.readFileSync(path.join(root, "native", "CartCollect.SignalBridge", "Program.cs"), "utf8");
-const project = fs.readFileSync(path.join(root, "native", "CartCollect.SignalBridge", "CartCollect.SignalBridge.csproj"), "utf8");
-const manifest = fs.readFileSync(path.join(root, "build", "appxmanifest.xml"), "utf8");
+const background = fs.readFileSync(path.join(root, "extension", "background.js"), "utf8");
+const pushHelper = fs.readFileSync(path.join(root, "extension", "trackalacker-push.js"), "utf8");
 const buildScript = fs.readFileSync(path.join(root, "scripts", "build-windows.js"), "utf8");
-const updater = fs.readFileSync(path.join(root, "lib", "app-update.js"), "utf8");
 const renderer = fs.readFileSync(path.join(root, "src", "renderer.js"), "utf8");
 const packageJson = require("../package.json");
+const manifest = require("../extension/manifest.json");
 
-test("the signed AppX declares native notification access and opt-in startup", () => {
-  assert.match(manifest, /xmlns:uap3="http:\/\/schemas\.microsoft\.com\/appx\/manifest\/uap\/windows10\/3"/);
-  assert.match(manifest, /<uap3:Capability Name="userNotificationListener"/);
-  assert.match(manifest, /<rescap:Capability Name="runFullTrust"/);
-  assert.match(manifest, /Category="windows\.startupTask"/);
-  assert.match(manifest, /Executable="app\\resources\\signal-bridge\\CartCollect\.SignalBridge\.exe"/);
-  assert.match(manifest, /Enabled="false"/);
-  assert.equal(packageJson.build.appx.customManifestPath, "appxmanifest.xml");
+test("TrackaLacker capture is extension-only and Windows packaging has no native listener", () => {
+  assert.equal(packageJson.build.appx, undefined);
+  assert.equal(fs.existsSync(path.join(root, "build", "appxmanifest.xml")), false);
+  assert.equal(fs.existsSync(path.join(root, "native", "CartCollect.SignalBridge", "Program.cs")), false);
+  assert.doesNotMatch(buildScript, /dotnet|SignalBridge|appx/i);
+  assert.match(buildScript, /"nsis"/);
+  assert.match(buildScript, /"portable"/);
+  assert.doesNotMatch(main, /UserNotificationListener|installSignedSignalBridgePackage|downloadSignedAppx/);
+  assert.doesNotMatch(renderer, /AppX|signed listener|Windows notification access/i);
 });
 
-test("the Windows helper uses UserNotificationListener and a durable local queue without inventory polling", () => {
-  assert.match(project, /net8\.0-windows10\.0\.19041\.0/);
-  assert.match(project, /<PublishSingleFile>true<\/PublishSingleFile>/);
-  assert.match(helper, /using System\.IO;/);
-  assert.match(helper, /using System\.Net\.Http;/);
-  assert.match(helper, /UserNotificationListener\.Current/);
-  assert.match(helper, /StartupTask\.GetAsync\("CartCollectSignalBridgeStartup"\)/);
-  assert.match(helper, /RequestEnableAsync\(\)/);
-  assert.match(helper, /LaunchCartCollectAtLogin/);
-  assert.match(helper, /ProcessStartInfo\(executable, "--background"\)/);
-  assert.match(helper, /NotificationChanged \+= NotificationChanged/);
-  assert.match(helper, /GetNotificationsAsync\(NotificationKinds\.Toast\)/);
-  assert.match(helper, /IsGoogleChromeApplication/);
-  assert.doesNotMatch(helper, /applicationId\.Contains\("Chrome"/);
-  assert.match(helper, /normalized == "trackalacker\.com"/);
-  assert.match(helper, /PersistEnvelopeAsync\(envelope\)/);
-  assert.match(helper, /\/api\/v1\/signals/);
-  assert.match(helper, /Idempotency-Key/);
-  assert.match(helper, /ReadAsStringAsync\(\)/);
-  assert.match(helper, /\[0, 250, 500, 1_000, 2_000, 5_000\]/);
-  assert.match(helper, /OrderBy\(File\.GetCreationTimeUtc\)/);
-  assert.doesNotMatch(helper, /walmart\.com|amazon\.com|target\.com/i);
+test("the Chrome extension declares and installs the Web Push runtime", () => {
+  assert.equal(manifest.minimum_chrome_version, "121");
+  assert.equal(manifest.permissions.includes("notifications"), true);
+  assert.equal(manifest.permissions.includes("scripting"), true);
+  assert.match(background, /importScripts\([\s\S]*?"trackalacker-push\.js"/);
+  assert.match(background, /self\.addEventListener\("push"/);
+  assert.match(background, /self\.addEventListener\("pushsubscriptionchange"/);
+  assert.match(background, /userVisibleOnly: false/);
+  assert.doesNotMatch(`${background}\n${pushHelper}`, /\.unsubscribe\s*\(/);
 });
 
-test("disabling the bridge waits for the helper mutex before reconciling login startup", () => {
-  assert.match(main, /signalBridgeIntentionalStops = new WeakSet/);
-  assert.match(main, /stopSignalBridgeProcess\(\{[\s\S]*?afterExit:[\s\S]*?configureSignalBridgeLoginLaunch/);
-  assert.match(main, /if \(intentionallyStopped\) \{[\s\S]*?startSignalBridgeProcess\(\)/);
+test("device enrollment uses only the confirmed same-origin contract and runtime subscription keys", () => {
+  assert.match(pushHelper, /subscription\.getKey\("p256dh"\)/);
+  assert.match(pushHelper, /subscription\.getKey\("auth"\)/);
+  assert.match(pushHelper, /device:\s*\{[\s\S]*?platform: PLATFORM,[\s\S]*?endpoint,[\s\S]*?p256dh,[\s\S]*?auth,[\s\S]*?nickname/);
+  assert.match(pushHelper, /https:\/\/www\.trackalacker\.com\/api\/v1\/users\/devices/);
+  assert.match(pushHelper, /credentials: "include"/);
+  assert.match(pushHelper, /meta\[name="csrf-token"\]/);
+  assert.doesNotMatch(pushHelper, /console\.(?:log|debug|info|warn|error)/);
+});
+
+test("extension push delivery is pinned to the extension-authenticated local route", () => {
+  assert.match(background, /\/trackalacker\/push\/signal/);
+  assert.match(background, /"Idempotency-Key": envelope\.signalId/);
+  assert.match(background, /"X-Cart-Assist-Token": activeConfig\.token/);
+  assert.match(main, /requestUrl\.pathname === "\/trackalacker\/push\/signal"/);
+  assert.match(main, /allowedTransports: \["chrome_extension_web_push"\]/);
+  assert.ok(main.indexOf("if (!hasAllowedLocalOrigin(req))") < main.indexOf('requestUrl.pathname === "/trackalacker/push/signal"'));
+  assert.match(main, /req\.headers\["x-cart-assist-token"\] !== settings\.companionToken/);
 });
 
 test("a failed durable receipt remains retryable instead of becoming an in-memory duplicate", () => {
@@ -60,42 +61,9 @@ test("a failed durable receipt remains retryable instead of becoming an in-memor
   assert.match(main, /\[400, 409, 422, 500, 503\]\.includes\(requestedStatus\)/);
 });
 
-test("native capture activates only for the signed package and the local API bypasses extension-origin checks only after bearer auth", () => {
-  assert.match(main, /process\.windowsStore === true/);
-  assert.match(main, /Authorization|authorization/);
-  assert.match(main, /crypto\.timingSafeEqual/);
-  assert.match(main, /"\/api\/v1\/health", "\/api\/v1\/signals"/);
-  assert.ok(main.indexOf('["/api/v1/health", "/api/v1/signals"]') < main.indexOf("if (!hasAllowedLocalOrigin(req))"));
-  assert.doesNotMatch(main.slice(main.indexOf("function publicSettings"), main.indexOf("function readSignalBridgeStatus")), /signalBridgeToken/);
-});
-
-test("an unsigned Windows copy offers only a verified stable AppX through Windows App Installer", () => {
-  const installerFlow = main.slice(
-    main.indexOf("async function installSignedSignalBridgePackage"),
-    main.indexOf("async function requestSignalBridgePermission")
-  );
-  assert.match(main, /process\.windowsStore !== true\) return installSignedSignalBridgePackage\(\)/);
-  assert.match(main, /if \(!fs\.existsSync\(executable\)\) return installSignedSignalBridgePackage\(\)/);
-  assert.match(installerFlow, /checkForSignedAppx\(app\.getVersion\(\)\)/);
-  assert.match(installerFlow, /downloadSignedAppx/);
-  assert.match(installerFlow, /shell\.openPath\(downloaded\.packagePath\)/);
-  assert.match(installerFlow, /Windows will verify the publisher and ask for your approval/);
-  assert.doesNotMatch(installerFlow, /powershell|Add-AppxPackage|ExecutionPolicy/i);
-  assert.match(updater, /release\.draft \|\| release\.prerelease/);
-  assert.match(updater, /String\(release\.tag_name\) !== `v\$\{version\.text\}`/);
-  assert.match(updater, /Cart-Confirm-Signals-\$\{version\.text\}-x64\.appx/);
-  assert.match(updater, /compareVersions\(plan\.version, current\) >= 0/);
-  assert.match(renderer, /Install signed listener package/);
-  assert.match(renderer, /Repair signed listener package/);
-  assert.match(renderer, /elements\.signalBridgeEnabled\.disabled = !packageReady/);
-});
-
-test("Windows builds compile the helper and publish AppX only when signing credentials are present", () => {
-  assert.match(buildScript, /dotnet/);
-  assert.match(buildScript, /CartCollect\.SignalBridge\.csproj/);
-  assert.match(buildScript, /--disable-build-servers/);
-  assert.match(buildScript, /afterPack: copySignalBridgeIntoApp/);
-  assert.match(buildScript, /\["EBUSY", "EACCES", "EPERM"\]/);
-  assert.match(buildScript, /Boolean\(process\.env\.CSC_LINK \|\| process\.env\.WIN_CSC_LINK\)/);
-  assert.match(buildScript, /Cart-Confirm-Signals-\$\{version\}-\$\{arch\}\.\$\{ext\}/);
+test("the renderer offers Chrome push setup without package installation", () => {
+  assert.match(renderer, /Connect TrackaLacker push/);
+  assert.match(renderer, /Recheck push connection/);
+  assert.match(renderer, /without server polling/);
+  assert.match(renderer, /elements\.signalBridgeEnabled\.disabled = false/);
 });

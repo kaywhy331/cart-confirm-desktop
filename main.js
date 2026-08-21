@@ -19,9 +19,7 @@ const path = require("node:path");
 const crypto = require("node:crypto");
 const { spawn } = require("node:child_process");
 const {
-  checkForSignedAppx,
   checkForUpdate,
-  downloadSignedAppx,
   downloadUpdate,
   userFacingReleaseNotes
 } = require("./lib/app-update");
@@ -204,7 +202,7 @@ const DISCORD_ERROR_RETRY_MS = 10_000;
 const QUIET_STORES = Object.freeze(["target", "walmart"]);
 const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60_000;
 const TRACKALACKER_CHECKPOINT_PRODUCTS = 5;
-const OFFICIAL_RELEASES_URL = "https://github.com/kaywhy331/cart-confirm-desktop/releases";
+const TRACKALACKER_FOLLOWED_URL = "https://www.trackalacker.com/products/followed";
 const backgroundLaunch = process.argv.includes("--background");
 
 let mainWindow = null;
@@ -235,12 +233,19 @@ let discordChannelReady = false;
 let discordNextPollAt = 0;
 let discordConnectionEpoch = 0;
 let signalActivations = {};
-let signalBridgeProcess = null;
-const signalBridgeIntentionalStops = new WeakSet();
-let signalBridgeLastError = "";
-let signalBridgeAccessNonce = "";
-let signalBridgeInstallInFlight = false;
-let signalBridgeInstallState = { status: "idle" };
+let trackalackerPushEnrollmentNonce = "";
+let trackalackerPushStatus = {
+  state: "disabled",
+  ready: false,
+  subscriptionPresent: false,
+  pendingSignals: 0,
+  lastHttpStatus: 0,
+  errorCode: "",
+  lastRegistrationAt: "",
+  lastNotificationAt: "",
+  lastDeliveryAt: "",
+  updatedAt: ""
+};
 let tray = null;
 let isQuitting = false;
 let configVersion = 1;
@@ -293,257 +298,22 @@ function signalJournalPath() {
   return path.join(app.getPath("userData"), "signal-journal.json");
 }
 
-function signalBridgeConfigPath() {
-  return path.join(app.getPath("userData"), "signal-bridge-config.json");
-}
-
-function signalBridgeStatusPath() {
-  return path.join(app.getPath("userData"), "signal-bridge-status.json");
-}
-
-function signalBridgeExecutablePath() {
-  return app.isPackaged
-    ? path.join(process.resourcesPath, "signal-bridge", "CartCollect.SignalBridge.exe")
-    : path.join(__dirname, "native", "CartCollect.SignalBridge", "publish", "win-x64", "CartCollect.SignalBridge.exe");
-}
-
-function writeSignalBridgeConfig() {
-  const dataDirectory = path.join(app.getPath("userData"), "signal-bridge");
-  const config = {
-    schemaVersion: 1,
-    enabled: Boolean(settings?.trackalackerSignalBridgeEnabled),
-    deliveryPaused: Boolean(settings?.trackalackerSignalDeliveryPaused),
-    startAtLogin: Boolean(settings?.trackalackerSignalStartAtLogin),
-    token: String(settings?.signalBridgeToken || ""),
-    apiPorts: PORT_CANDIDATES,
-    pendingDirectory: path.join(dataDirectory, "pending"),
-    failedDirectory: path.join(dataDirectory, "failed"),
-    statusPath: signalBridgeStatusPath(),
-    cartCollectExecutable: process.execPath,
-    requestAccessNonce: signalBridgeAccessNonce
-  };
-  fs.mkdirSync(path.dirname(signalBridgeConfigPath()), { recursive: true });
-  const temporary = `${signalBridgeConfigPath()}.tmp`;
-  fs.writeFileSync(temporary, JSON.stringify(config, null, 2), { mode: 0o600 });
-  fs.renameSync(temporary, signalBridgeConfigPath());
-}
-
-function configureSignalBridgeLoginLaunch() {
-  if (process.platform !== "win32" || process.windowsStore !== true) return;
-  if (signalBridgeProcess?.exitCode === null) return;
-  const executable = signalBridgeExecutablePath();
-  if (!fs.existsSync(executable)) return;
-  const startupProcess = spawn(executable, ["--config", signalBridgeConfigPath(), "--configure-startup"], {
-    windowsHide: true,
-    stdio: "ignore"
-  });
-  startupProcess.once("error", (error) => {
-    signalBridgeLastError = String(error?.message || "Windows login startup could not be updated.").slice(0, 240);
-    broadcast();
-  });
-  startupProcess.unref();
-}
-
-function startSignalBridgeProcess() {
-  if (
-    process.platform !== "win32"
-    || process.windowsStore !== true
-    || !settings?.trackalackerSignalBridgeEnabled
-    || signalBridgeProcess?.exitCode === null
-  ) return false;
-  const executable = signalBridgeExecutablePath();
-  if (!fs.existsSync(executable)) {
-    signalBridgeLastError = "The packaged Windows notification listener is missing. Reinstall the signed CartCollect package.";
-    return false;
-  }
-  try {
-    const child = spawn(executable, ["--config", signalBridgeConfigPath()], {
-      windowsHide: true,
-      stdio: "ignore"
-    });
-    signalBridgeProcess = child;
-    child.once("error", (error) => {
-      signalBridgeLastError = String(error?.message || "The notification listener could not start.").slice(0, 240);
-      broadcast();
-    });
-    child.once("exit", (code) => {
-      const intentionallyStopped = signalBridgeIntentionalStops.has(child);
-      if (signalBridgeProcess === child) signalBridgeProcess = null;
-      if (!isQuitting && settings?.trackalackerSignalBridgeEnabled) {
-        if (intentionallyStopped) {
-          startSignalBridgeProcess();
-        } else if (code) {
-          signalBridgeLastError = `The notification listener stopped with code ${code}.`;
-          broadcast();
-        }
-      }
-    });
-    child.unref();
-    signalBridgeLastError = "";
-    return true;
-  } catch (error) {
-    signalBridgeLastError = String(error?.message || "The notification listener could not start.").slice(0, 240);
-    return false;
-  }
-}
-
-function stopSignalBridgeProcess(options = {}) {
-  const child = signalBridgeProcess;
-  const afterExit = typeof options.afterExit === "function" ? options.afterExit : null;
-  if (child?.exitCode === null) {
-    signalBridgeIntentionalStops.add(child);
-    if (afterExit) child.once("exit", afterExit);
-    try {
-      if (child.kill()) return true;
-    } catch {
-      // The process exited between the state check and kill request.
-    }
-  }
-  if (signalBridgeProcess === child) signalBridgeProcess = null;
-  if (afterExit) afterExit();
-  return false;
-}
-
-function syncSignalBridgeRuntime() {
-  writeSignalBridgeConfig();
-  if (settings?.trackalackerSignalBridgeEnabled) {
-    startSignalBridgeProcess();
-  } else {
-    stopSignalBridgeProcess({
-      // Wait for the named helper mutex to be released before launching the
-      // one-shot startup-task reconciler. Otherwise a fast disable can leave
-      // Windows login startup enabled even though the saved setting is off.
-      afterExit: () => {
-        if (!isQuitting && !settings?.trackalackerSignalBridgeEnabled) {
-          configureSignalBridgeLoginLaunch();
-        }
-      }
-    });
-  }
-}
-
-function publishSignalBridgeInstallState(payload) {
-  signalBridgeInstallState = { ...payload };
-  broadcast();
-}
-
-async function installSignedSignalBridgePackage() {
-  if (process.platform !== "win32") {
-    throw new Error("The signed TrackaLacker listener package can be installed only on Windows.");
-  }
-  if (signalBridgeInstallInFlight) {
-    return {
-      status: "busy",
-      ...(signalBridgeInstallState.version ? { version: signalBridgeInstallState.version } : {})
-    };
-  }
-
-  signalBridgeInstallInFlight = true;
-  try {
-    publishSignalBridgeInstallState({ status: "checking" });
-    const plan = await checkForSignedAppx(app.getVersion());
-    if (!plan) {
-      publishSignalBridgeInstallState({ status: "unavailable" });
-      const confirmation = await dialog.showMessageBox(mainWindow, {
-        type: "info",
-        buttons: ["Open official releases", "Not now"],
-        defaultId: 0,
-        cancelId: 1,
-        noLink: true,
-        title: "Signed listener package unavailable",
-        message: "No compatible signed CartCollect AppX is published yet.",
-        detail: "CartCollect looked only for an official stable signed AppX at this version or newer. The unsigned installer cannot acquire Windows notification access. You can open the official releases page to check the current release status."
-      });
-      if (confirmation.response !== 0) return { status: "unavailable" };
-      await shell.openExternal(OFFICIAL_RELEASES_URL, { activate: true });
-      publishSignalBridgeInstallState({ status: "release-page-opened" });
-      return { status: "release-page-opened" };
-    }
-
-    publishSignalBridgeInstallState({ status: "available", version: plan.version });
-    const confirmation = await dialog.showMessageBox(mainWindow, {
-      type: "info",
-      buttons: ["Download and open AppX", "Not now"],
-      defaultId: 0,
-      cancelId: 1,
-      noLink: true,
-      title: "Install the signed TrackaLacker listener",
-      message: `CartCollect signed listener v${plan.version} is available.`,
-      detail: `CartCollect will download ${plan.appxAsset.name} from the official stable GitHub release, verify its exact SHA-256 checksum, and open Windows App Installer. Windows will verify the publisher and ask for your approval. After installation, close the currently running copy and launch CartCollect from the Start menu.`
-    });
-    if (confirmation.response !== 0) {
-      publishSignalBridgeInstallState({ status: "cancelled", version: plan.version });
-      return { status: "cancelled", version: plan.version };
-    }
-
-    let lastProgress = -1;
-    const downloaded = await downloadSignedAppx(
-      plan,
-      path.join(app.getPath("userData"), "verified-updates"),
-      ({ phase, received, total }) => {
-        const percent = total > 0 ? Math.min(100, Math.floor((received / total) * 100)) : 0;
-        if (phase === "downloading" && percent === lastProgress) return;
-        if (phase === "downloading") lastProgress = percent;
-        publishSignalBridgeInstallState({
-          status: phase,
-          version: plan.version,
-          received,
-          total,
-          percent
-        });
-      }
-    );
-    publishSignalBridgeInstallState({ status: "opening", version: plan.version });
-    const openError = await shell.openPath(downloaded.packagePath);
-    if (openError) throw new Error(`Windows App Installer could not open the signed package: ${openError}`);
-    publishSignalBridgeInstallState({ status: "installer-opened", version: plan.version });
-    return {
-      status: "installer-opened",
-      version: plan.version,
-      packageName: plan.appxAsset.name
-    };
-  } catch (error) {
-    publishSignalBridgeInstallState({
-      status: "error",
-      ...(signalBridgeInstallState.version ? { version: signalBridgeInstallState.version } : {}),
-      message: String(error?.message || "The signed listener package could not be opened.").slice(0, 240)
-    });
-    throw error;
-  } finally {
-    signalBridgeInstallInFlight = false;
-    broadcast();
-  }
-}
-
 async function requestSignalBridgePermission() {
-  if (process.platform !== "win32") {
-    throw new Error("Windows notification access requires Windows 10 or newer.");
-  }
-  if (process.windowsStore !== true) return installSignedSignalBridgePackage();
-  const executable = signalBridgeExecutablePath();
-  if (!fs.existsSync(executable)) return installSignedSignalBridgePackage();
   if (!settings.trackalackerSignalBridgeEnabled) {
-    throw new Error("Enable the TrackaLacker signal bridge before requesting notification access.");
+    throw new Error("Enable the TrackaLacker push bridge before connecting it.");
   }
-  signalBridgeAccessNonce = crypto.randomUUID();
-  writeSignalBridgeConfig();
-  if (signalBridgeProcess?.exitCode === null) return { requested: true };
-  const permissionProcess = spawn(executable, ["--config", signalBridgeConfigPath(), "--request-access"], {
-    windowsHide: true,
-    stdio: "ignore"
-  });
-  signalBridgeProcess = permissionProcess;
-  permissionProcess.once("error", (error) => {
-    signalBridgeLastError = String(error?.message || "Notification access could not be requested.").slice(0, 240);
-    broadcast();
-  });
-  permissionProcess.once("exit", () => {
-    if (signalBridgeProcess === permissionProcess) signalBridgeProcess = null;
-    if (!isQuitting && settings?.trackalackerSignalBridgeEnabled) startSignalBridgeProcess();
-    broadcast();
-  });
-  permissionProcess.unref();
-  return { requested: true };
+  trackalackerPushEnrollmentNonce = crypto.randomUUID();
+  trackalackerPushStatus = {
+    ...trackalackerPushStatus,
+    state: "awaiting-page",
+    ready: false,
+    errorCode: "",
+    updatedAt: new Date().toISOString()
+  };
+  configVersion += 1;
+  broadcast();
+  const via = await openPageInChrome(TRACKALACKER_FOLLOWED_URL);
+  return { requested: true, via };
 }
 
 function discordTokenPath() {
@@ -606,18 +376,13 @@ function loadSettings() {
   }
 
   startupWasDisarmed = purchaseModeEnabled(settings);
-  const resumeSignalsAtLogin = backgroundLaunch
-    && settings.trackalackerSignalStartAtLogin
-    && settings.trackalackerSignalBridgeEnabled
-    && settings.signalsEnabled;
   // Every process launch starts inert. Only an explicit Arm, Test, Open, or
   // Open-all action may lift this pause after the operator sees the dashboard.
   settings = {
     ...settings,
     automationEnabled: false,
-    signalsEnabled: resumeSignalsAtLogin,
-    monitoringPaused: !resumeSignalsAtLogin,
-    ...(resumeSignalsAtLogin ? { automationRunId: crypto.randomUUID() } : {})
+    signalsEnabled: false,
+    monitoringPaused: true
   };
   signalActivations = {};
 
@@ -639,12 +404,7 @@ function loadPersistedRuntimeState() {
   for (const [retailer, deadline] of Object.entries(runtimeState.storeOverloadUntil)) {
     if (deadline > Date.now()) storeOverloadUntil.set(retailer, deadline);
   }
-  if (settings.signalsEnabled && backgroundLaunch) {
-    status = {
-      ...status,
-      lastMessage: "Signals resumed at Windows login from the explicit background-start setting. TrackaLacker alerts can activate exact armed missions."
-    };
-  } else if (startupWasDisarmed) {
+  if (startupWasDisarmed) {
     status = {
       ...status,
       lastMessage: "Automation was disarmed and monitoring paused when Cart Confirm started. Review the current run and arm it again explicitly."
@@ -815,7 +575,6 @@ function publicSettings() {
     discordAutoOpen: settings.discordAutoOpen,
     trackalackerSignalBridgeEnabled: settings.trackalackerSignalBridgeEnabled,
     trackalackerSignalDeliveryPaused: settings.trackalackerSignalDeliveryPaused,
-    trackalackerSignalStartAtLogin: settings.trackalackerSignalStartAtLogin,
     trackalackerSignalDedupeWindowSeconds: settings.trackalackerSignalDedupeWindowSeconds,
     trackalackerSignalAliases: settings.trackalackerSignalAliases,
     configurationProfiles: settings.configurationProfiles,
@@ -827,26 +586,6 @@ function publicSettings() {
     msrpResearchEnabled: settings.msrpResearchEnabled,
     firstPartyOnly: true
   };
-}
-
-function readSignalBridgeStatus() {
-  try {
-    const value = JSON.parse(fs.readFileSync(signalBridgeStatusPath(), "utf8"));
-    if (!value || typeof value !== "object" || Array.isArray(value)) return {};
-    return {
-      state: String(value.state || "").slice(0, 40),
-      permission: String(value.permission || "unknown").slice(0, 40),
-      listenerReady: value.listenerReady === true,
-      startupState: String(value.startupState || "unknown").slice(0, 40),
-      pendingSignals: Math.max(0, Math.min(100_000, Number(value.pendingSignals) || 0)),
-      lastNotificationAt: String(value.lastNotificationAt || "").slice(0, 40),
-      lastDeliveryAt: String(value.lastDeliveryAt || "").slice(0, 40),
-      lastError: String(value.lastError || "").slice(0, 240),
-      updatedAt: String(value.updatedAt || "").slice(0, 40)
-    };
-  } catch {
-    return {};
-  }
 }
 
 function signalLatencySummary() {
@@ -863,33 +602,68 @@ function signalLatencySummary() {
   };
 }
 
+function trackalackerPushErrorMessage(code, httpStatus) {
+  const status = Math.max(0, Math.min(599, Number(httpStatus) || 0));
+  switch (String(code || "")) {
+    case "push-api-unavailable":
+      return "This Chrome version does not expose extension Web Push. Update Chrome and reload the bundled extension.";
+    case "push-subscription-read-failed":
+      return "Chrome could not read the extension's Web Push subscription. Retry from a signed-in TrackaLacker tab.";
+    case "subscription-key-mismatch":
+      return "The extension already has an unrelated Web Push subscription. It was left unchanged; reload a clean CartCollect extension profile.";
+    case "push-subscribe-failed":
+    case "push-enrollment-failed":
+    case "missing-subscription":
+    case "incomplete-subscription":
+    case "subscription-fingerprint-failed":
+      return "Chrome could not create a complete TrackaLacker-compatible Web Push subscription.";
+    case "page-bridge-failed":
+      return "The signed-in TrackaLacker page could not run the device-registration request. Reload that page and retry.";
+    case "network-error":
+      return "Device registration failed in the signed-in TrackaLacker page. Confirm the page is online, then retry.";
+    case "http-error":
+      return status ? `Device registration failed: HTTP ${status}` : "Device registration failed.";
+    case "push-payload-unreadable":
+      return "Chrome received a TrackaLacker push payload that did not contain usable notification text.";
+    case "signal-delivery-rejected":
+      return status ? `CartCollect rejected one sanitized push signal: HTTP ${status}` : "CartCollect rejected one sanitized push signal.";
+    case "signal-delivery-http":
+      return status ? `Push signal delivery is waiting after HTTP ${status}.` : "Push signal delivery is waiting to retry.";
+    case "desktop-unreachable":
+      return "Push signals are queued in Chrome until the CartCollect desktop app is reachable.";
+    default:
+      return "";
+  }
+}
+
 function signalBridgeSnapshot() {
-  const helper = readSignalBridgeStatus();
   const latest = signalJournal.records[0] || null;
-  const windows = process.platform === "win32";
-  const signedPackageActive = windows && process.windowsStore === true;
-  const helperInstalled = signedPackageActive && fs.existsSync(signalBridgeExecutablePath());
+  const statusUpdatedAt = new Date(trackalackerPushStatus.updatedAt || "").getTime();
+  const helloAt = new Date(companionHello?.seenAt || "").getTime();
+  const extensionConnected = (
+    Number.isFinite(statusUpdatedAt) && Date.now() - statusUpdatedAt < 90_000
+  ) || (
+    Number.isFinite(helloAt) && Date.now() - helloAt < 90_000 && !companionHello?.reason
+  );
   return {
-    supported: signedPackageActive,
-    helperInstalled,
-    packageReady: signedPackageActive && helperInstalled,
-    installSupported: windows && (!signedPackageActive || !helperInstalled),
-    installInFlight: signalBridgeInstallInFlight,
-    install: { ...signalBridgeInstallState },
+    supported: true,
+    transport: "chrome-extension-web-push",
+    extensionConnected,
     enabled: Boolean(settings?.trackalackerSignalBridgeEnabled),
     deliveryPaused: Boolean(settings?.trackalackerSignalDeliveryPaused),
-    startAtLogin: Boolean(settings?.trackalackerSignalStartAtLogin),
-    helperRunning: Boolean(signalBridgeProcess && signalBridgeProcess.exitCode === null),
-    helperState: helper.state || (signalBridgeLastError ? "error" : "stopped"),
-    notificationPermission: helper.permission || "unknown",
-    listenerReady: helper.listenerReady === true,
-    startupState: helper.startupState || "unknown",
+    helperState: trackalackerPushStatus.state || (settings?.trackalackerSignalBridgeEnabled ? "awaiting-page" : "disabled"),
+    listenerReady: trackalackerPushStatus.ready === true,
+    subscriptionPresent: trackalackerPushStatus.subscriptionPresent === true,
     mappingCount: trackalackerSignalIndex.mappings.length,
-    pendingSignals: helper.pendingSignals || 0,
-    lastNotificationAt: helper.lastNotificationAt || "",
-    lastDeliveryAt: helper.lastDeliveryAt || "",
-    lastError: helper.lastError || signalBridgeLastError,
-    updatedAt: helper.updatedAt || "",
+    pendingSignals: trackalackerPushStatus.pendingSignals || 0,
+    lastRegistrationAt: trackalackerPushStatus.lastRegistrationAt || "",
+    lastNotificationAt: trackalackerPushStatus.lastNotificationAt || "",
+    lastDeliveryAt: trackalackerPushStatus.lastDeliveryAt || "",
+    lastError: trackalackerPushErrorMessage(
+      trackalackerPushStatus.errorCode,
+      trackalackerPushStatus.lastHttpStatus
+    ),
+    updatedAt: trackalackerPushStatus.updatedAt || "",
     latestSignal: latest ? { ...latest, rawBody: latest.rawBody.slice(0, 500) } : null,
     recentSignals: publicSignalJournal(signalJournal, 100),
     latency: signalLatencySummary()
@@ -981,8 +755,7 @@ function publishUpdaterState(payload) {
 function automaticUpdatesSupported() {
   return app.isPackaged
     && process.platform === "win32"
-    && process.arch === "x64"
-    && process.windowsStore !== true;
+    && process.arch === "x64";
 }
 
 async function refreshUpdateAvailability() {
@@ -990,9 +763,7 @@ async function refreshUpdateAvailability() {
     availableUpdatePlan = null;
     publishUpdaterState({
       status: "unavailable",
-      message: process.windowsStore === true
-        ? "Install newer signed AppX releases from the official GitHub release page."
-        : "Automatic updates are available in the packaged 64-bit Windows app."
+      message: "Automatic updates are available in the packaged 64-bit Windows app."
     });
     return null;
   }
@@ -1090,8 +861,8 @@ function updateApprovalDetail(plan) {
   const releaseNotes = userFacingReleaseNotes(plan.releaseNotes)
     || "A newer Cart Confirm version is ready. No change summary was provided for this release.";
   const installDetail = unsigned
-    ? "This release is intentionally unsigned. Windows may show Unknown publisher or a Microsoft Defender SmartScreen warning. If you continue, Cart Confirm will download the official GitHub Setup asset, verify its exact SHA-256 checksum, install it, close this version, and relaunch."
-    : "Cart Confirm will download the official GitHub Setup asset, verify its exact SHA-256 checksum, install it, close this version, and relaunch.";
+    ? "This release is intentionally unsigned. Windows may show Unknown publisher or a Microsoft Defender SmartScreen warning. If you continue, Cart Confirm will download the official GitHub Setup asset, verify its exact SHA-256 checksum, install the desktop app and bundled Chrome extension files together, close this version, and relaunch. Chrome reloads the unpacked companion from the updated folder; approve any new extension permission prompt once if Chrome asks."
+    : "Cart Confirm will download the official GitHub Setup asset, verify its exact SHA-256 checksum, install the desktop app and bundled Chrome extension files together, close this version, and relaunch. Chrome reloads the unpacked companion from the updated folder; approve any new extension permission prompt once if Chrome asks.";
   return [
     `What's new in v${plan.version}`,
     "",
@@ -2167,7 +1938,7 @@ function updateTrackalackerSignalAction(signalId, changes) {
   broadcast();
 }
 
-function handleTrackalackerSignalRequest(envelope, idempotencyKey) {
+function handleTrackalackerSignalRequest(envelope, idempotencyKey, options = {}) {
   const previousJournal = signalJournal;
   const outcome = processTrackalackerSignal({
     envelope,
@@ -2175,6 +1946,7 @@ function handleTrackalackerSignalRequest(envelope, idempotencyKey) {
     journal: signalJournal,
     index: trackalackerSignalIndex,
     settings,
+    validation: options.validation,
     now: Date.now()
   });
   signalJournal = outcome.journal;
@@ -2536,25 +2308,47 @@ function hasAllowedLocalOrigin(req) {
   );
 }
 
-function signalBridgeAuthorized(req) {
-  const authorization = String(req.headers.authorization || "");
-  const match = authorization.match(/^Bearer ([A-Za-z0-9]+)$/);
-  const expected = Buffer.from(String(settings?.signalBridgeToken || ""));
-  const supplied = Buffer.from(match?.[1] || "");
-  return expected.length >= 32
-    && expected.length === supplied.length
-    && crypto.timingSafeEqual(expected, supplied);
+function safePushTimestamp(value) {
+  const timestamp = new Date(String(value || ""));
+  return Number.isNaN(timestamp.getTime()) ? "" : timestamp.toISOString();
 }
 
-function signalHealthPayload() {
-  return {
-    status: "ready",
-    mission_engine: settings ? "ready" : "unavailable",
-    database: runtimeState && signalJournal ? "ready" : "unavailable",
-    signal_delivery: settings?.trackalackerSignalDeliveryPaused ? "paused" : "ready",
-    mappings: trackalackerSignalIndex.mappings.length,
-    port: companionPort
+function handleTrackalackerPushStatusRequest(input = {}) {
+  const allowedStates = new Set(["disabled", "awaiting-page", "subscribing", "registering", "ready", "error"]);
+  const allowedErrors = new Set([
+    "",
+    "push-api-unavailable",
+    "push-subscription-read-failed",
+    "subscription-key-mismatch",
+    "push-subscribe-failed",
+    "push-enrollment-failed",
+    "missing-subscription",
+    "incomplete-subscription",
+    "subscription-fingerprint-failed",
+    "page-bridge-failed",
+    "network-error",
+    "http-error",
+    "push-payload-unreadable",
+    "signal-delivery-rejected",
+    "signal-delivery-http",
+    "desktop-unreachable"
+  ]);
+  const state = allowedStates.has(String(input?.state || "")) ? String(input.state) : "error";
+  const errorCode = allowedErrors.has(String(input?.errorCode || "")) ? String(input.errorCode || "") : "";
+  trackalackerPushStatus = {
+    state,
+    ready: state === "ready" && input?.ready === true,
+    subscriptionPresent: input?.subscriptionPresent === true,
+    pendingSignals: Math.max(0, Math.min(50, Number(input?.pendingSignals) || 0)),
+    lastHttpStatus: Math.max(0, Math.min(599, Number(input?.lastHttpStatus) || 0)),
+    errorCode,
+    lastRegistrationAt: safePushTimestamp(input?.lastRegistrationAt),
+    lastNotificationAt: safePushTimestamp(input?.lastNotificationAt),
+    lastDeliveryAt: safePushTimestamp(input?.lastDeliveryAt),
+    updatedAt: new Date().toISOString()
   };
+  broadcast();
+  return { statusCode: 200, payload: { ok: true } };
 }
 
 function writeJson(req, res, statusCode, payload) {
@@ -2666,6 +2460,11 @@ function extensionConfig() {
     ),
     catalogSearch: activeCatalogSearch,
     trackalackerImport: activeTrackalackerImport,
+    trackalackerPush: {
+      enabled: settings.trackalackerSignalBridgeEnabled === true,
+      deliveryPaused: settings.trackalackerSignalDeliveryPaused === true,
+      enrollmentNonce: trackalackerPushEnrollmentNonce
+    },
     token: settings.companionToken,
     configVersion,
     appVersion: app.getVersion()
@@ -2677,24 +2476,6 @@ function startServerOnPort(port) {
     const server = http.createServer((req, res) => {
       const requestUrl = new URL(req.url || "/", `http://127.0.0.1:${port}`);
 
-      if (["/api/v1/health", "/api/v1/signals"].includes(requestUrl.pathname)) {
-        if (!signalBridgeAuthorized(req)) {
-          writeJson(req, res, 401, { error: "invalid-bearer-token" });
-          return;
-        }
-        if (req.method === "GET" && requestUrl.pathname === "/api/v1/health") {
-          writeJson(req, res, 200, signalHealthPayload());
-          return;
-        }
-        if (req.method === "POST" && requestUrl.pathname === "/api/v1/signals") {
-          const idempotencyKey = String(req.headers["idempotency-key"] || "");
-          readJsonRequest(req, res, (body) => handleTrackalackerSignalRequest(body, idempotencyKey));
-          return;
-        }
-        writeJson(req, res, 405, { error: "method-not-allowed" });
-        return;
-      }
-
       if (req.method === "OPTIONS") {
         const origin = corsOrigin(req);
         noteServerContact(req, requestUrl, !origin);
@@ -2702,7 +2483,7 @@ function startServerOnPort(port) {
         if (origin) {
           res.setHeader("Access-Control-Allow-Origin", origin);
           res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-          res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-Cart-Assist-Token, X-Cart-Assist-Extension");
+          res.setHeader("Access-Control-Allow-Headers", "Content-Type, Idempotency-Key, X-Cart-Assist-Token, X-Cart-Assist-Extension");
           res.setHeader("Access-Control-Max-Age", "600");
           res.setHeader("Vary", "Origin");
         }
@@ -2778,6 +2559,27 @@ function startServerOnPort(port) {
           return;
         }
         readJsonRequest(req, res, (body) => trackalackerCaptureRequest(body));
+        return;
+      }
+
+      if (req.method === "POST" && requestUrl.pathname === "/trackalacker/push/status") {
+        if (req.headers["x-cart-assist-token"] !== settings.companionToken) {
+          writeJson(req, res, 401, { error: "invalid-token" });
+          return;
+        }
+        readJsonRequest(req, res, (body) => handleTrackalackerPushStatusRequest(body));
+        return;
+      }
+
+      if (req.method === "POST" && requestUrl.pathname === "/trackalacker/push/signal") {
+        if (req.headers["x-cart-assist-token"] !== settings.companionToken) {
+          writeJson(req, res, 401, { error: "invalid-token" });
+          return;
+        }
+        const idempotencyKey = String(req.headers["idempotency-key"] || "");
+        readJsonRequest(req, res, (body) => handleTrackalackerSignalRequest(body, idempotencyKey, {
+          validation: { allowedTransports: ["chrome_extension_web_push"] }
+        }));
         return;
       }
 
@@ -2906,14 +2708,12 @@ function showDashboard() {
 function refreshTrayMenu() {
   if (!tray) return;
   const bridge = signalBridgeSnapshot();
-  const permission = bridge.notificationPermission === "allowed" ? "granted" : bridge.notificationPermission;
   tray.setToolTip(`CartCollect · ${bridge.enabled ? bridge.helperState : "bridge disabled"}`);
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: "Open Dashboard", click: showDashboard },
     { type: "separator" },
-    { label: `Listener: ${bridge.listenerReady ? "ready" : bridge.helperState}`, enabled: false },
-    { label: `Notification access: ${permission}`, enabled: false },
-    { label: `Windows login: ${bridge.startAtLogin ? bridge.startupState : "disabled"}`, enabled: false },
+    { label: `Chrome push: ${bridge.listenerReady ? "ready" : bridge.helperState}`, enabled: false },
+    { label: `Extension: ${bridge.extensionConnected ? "connected" : "waiting"}`, enabled: false },
     { label: `Mappings: ${bridge.mappingCount}`, enabled: false },
     { label: `Pending signals: ${bridge.pendingSignals}`, enabled: false },
     { type: "separator" },
@@ -2925,29 +2725,15 @@ function refreshTrayMenu() {
       click: (item) => {
         settings = { ...settings, trackalackerSignalDeliveryPaused: item.checked };
         persistSettings();
-        syncSignalBridgeRuntime();
+        configVersion += 1;
         broadcast();
       }
     },
     {
-      label: "Start bridge at Windows login",
-      type: "checkbox",
-      checked: bridge.startAtLogin,
-      enabled: bridge.supported && bridge.enabled,
-      click: (item) => {
-        settings = { ...settings, trackalackerSignalStartAtLogin: item.checked };
-        persistSettings();
-        syncSignalBridgeRuntime();
-        broadcast();
-      }
-    },
-    {
-      label: bridge.packageReady
-        ? "Request notification access"
-        : bridge.supported ? "Repair signed listener package" : "Install signed listener package",
-      enabled: bridge.packageReady ? bridge.enabled : bridge.installSupported && !bridge.installInFlight,
+      label: bridge.listenerReady ? "Recheck TrackaLacker push" : "Connect TrackaLacker push",
+      enabled: bridge.enabled,
       click: () => void requestSignalBridgePermission().catch((error) => {
-        dialog.showErrorBox("TrackaLacker listener", error.message);
+        dialog.showErrorBox("TrackaLacker push bridge", error.message);
       })
     },
     { label: "View Signal Audit", click: () => shell.showItemInFolder(signalJournalPath()) },
@@ -3101,7 +2887,6 @@ function registerIpc() {
     );
     settings = normalized;
     rebuildTrackalackerSignalIndex();
-    syncSignalBridgeRuntime();
     const prepIds = new Set(settings.walmartPrepCandidates.map((candidate) => candidate.id));
     runtimeState.walmartPrepObservations = Object.fromEntries(
       Object.entries(runtimeState.walmartPrepObservations || {}).filter(([productId]) => prepIds.has(productId))
@@ -4256,8 +4041,6 @@ if (!gotLock) {
     } catch (error) {
       dialog.showErrorBox("Companion server error", error.message);
     }
-    syncSignalBridgeRuntime();
-
     createWindow({ show: !backgroundLaunch });
     createTray();
     startUpdateChecks();
@@ -4285,6 +4068,5 @@ app.on("before-quit", () => {
   if (discordPollTimer) clearInterval(discordPollTimer);
   if (updateCheckTimer) clearInterval(updateCheckTimer);
   quietAbortRegistry.abortAll();
-  stopSignalBridgeProcess();
   if (companionServer) companionServer.close();
 });

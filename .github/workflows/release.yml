@@ -19,9 +19,6 @@ jobs:
         with:
           node-version: 24
           cache: npm
-      - uses: actions/setup-dotnet@v5
-        with:
-          dotnet-version: 8.0.x
       - name: Require a verified signed tag matching package.json
         shell: pwsh
         env:
@@ -56,11 +53,10 @@ jobs:
         shell: pwsh
         run: |
           $executables = @(Get-ChildItem dist -Filter *.exe)
-          $packages = @(Get-ChildItem dist -Filter *.appx)
-          if ($executables.Count -ne 2 -or $packages.Count -ne 1) {
-            throw "Expected two Windows executables and one signed AppX package; found $($executables.Count) executables and $($packages.Count) AppX packages."
+          if ($executables.Count -ne 2) {
+            throw "Expected two signed Windows executables; found $($executables.Count)."
           }
-          $artifacts = @($executables) + @($packages)
+          $artifacts = @($executables)
           foreach ($artifact in $artifacts) {
             $signature = Get-AuthenticodeSignature $artifact.FullName
             if ($signature.Status -ne "Valid") {
@@ -68,12 +64,12 @@ jobs:
             }
           }
           $checksums = @(Get-Content dist/SHA256SUMS.txt)
-          if ($checksums.Count -ne 3) {
-            throw "Expected exactly three checksum entries, found $($checksums.Count)."
+          if ($checksums.Count -ne 2) {
+            throw "Expected exactly two checksum entries, found $($checksums.Count)."
           }
           $seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
           foreach ($line in $checksums) {
-            if ($line -notmatch '^(?<hash>[0-9a-f]{64})\s{2}(?<name>[^\\/]+\.(?:exe|appx))$') {
+            if ($line -notmatch '^(?<hash>[0-9a-f]{64})\s{2}(?<name>[^\\/]+\.exe)$') {
               throw "Malformed checksum entry: $line"
             }
             $expectedName = $Matches.name
@@ -94,7 +90,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $assets = @(Get-ChildItem dist -File | Where-Object Extension -In '.exe', '.appx' | Sort-Object Name | ForEach-Object FullName)
+          $assets = @(Get-ChildItem dist -Filter *.exe | Sort-Object Name | ForEach-Object FullName)
           $assets += (Resolve-Path dist/SHA256SUMS.txt).Path
           $arguments = @(
             "release", "create", $env:GITHUB_REF_NAME,

@@ -174,19 +174,16 @@ test("normalizes a multi-store buy list and preserves a private token", () => {
   assert.equal(result.discordAutoOpen, true);
   assert.equal(result.trackalackerSignalBridgeEnabled, false);
   assert.equal(result.trackalackerSignalDeliveryPaused, false);
-  assert.equal(result.trackalackerSignalStartAtLogin, false);
   assert.equal(result.trackalackerSignalDedupeWindowSeconds, 300);
-  assert.match(result.signalBridgeToken, /^[a-f0-9]{48}$/);
   assert.equal(result.products[2].signalEntry, "product");
   assert.equal(result.products[2].signalAutoOpen, true);
 });
 
-test("normalizes TrackaLacker signal bridge controls and approved aliases", () => {
+test("normalizes TrackaLacker push bridge controls and approved aliases", () => {
   const normalized = normalizeSettings({
     products: PRODUCTS,
     trackalackerSignalBridgeEnabled: true,
     trackalackerSignalDeliveryPaused: true,
-    trackalackerSignalStartAtLogin: true,
     trackalackerSignalDedupeWindowSeconds: 600,
     trackalackerSignalAliases: [
       { sourceProductId: "12345", retailer: "WALMART", alias: "  Perfect   Order Box " },
@@ -196,7 +193,6 @@ test("normalizes TrackaLacker signal bridge controls and approved aliases", () =
   });
   assert.equal(normalized.trackalackerSignalBridgeEnabled, true);
   assert.equal(normalized.trackalackerSignalDeliveryPaused, true);
-  assert.equal(normalized.trackalackerSignalStartAtLogin, true);
   assert.equal(normalized.trackalackerSignalDedupeWindowSeconds, 600);
   assert.deepEqual(normalized.trackalackerSignalAliases, [{
     sourceProductId: "12345",
@@ -207,11 +203,6 @@ test("normalizes TrackaLacker signal bridge controls and approved aliases", () =
     products: PRODUCTS,
     trackalackerSignalDedupeWindowSeconds: 10
   }), /Signal dedupe window/);
-  assert.equal(normalizeSettings({
-    products: PRODUCTS,
-    trackalackerSignalBridgeEnabled: false,
-    trackalackerSignalStartAtLogin: true
-  }).trackalackerSignalStartAtLogin, false);
 });
 
 test("accepts 100 store options and rejects a 101st", () => {

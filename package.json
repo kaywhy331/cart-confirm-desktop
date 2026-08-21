@@ -1,6 +1,6 @@
 {
   "name": "cart-confirm-desktop",
-  "version": "3.8.1",
+  "version": "3.8.2",
   "description": "A traffic-governed, fail-closed first-party buy-list companion for Target, Walmart, and Amazon.",
   "main": "main.js",
   "author": "Kevin",
@@ -59,15 +59,6 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true
-    },
-    "appx": {
-      "identityName": "CartCollect",
-      "applicationId": "CartCollect",
-      "displayName": "CartCollect",
-      "customManifestPath": "appxmanifest.xml",
-      "addAutoLaunchExtension": false,
-      "minVersion": "10.0.17763.0",
-      "maxVersionTested": "10.0.26100.0"
     }
   }
 }

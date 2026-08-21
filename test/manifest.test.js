@@ -14,6 +14,8 @@ test("the Manifest V3 companion declares every safety script and required permis
   assert.equal(manifest.version, packageJson.version);
   assert.deepEqual(manifest.content_scripts[0].js, ["retailers.js", "quick-add.js", "catalog-search.js", "evidence.js", "safety.js", "schedule-gate.js", "queue-capture.js", "content.js"]);
   assert.equal(manifest.permissions.includes("activeTab"), true);
+  assert.equal(manifest.permissions.includes("notifications"), true);
+  assert.equal(manifest.permissions.includes("scripting"), true);
   assert.equal(manifest.permissions.includes("storage"), true);
   assert.equal(manifest.permissions.includes("declarativeNetRequest"), true);
   assert.equal(manifest.permissions.includes("webRequest"), true);
@@ -35,7 +37,8 @@ test("the Manifest V3 companion declares every safety script and required permis
     assert.equal(fs.existsSync(path.join(__dirname, "..", "extension", asset)), true, `${asset} must exist`);
   }
   const background = fs.readFileSync(path.join(__dirname, "..", "extension", manifest.background.service_worker), "utf8");
-  assert.match(background, /importScripts\([^)]*schedule-gate\.js[^)]*retailers\.js[^)]*tab-context\.js[^)]*open-request-tabs\.js[^)]*update-state\.js/);
+  assert.equal(manifest.minimum_chrome_version, "121");
+  assert.match(background, /importScripts\([^)]*schedule-gate\.js[^)]*retailers\.js[^)]*trackalacker-push\.js[^)]*tab-context\.js[^)]*open-request-tabs\.js[^)]*update-state\.js/);
 
   const popupHtml = fs.readFileSync(path.join(__dirname, "..", "extension", "popup.html"), "utf8");
   const popupSource = fs.readFileSync(path.join(__dirname, "..", "extension", "popup.js"), "utf8");
