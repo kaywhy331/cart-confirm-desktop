@@ -18,7 +18,13 @@ const http = require("node:http");
 const path = require("node:path");
 const crypto = require("node:crypto");
 const { spawn } = require("node:child_process");
-const { checkForUpdate, downloadUpdate, userFacingReleaseNotes } = require("./lib/app-update");
+const {
+  checkForSignedAppx,
+  checkForUpdate,
+  downloadSignedAppx,
+  downloadUpdate,
+  userFacingReleaseNotes
+} = require("./lib/app-update");
 const { checkoutTrustWithEvidence, combinedOrderStatus } = require("./lib/core");
 
 const {
@@ -198,6 +204,7 @@ const DISCORD_ERROR_RETRY_MS = 10_000;
 const QUIET_STORES = Object.freeze(["target", "walmart"]);
 const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60_000;
 const TRACKALACKER_CHECKPOINT_PRODUCTS = 5;
+const OFFICIAL_RELEASES_URL = "https://github.com/kaywhy331/cart-confirm-desktop/releases";
 const backgroundLaunch = process.argv.includes("--background");
 
 let mainWindow = null;
@@ -232,6 +239,8 @@ let signalBridgeProcess = null;
 const signalBridgeIntentionalStops = new WeakSet();
 let signalBridgeLastError = "";
 let signalBridgeAccessNonce = "";
+let signalBridgeInstallInFlight = false;
+let signalBridgeInstallState = { status: "idle" };
 let tray = null;
 let isQuitting = false;
 let configVersion = 1;
@@ -413,18 +422,112 @@ function syncSignalBridgeRuntime() {
   }
 }
 
-function requestSignalBridgePermission() {
-  if (process.platform !== "win32" || process.windowsStore !== true) {
-    throw new Error("Windows notification access requires the signed CartCollect Windows package.");
+function publishSignalBridgeInstallState(payload) {
+  signalBridgeInstallState = { ...payload };
+  broadcast();
+}
+
+async function installSignedSignalBridgePackage() {
+  if (process.platform !== "win32") {
+    throw new Error("The signed TrackaLacker listener package can be installed only on Windows.");
   }
+  if (signalBridgeInstallInFlight) {
+    return {
+      status: "busy",
+      ...(signalBridgeInstallState.version ? { version: signalBridgeInstallState.version } : {})
+    };
+  }
+
+  signalBridgeInstallInFlight = true;
+  try {
+    publishSignalBridgeInstallState({ status: "checking" });
+    const plan = await checkForSignedAppx(app.getVersion());
+    if (!plan) {
+      publishSignalBridgeInstallState({ status: "unavailable" });
+      const confirmation = await dialog.showMessageBox(mainWindow, {
+        type: "info",
+        buttons: ["Open official releases", "Not now"],
+        defaultId: 0,
+        cancelId: 1,
+        noLink: true,
+        title: "Signed listener package unavailable",
+        message: "No compatible signed CartCollect AppX is published yet.",
+        detail: "CartCollect looked only for an official stable signed AppX at this version or newer. The unsigned installer cannot acquire Windows notification access. You can open the official releases page to check the current release status."
+      });
+      if (confirmation.response !== 0) return { status: "unavailable" };
+      await shell.openExternal(OFFICIAL_RELEASES_URL, { activate: true });
+      publishSignalBridgeInstallState({ status: "release-page-opened" });
+      return { status: "release-page-opened" };
+    }
+
+    publishSignalBridgeInstallState({ status: "available", version: plan.version });
+    const confirmation = await dialog.showMessageBox(mainWindow, {
+      type: "info",
+      buttons: ["Download and open AppX", "Not now"],
+      defaultId: 0,
+      cancelId: 1,
+      noLink: true,
+      title: "Install the signed TrackaLacker listener",
+      message: `CartCollect signed listener v${plan.version} is available.`,
+      detail: `CartCollect will download ${plan.appxAsset.name} from the official stable GitHub release, verify its exact SHA-256 checksum, and open Windows App Installer. Windows will verify the publisher and ask for your approval. After installation, close the currently running copy and launch CartCollect from the Start menu.`
+    });
+    if (confirmation.response !== 0) {
+      publishSignalBridgeInstallState({ status: "cancelled", version: plan.version });
+      return { status: "cancelled", version: plan.version };
+    }
+
+    let lastProgress = -1;
+    const downloaded = await downloadSignedAppx(
+      plan,
+      path.join(app.getPath("userData"), "verified-updates"),
+      ({ phase, received, total }) => {
+        const percent = total > 0 ? Math.min(100, Math.floor((received / total) * 100)) : 0;
+        if (phase === "downloading" && percent === lastProgress) return;
+        if (phase === "downloading") lastProgress = percent;
+        publishSignalBridgeInstallState({
+          status: phase,
+          version: plan.version,
+          received,
+          total,
+          percent
+        });
+      }
+    );
+    publishSignalBridgeInstallState({ status: "opening", version: plan.version });
+    const openError = await shell.openPath(downloaded.packagePath);
+    if (openError) throw new Error(`Windows App Installer could not open the signed package: ${openError}`);
+    publishSignalBridgeInstallState({ status: "installer-opened", version: plan.version });
+    return {
+      status: "installer-opened",
+      version: plan.version,
+      packageName: plan.appxAsset.name
+    };
+  } catch (error) {
+    publishSignalBridgeInstallState({
+      status: "error",
+      ...(signalBridgeInstallState.version ? { version: signalBridgeInstallState.version } : {}),
+      message: String(error?.message || "The signed listener package could not be opened.").slice(0, 240)
+    });
+    throw error;
+  } finally {
+    signalBridgeInstallInFlight = false;
+    broadcast();
+  }
+}
+
+async function requestSignalBridgePermission() {
+  if (process.platform !== "win32") {
+    throw new Error("Windows notification access requires Windows 10 or newer.");
+  }
+  if (process.windowsStore !== true) return installSignedSignalBridgePackage();
+  const executable = signalBridgeExecutablePath();
+  if (!fs.existsSync(executable)) return installSignedSignalBridgePackage();
   if (!settings.trackalackerSignalBridgeEnabled) {
     throw new Error("Enable the TrackaLacker signal bridge before requesting notification access.");
   }
   signalBridgeAccessNonce = crypto.randomUUID();
   writeSignalBridgeConfig();
   if (signalBridgeProcess?.exitCode === null) return { requested: true };
-  const executable = signalBridgeExecutablePath();
-  if (!fs.existsSync(executable)) throw new Error("The packaged Windows notification listener is missing. Reinstall CartCollect.");
   const permissionProcess = spawn(executable, ["--config", signalBridgeConfigPath(), "--request-access"], {
     windowsHide: true,
     stdio: "ignore"
@@ -763,8 +866,16 @@ function signalLatencySummary() {
 function signalBridgeSnapshot() {
   const helper = readSignalBridgeStatus();
   const latest = signalJournal.records[0] || null;
+  const windows = process.platform === "win32";
+  const signedPackageActive = windows && process.windowsStore === true;
+  const helperInstalled = signedPackageActive && fs.existsSync(signalBridgeExecutablePath());
   return {
-    supported: process.platform === "win32" && process.windowsStore === true,
+    supported: signedPackageActive,
+    helperInstalled,
+    packageReady: signedPackageActive && helperInstalled,
+    installSupported: windows && (!signedPackageActive || !helperInstalled),
+    installInFlight: signalBridgeInstallInFlight,
+    install: { ...signalBridgeInstallState },
     enabled: Boolean(settings?.trackalackerSignalBridgeEnabled),
     deliveryPaused: Boolean(settings?.trackalackerSignalDeliveryPaused),
     startAtLogin: Boolean(settings?.trackalackerSignalStartAtLogin),
@@ -2831,15 +2942,13 @@ function refreshTrayMenu() {
       }
     },
     {
-      label: "Request notification access",
-      enabled: bridge.enabled && bridge.supported,
-      click: () => {
-        try {
-          requestSignalBridgePermission();
-        } catch (error) {
-          dialog.showErrorBox("Notification access", error.message);
-        }
-      }
+      label: bridge.packageReady
+        ? "Request notification access"
+        : bridge.supported ? "Repair signed listener package" : "Install signed listener package",
+      enabled: bridge.packageReady ? bridge.enabled : bridge.installSupported && !bridge.installInFlight,
+      click: () => void requestSignalBridgePermission().catch((error) => {
+        dialog.showErrorBox("TrackaLacker listener", error.message);
+      })
     },
     { label: "View Signal Audit", click: () => shell.showItemInFolder(signalJournalPath()) },
     { type: "separator" },

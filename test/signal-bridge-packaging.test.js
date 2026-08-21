@@ -11,6 +11,8 @@ const helper = fs.readFileSync(path.join(root, "native", "CartCollect.SignalBrid
 const project = fs.readFileSync(path.join(root, "native", "CartCollect.SignalBridge", "CartCollect.SignalBridge.csproj"), "utf8");
 const manifest = fs.readFileSync(path.join(root, "build", "appxmanifest.xml"), "utf8");
 const buildScript = fs.readFileSync(path.join(root, "scripts", "build-windows.js"), "utf8");
+const updater = fs.readFileSync(path.join(root, "lib", "app-update.js"), "utf8");
+const renderer = fs.readFileSync(path.join(root, "src", "renderer.js"), "utf8");
 const packageJson = require("../package.json");
 
 test("the signed AppX declares native notification access and opt-in startup", () => {
@@ -65,6 +67,27 @@ test("native capture activates only for the signed package and the local API byp
   assert.match(main, /"\/api\/v1\/health", "\/api\/v1\/signals"/);
   assert.ok(main.indexOf('["/api/v1/health", "/api/v1/signals"]') < main.indexOf("if (!hasAllowedLocalOrigin(req))"));
   assert.doesNotMatch(main.slice(main.indexOf("function publicSettings"), main.indexOf("function readSignalBridgeStatus")), /signalBridgeToken/);
+});
+
+test("an unsigned Windows copy offers only a verified stable AppX through Windows App Installer", () => {
+  const installerFlow = main.slice(
+    main.indexOf("async function installSignedSignalBridgePackage"),
+    main.indexOf("async function requestSignalBridgePermission")
+  );
+  assert.match(main, /process\.windowsStore !== true\) return installSignedSignalBridgePackage\(\)/);
+  assert.match(main, /if \(!fs\.existsSync\(executable\)\) return installSignedSignalBridgePackage\(\)/);
+  assert.match(installerFlow, /checkForSignedAppx\(app\.getVersion\(\)\)/);
+  assert.match(installerFlow, /downloadSignedAppx/);
+  assert.match(installerFlow, /shell\.openPath\(downloaded\.packagePath\)/);
+  assert.match(installerFlow, /Windows will verify the publisher and ask for your approval/);
+  assert.doesNotMatch(installerFlow, /powershell|Add-AppxPackage|ExecutionPolicy/i);
+  assert.match(updater, /release\.draft \|\| release\.prerelease/);
+  assert.match(updater, /String\(release\.tag_name\) !== `v\$\{version\.text\}`/);
+  assert.match(updater, /Cart-Confirm-Signals-\$\{version\.text\}-x64\.appx/);
+  assert.match(updater, /compareVersions\(plan\.version, current\) >= 0/);
+  assert.match(renderer, /Install signed listener package/);
+  assert.match(renderer, /Repair signed listener package/);
+  assert.match(renderer, /elements\.signalBridgeEnabled\.disabled = !packageReady/);
 });
 
 test("Windows builds compile the helper and publish AppX only when signing credentials are present", () => {

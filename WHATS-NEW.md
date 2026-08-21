@@ -6,6 +6,9 @@ update dialog shows exactly these bullets. Keep every entry short, plain, and
 about what the user will notice — one bullet per change, no internals.
 Publishing fails if the version being released has no section here.
 
+## 3.8.1
+- Unsigned Windows builds now offer an Install signed listener package action that finds a same-version or newer stable CartCollect AppX, verifies its release checksum, and opens Windows App Installer; native alert capture stays locked until the signed copy launches
+
 ## 3.8.0
 - New Signals mode keeps every item dormant until an exact TrackaLacker, browser, or Discord alert matches that item and store, then reuses the existing price, seller, quantity, fulfillment, and checkout safeguards
 - The signed Windows package can capture TrackaLacker Chrome desktop alerts without polling, retain them through restarts, remove duplicates, wake CartCollect, and evaluate the matching mission in near real time
