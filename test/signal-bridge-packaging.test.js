@@ -21,7 +21,6 @@ test("the signed AppX declares native notification access and opt-in startup", (
   assert.match(manifest, /Executable="app\\resources\\signal-bridge\\CartCollect\.SignalBridge\.exe"/);
   assert.match(manifest, /Enabled="false"/);
   assert.equal(packageJson.build.appx.customManifestPath, "appxmanifest.xml");
-  assert.ok(packageJson.build.extraResources.some((resource) => resource.to === "signal-bridge"));
 });
 
 test("the Windows helper uses UserNotificationListener and a durable local queue without inventory polling", () => {
@@ -71,6 +70,9 @@ test("native capture activates only for the signed package and the local API byp
 test("Windows builds compile the helper and publish AppX only when signing credentials are present", () => {
   assert.match(buildScript, /dotnet/);
   assert.match(buildScript, /CartCollect\.SignalBridge\.csproj/);
+  assert.match(buildScript, /--disable-build-servers/);
+  assert.match(buildScript, /afterPack: copySignalBridgeIntoApp/);
+  assert.match(buildScript, /\["EBUSY", "EACCES", "EPERM"\]/);
   assert.match(buildScript, /Boolean\(process\.env\.CSC_LINK \|\| process\.env\.WIN_CSC_LINK\)/);
   assert.match(buildScript, /Cart-Confirm-Signals-\$\{version\}-\$\{arch\}\.\$\{ext\}/);
 });

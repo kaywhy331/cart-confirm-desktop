@@ -10,23 +10,62 @@ const packageJson = require("../package.json");
 
 const root = path.resolve(__dirname, "..");
 const output = path.join(root, "dist");
+const signalBridgePublishDirectory = path.join(root, "native", "CartCollect.SignalBridge", "publish", "win-x64");
+const copyRetryDelaysMs = [0, 250, 500, 1_000, 2_000, 5_000, 10_000];
+
+function wait(delayMs) {
+  return new Promise((resolve) => setTimeout(resolve, delayMs));
+}
+
+async function copyFileWithRetry(source, destination) {
+  let lastError;
+  for (const delayMs of copyRetryDelaysMs) {
+    if (delayMs) await wait(delayMs);
+    try {
+      await fs.promises.copyFile(source, destination);
+      return;
+    } catch (error) {
+      lastError = error;
+      if (!["EBUSY", "EACCES", "EPERM"].includes(error?.code)) throw error;
+    }
+  }
+  throw new Error(`Windows kept the freshly compiled signal bridge locked: ${lastError?.message || source}`);
+}
+
+async function copyDirectoryWithRetry(source, destination) {
+  fs.mkdirSync(destination, { recursive: true });
+  for (const entry of fs.readdirSync(source, { withFileTypes: true }).sort((left, right) => left.name.localeCompare(right.name))) {
+    const sourcePath = path.join(source, entry.name);
+    const destinationPath = path.join(destination, entry.name);
+    if (entry.isDirectory()) {
+      await copyDirectoryWithRetry(sourcePath, destinationPath);
+    } else if (entry.isFile()) {
+      await copyFileWithRetry(sourcePath, destinationPath);
+    }
+  }
+}
+
+async function copySignalBridgeIntoApp(context) {
+  const destination = path.join(context.appOutDir, "resources", "signal-bridge");
+  await copyDirectoryWithRetry(signalBridgePublishDirectory, destination);
+}
 
 function publishSignalBridge() {
   if (process.platform !== "win32") return;
   const project = path.join(root, "native", "CartCollect.SignalBridge", "CartCollect.SignalBridge.csproj");
-  const publishDirectory = path.join(root, "native", "CartCollect.SignalBridge", "publish", "win-x64");
   const result = spawnSync("dotnet", [
     "publish",
     project,
     "--configuration", "Release",
     "--runtime", "win-x64",
     "--self-contained", "true",
-    "--output", publishDirectory,
+    "--output", signalBridgePublishDirectory,
+    "--disable-build-servers",
     "--nologo"
   ], { cwd: root, stdio: "inherit" });
   if (result.error) throw result.error;
   if (result.status !== 0) throw new Error(`Windows signal bridge compilation failed with exit code ${result.status}.`);
-  if (!fs.existsSync(path.join(publishDirectory, "CartCollect.SignalBridge.exe"))) {
+  if (!fs.existsSync(path.join(signalBridgePublishDirectory, "CartCollect.SignalBridge.exe"))) {
     throw new Error("Windows signal bridge publish did not produce CartCollect.SignalBridge.exe.");
   }
 }
@@ -42,6 +81,7 @@ async function buildTarget(target, artifactName, targetOutput, extension) {
         ...packageJson.build.directories,
         output: targetOutput
       },
+      afterPack: copySignalBridgeIntoApp,
       artifactName
     }
   });

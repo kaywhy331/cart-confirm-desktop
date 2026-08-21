@@ -40,11 +40,6 @@
         "from": "extension",
         "to": "extension",
         "filter": ["**/*"]
-      },
-      {
-        "from": "native/CartCollect.SignalBridge/publish/win-x64",
-        "to": "signal-bridge",
-        "filter": ["**/*"]
       }
     ],
     "win": {
