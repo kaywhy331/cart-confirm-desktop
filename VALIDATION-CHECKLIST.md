@@ -176,8 +176,15 @@ For each of Target, Walmart, and Amazon you plan to automate:
       Confirm the dashboard and tray show **Ready**, the last completed pre-sync
       mapping count, zero pending signals, and no secret/token value. Revoke the
       permission in Windows Settings and confirm both surfaces report the warning
-      without claiming the listener is ready. Confirm unsigned installer and
-      portable builds say that the signed Windows package is required.
+      without claiming the listener is ready. From an unsigned installer or
+      portable build, confirm native capture is disabled and **Install signed
+      listener package** is available. Reject the prompt and confirm nothing
+      opens. Approve it and confirm CartCollect accepts only a same-version or
+      newer stable `v*` release, verifies the AppX against `SHA256SUMS.txt`, and
+      opens Windows App Installer without invoking PowerShell. Finish the install,
+      close the unsigned copy, launch CartCollect from Start, and confirm the
+      control changes to **Grant notification access**. With no compatible signed
+      AppX published, confirm CartCollect offers only the official releases page.
 - [ ] Send representative TrackaLacker Chrome fixtures for Walmart, Amazon, and
       Target in-stock/restock/preorder alerts. Confirm exact title + retailer
       resolves the intended pre-synced listing in under 50 ms, while an unrelated

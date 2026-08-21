@@ -30,7 +30,11 @@ The manual workflow:
 
 The native TrackaLacker notification listener is not published in this lane as
 an installable package. Windows notification access requires the signed AppX
-identity from the stable lane.
+identity from the stable lane. An unsigned Windows build can offer to locate a
+same-version or newer AppX from an official stable `v*` release, verify the AppX
+against that release's `SHA256SUMS.txt`, and open it with Windows App Installer.
+That explicit handoff does not grant the unsigned process notification access;
+the user must finish installation and launch the signed Start-menu app.
 
 To publish, open **Actions → Unsigned Windows prerelease → Run workflow**, select
 `main`, and enter the confirmation phrase. Bump `package.json` before publishing
