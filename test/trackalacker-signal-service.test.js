@@ -112,6 +112,52 @@ test("a known under-cap signal is durably queued before its store action begins"
   assert.equal(result.record.timing.missionEvaluatedAt, new Date(NOW).toISOString());
 });
 
+test("ordered signal strategies record the winning rule and honor notification-only actions", () => {
+  const result = process(envelope(), {
+    settings: {
+      signalStrategies: [{
+        id: "signal-strategy:notify",
+        name: "MSRP notification",
+        enabled: true,
+        priceBand: "msrp",
+        stores: ["walmart"],
+        action: "notify",
+        quantity: "max",
+        includeKeywords: "pokemon + \"booster display box\"",
+        excludeKeywords: "used | refurbished"
+      }]
+    }
+  });
+  assert.equal(result.shouldOpen, false);
+  assert.equal(result.route.state, "notified");
+  assert.equal(result.response.action, "notified");
+  assert.equal(result.record.strategyId, "signal-strategy:notify");
+  assert.equal(result.record.strategyName, "MSRP notification");
+  assert.equal(result.record.strategyAction, "notify");
+  assert.equal(result.record.strategyQuantity, "max");
+});
+
+test("a configured strategy set rejects a mission when no rule matches", () => {
+  const result = process(envelope(), {
+    settings: {
+      signalStrategies: [{
+        id: "signal-strategy:amazon-only",
+        name: "Amazon only",
+        enabled: true,
+        priceBand: "any",
+        stores: ["amazon"],
+        action: "add_to_cart",
+        quantity: 1,
+        includeKeywords: "",
+        excludeKeywords: ""
+      }]
+    }
+  });
+  assert.equal(result.shouldOpen, false);
+  assert.equal(result.route.reason, "no-strategy");
+  assert.equal(result.response.action, "no_matching_strategy");
+});
+
 test("an authenticated extension Web Push signal enters the same mission pipeline", () => {
   const input = envelope({
     signalId: "push:trackalacker:12345678",

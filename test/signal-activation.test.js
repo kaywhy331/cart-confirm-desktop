@@ -39,6 +39,35 @@ test("a newer browser signal refreshes one product without waking its siblings",
   assert.equal(second["walmart:222"].source, "browser");
 });
 
+test("a strategy activation retains only bounded action and quantity overrides", () => {
+  const active = activateSignalProduct({}, {
+    productId: "amazon:B0GG16Q4X1",
+    signalId: "trackalacker:strategy:1",
+    source: "trackalacker",
+    runId: "run-1",
+    action: "review",
+    quantity: 3,
+    acceptPartial: true,
+    strategyId: "signal-strategy:review",
+    strategyName: "Review three"
+  }, 500);
+  assert.equal(active["amazon:B0GG16Q4X1"].action, "review");
+  assert.equal(active["amazon:B0GG16Q4X1"].quantity, 3);
+  assert.equal(active["amazon:B0GG16Q4X1"].acceptPartial, true);
+  assert.equal(active["amazon:B0GG16Q4X1"].strategyId, "signal-strategy:review");
+
+  const rejected = activateSignalProduct({}, {
+    productId: "amazon:B0GG16Q4X1",
+    signalId: "trackalacker:strategy:2",
+    source: "trackalacker",
+    runId: "run-1",
+    action: "unsafe-action",
+    quantity: 100
+  }, 500);
+  assert.equal(rejected["amazon:B0GG16Q4X1"].action, "");
+  assert.equal(rejected["amazon:B0GG16Q4X1"].quantity, null);
+});
+
 test("the signal inbox preserves the bounded browser source label", () => {
   const signal = normalizeSignal({
     id: "browser:run:target:95298172",

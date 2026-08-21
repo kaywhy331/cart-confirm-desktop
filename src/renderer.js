@@ -182,6 +182,22 @@ const elements = {
   signalBridgePermissionButton: document.getElementById("signalBridgePermissionButton"),
   signalBridgeReplayButton: document.getElementById("signalBridgeReplayButton"),
   signalBridgeRecent: document.getElementById("signalBridgeRecent"),
+  signalStrategyCount: document.getElementById("signalStrategyCount"),
+  signalStrategyList: document.getElementById("signalStrategyList"),
+  addSignalStrategyButton: document.getElementById("addSignalStrategyButton"),
+  signalStrategyDialog: document.getElementById("signalStrategyDialog"),
+  signalStrategyDialogTitle: document.getElementById("signalStrategyDialogTitle"),
+  signalStrategyCancelButton: document.getElementById("signalStrategyCancelButton"),
+  signalStrategyForm: document.getElementById("signalStrategyForm"),
+  signalStrategyName: document.getElementById("signalStrategyName"),
+  signalStrategyPriceBand: document.getElementById("signalStrategyPriceBand"),
+  signalStrategyAction: document.getElementById("signalStrategyAction"),
+  signalStrategyQuantity: document.getElementById("signalStrategyQuantity"),
+  signalStrategyStores: document.getElementById("signalStrategyStores"),
+  signalStrategyIncludeKeywords: document.getElementById("signalStrategyIncludeKeywords"),
+  signalStrategyExcludeKeywords: document.getElementById("signalStrategyExcludeKeywords"),
+  signalStrategyEnabled: document.getElementById("signalStrategyEnabled"),
+  signalStrategySaveButton: document.getElementById("signalStrategySaveButton"),
   discordState: document.getElementById("discordState"),
   discordHint: document.getElementById("discordHint"),
   discordBotToken: document.getElementById("discordBotToken"),
@@ -216,6 +232,19 @@ const ACTION_DESCRIPTIONS = Object.freeze({
   cart: "Add to cart only",
   review: "Prepare checkout for manual submission",
   checkout: "Submit order automatically"
+});
+const SIGNAL_PRICE_LABELS = Object.freeze({
+  any: "Any price",
+  below_msrp: "Below MSRP",
+  msrp: "At / near MSRP",
+  slightly_above_msrp: "Slightly above MSRP",
+  above_msrp: "Above MSRP / surge"
+});
+const SIGNAL_STRATEGY_ACTION_LABELS = Object.freeze({
+  notify: "Notify",
+  add_to_cart: "Add To Cart",
+  prepare_checkout: "Prepare Checkout",
+  submit_order: "Submit Order"
 });
 const UNGROUPED_FILTER_VALUE = "__ungrouped__";
 const MAX_MISSION_GROUPS = 20;
@@ -312,6 +341,7 @@ const trackalackerHistoryCache = new Map();
 const trackalackerHistoryRequests = new Map();
 const bulkMissionSelectedIds = new Set();
 let editingItemProfileId = "";
+let editingSignalStrategyId = "";
 // Persisted feed entries are history, not fresh alarm triggers. Only events
 // received after this renderer process starts may sound an alarm.
 let lastAlarmEventStamp = new Date().toISOString();
@@ -4065,6 +4095,7 @@ function signalStateLabel(signal) {
     historical: "History",
     "new-product": "New product",
     disabled: "Recorded",
+    notified: "Notified",
     stale: "Stale",
     pending: "Opening",
     opened: "Opened",
@@ -4243,6 +4274,7 @@ function buildSignalAuditRow(record) {
   metadata.textContent = [
     STORE_LABELS[record.retailer] || record.retailer || "Unknown store",
     money(record.price),
+    record.strategyName ? `strategy: ${record.strategyName}` : "",
     record.matchMethod ? `match: ${record.matchMethod}` : "",
     record.occurrenceCount > 1 ? `${record.occurrenceCount} occurrences` : "",
     relativeTime(record.receivedAt)
@@ -4252,6 +4284,218 @@ function buildSignalAuditRow(record) {
   reason.textContent = record.reason || "Signal retained in the local audit journal.";
   row.append(heading, metadata, reason);
   return row;
+}
+
+function availableSignalStrategyStores(settings = currentSnapshot?.settings) {
+  return [...new Set((settings?.products || [])
+    .map((product) => product.retailer)
+    .filter((retailer) => STORE_LABELS[retailer]))];
+}
+
+function signalStrategyIsGlobalCatchall(strategy = {}) {
+  return strategy.enabled !== false
+    && strategy.priceBand === "any"
+    && !(strategy.stores || []).length
+    && !String(strategy.includeKeywords || "").trim()
+    && !String(strategy.excludeKeywords || "").trim();
+}
+
+function signalStrategySummary(strategy = {}) {
+  const stores = (strategy.stores || []).length
+    ? strategy.stores.map((store) => STORE_LABELS[store] || store).join(", ")
+    : "Any store";
+  const quantity = strategy.quantity === "max" ? "max allowed" : `qty ${strategy.quantity}`;
+  return [
+    SIGNAL_PRICE_LABELS[strategy.priceBand] || strategy.priceBand,
+    stores,
+    SIGNAL_STRATEGY_ACTION_LABELS[strategy.action] || strategy.action,
+    quantity
+  ].join(" · ");
+}
+
+function signalStrategyControl(label, title, handler, disabled = false) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "button ghost compact";
+  button.textContent = label;
+  button.title = title;
+  button.disabled = disabled;
+  button.addEventListener("click", handler);
+  return button;
+}
+
+async function saveSignalStrategies(strategies) {
+  return saveSignalBridgeSettings({ signalStrategies: strategies });
+}
+
+function moveSignalStrategy(strategyId, offset) {
+  return runAction(async () => {
+    const strategies = [...(currentSnapshot?.settings?.signalStrategies || [])];
+    const index = strategies.findIndex((strategy) => strategy.id === strategyId);
+    const destination = index + offset;
+    if (index < 0 || destination < 0 || destination >= strategies.length) return null;
+    const [strategy] = strategies.splice(index, 1);
+    strategies.splice(destination, 0, strategy);
+    await saveSignalStrategies(strategies);
+    return strategy;
+  }, (strategy) => strategy ? `${strategy.name} priority updated. Top matching strategy wins.` : "Strategy order was unchanged.");
+}
+
+function deleteSignalStrategy(strategy) {
+  if (!window.confirm(`Delete the signal strategy “${strategy.name}”?`)) return;
+  void runAction(async () => {
+    const strategies = (currentSnapshot?.settings?.signalStrategies || [])
+      .filter((candidate) => candidate.id !== strategy.id);
+    await saveSignalStrategies(strategies);
+    return strategy;
+  }, (deleted) => `${deleted.name} deleted.`);
+}
+
+function buildSignalStrategyRow(strategy, index, strategies, armed) {
+  const row = document.createElement("article");
+  row.className = `signal-strategy-row${strategy.enabled === false ? " disabled" : ""}`;
+  const priority = document.createElement("span");
+  priority.className = "signal-strategy-priority";
+  priority.textContent = String(index + 1);
+  priority.title = "Priority — lower number runs first";
+  const content = document.createElement("div");
+  content.className = "signal-strategy-content";
+  const heading = document.createElement("div");
+  heading.className = "signal-strategy-row-heading";
+  const name = document.createElement("strong");
+  name.textContent = strategy.name;
+  const state = document.createElement("span");
+  state.className = "signal-match";
+  state.textContent = strategy.enabled === false ? "Off" : "Enabled";
+  heading.append(name, state);
+  const summary = document.createElement("small");
+  summary.textContent = signalStrategySummary(strategy);
+  const keywords = document.createElement("p");
+  keywords.className = "signal-strategy-keywords";
+  const include = String(strategy.includeKeywords || "").trim();
+  const exclude = String(strategy.excludeKeywords || "").trim();
+  keywords.textContent = [
+    include ? `Include: ${include}` : "Include: catchall",
+    exclude ? `Exclude: ${exclude}` : ""
+  ].filter(Boolean).join(" · ");
+  content.append(heading, summary, keywords);
+  if (signalStrategyIsGlobalCatchall(strategy) && index < strategies.length - 1) {
+    const warning = document.createElement("small");
+    warning.className = "signal-strategy-shadow-warning";
+    warning.textContent = "This global catchall shadows every enabled strategy below it. Move it to the bottom unless that is intentional.";
+    content.append(warning);
+  }
+  const controls = document.createElement("div");
+  controls.className = "signal-strategy-row-actions";
+  controls.append(
+    signalStrategyControl("↑", "Move strategy up", () => void moveSignalStrategy(strategy.id, -1), armed || index === 0),
+    signalStrategyControl("↓", "Move strategy down", () => void moveSignalStrategy(strategy.id, 1), armed || index === strategies.length - 1),
+    signalStrategyControl("Edit", "Edit strategy", () => openSignalStrategyDialog(strategy), armed),
+    signalStrategyControl("Delete", "Delete strategy", () => deleteSignalStrategy(strategy), armed)
+  );
+  row.append(priority, content, controls);
+  return row;
+}
+
+function renderSignalStrategies(settings = {}) {
+  const strategies = Array.isArray(settings.signalStrategies) ? settings.signalStrategies : [];
+  const armed = Boolean(settings.automationEnabled || settings.signalsEnabled);
+  elements.signalStrategyCount.textContent = strategies.length
+    ? `${strategies.length} strateg${strategies.length === 1 ? "y" : "ies"}`
+    : "Legacy mission actions";
+  elements.signalStrategyCount.className = `step-state${strategies.some((strategy) => strategy.enabled !== false) ? " ready" : ""}`;
+  if (!strategies.length) {
+    const empty = document.createElement("div");
+    empty.className = "empty-state";
+    empty.textContent = "No strategies yet. Existing per-mission signal actions remain unchanged.";
+    elements.signalStrategyList.replaceChildren(empty);
+  } else {
+    elements.signalStrategyList.replaceChildren(...strategies.map((strategy, index) => (
+      buildSignalStrategyRow(strategy, index, strategies, armed)
+    )));
+  }
+  elements.addSignalStrategyButton.disabled = armed || strategies.length >= 25;
+  elements.addSignalStrategyButton.title = armed
+    ? "Turn off Signals or Autopilot before changing signal authorization rules."
+    : strategies.length >= 25
+      ? "The 25-strategy limit has been reached."
+      : "Add another first-match signal rule.";
+}
+
+function newSignalStrategyId() {
+  const unique = globalThis.crypto?.randomUUID?.()
+    || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
+  return `signal-strategy:${unique}`.slice(0, 80);
+}
+
+function renderSignalStrategyStoreChoices(selectedStores = []) {
+  const stores = [...new Set([
+    ...availableSignalStrategyStores(),
+    ...(selectedStores || []).filter((store) => STORE_LABELS[store])
+  ])];
+  if (!stores.length) {
+    const empty = document.createElement("small");
+    empty.className = "signal-strategy-no-stores";
+    empty.textContent = "Add a Target, Walmart, or Amazon mission to make store choices available.";
+    elements.signalStrategyStores.replaceChildren(empty);
+    return;
+  }
+  elements.signalStrategyStores.replaceChildren(...stores.map((store) => {
+    const label = document.createElement("label");
+    label.className = "toggle-row";
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.dataset.signalStore = store;
+    input.checked = selectedStores.includes(store);
+    const text = document.createElement("span");
+    text.textContent = STORE_LABELS[store];
+    label.append(input, text);
+    return label;
+  }));
+}
+
+function openSignalStrategyDialog(strategy = null) {
+  if (isArmed()) {
+    setMessage("Turn off Signals or Autopilot before changing signal strategies.", "warn");
+    return;
+  }
+  const count = currentSnapshot?.settings?.signalStrategies?.length || 0;
+  editingSignalStrategyId = strategy?.id || "";
+  elements.signalStrategyDialogTitle.textContent = strategy ? "Edit signal strategy" : "Add signal strategy";
+  elements.signalStrategyName.value = strategy?.name || `Signal strategy ${count + 1}`;
+  elements.signalStrategyPriceBand.value = strategy?.priceBand || "any";
+  elements.signalStrategyAction.value = strategy?.action || "notify";
+  elements.signalStrategyQuantity.value = String(strategy?.quantity || "max");
+  elements.signalStrategyIncludeKeywords.value = strategy?.includeKeywords || "";
+  elements.signalStrategyExcludeKeywords.value = strategy?.excludeKeywords || "";
+  elements.signalStrategyEnabled.checked = strategy?.enabled !== false;
+  renderSignalStrategyStoreChoices(strategy?.stores || []);
+  if (typeof elements.signalStrategyDialog.showModal === "function") elements.signalStrategyDialog.showModal();
+  else elements.signalStrategyDialog.setAttribute("open", "");
+  elements.signalStrategyName.focus();
+  elements.signalStrategyName.select();
+}
+
+function closeSignalStrategyDialog() {
+  editingSignalStrategyId = "";
+  if (typeof elements.signalStrategyDialog.close === "function") elements.signalStrategyDialog.close();
+  else elements.signalStrategyDialog.removeAttribute("open");
+}
+
+function signalStrategyFromForm() {
+  const quantity = elements.signalStrategyQuantity.value;
+  return {
+    id: editingSignalStrategyId || newSignalStrategyId(),
+    name: elements.signalStrategyName.value,
+    enabled: elements.signalStrategyEnabled.checked,
+    priceBand: elements.signalStrategyPriceBand.value,
+    stores: [...elements.signalStrategyStores.querySelectorAll("input[data-signal-store]:checked")]
+      .map((input) => input.dataset.signalStore),
+    action: elements.signalStrategyAction.value,
+    quantity: quantity === "max" ? "max" : Number(quantity),
+    includeKeywords: elements.signalStrategyIncludeKeywords.value,
+    excludeKeywords: elements.signalStrategyExcludeKeywords.value
+  };
 }
 
 function renderSignalBridge(bridge = {}, settings = {}) {
@@ -4457,6 +4701,7 @@ function render(snapshot) {
   renderItemDefaults(settings);
   renderTrackalacker(snapshot.trackalacker || {});
   renderSignalBridge(snapshot.signalBridge || {}, settings);
+  renderSignalStrategies(settings);
   renderDiscord(snapshot.discord, settings);
   renderSignals(snapshot.signals || []);
   checkForAlarmEvents(events);
@@ -5076,6 +5321,31 @@ async function saveSignalBridgeSettings(changes) {
   render(next);
   return next;
 }
+
+elements.addSignalStrategyButton.addEventListener("click", () => openSignalStrategyDialog());
+elements.signalStrategyCancelButton.addEventListener("click", closeSignalStrategyDialog);
+elements.signalStrategyDialog.addEventListener("close", () => {
+  editingSignalStrategyId = "";
+});
+elements.signalStrategyForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  void runAction(async () => {
+    if (isArmed()) throw new Error("Turn off Signals or Autopilot before changing signal strategies.");
+    if (!elements.signalStrategyForm.checkValidity()) {
+      elements.signalStrategyForm.reportValidity();
+      throw new Error("Complete the signal strategy fields before saving.");
+    }
+    const strategy = signalStrategyFromForm();
+    const strategies = [...(currentSnapshot?.settings?.signalStrategies || [])];
+    const existingIndex = strategies.findIndex((candidate) => candidate.id === editingSignalStrategyId);
+    if (editingSignalStrategyId && existingIndex < 0) throw new Error("That signal strategy no longer exists.");
+    if (existingIndex >= 0) strategies[existingIndex] = strategy;
+    else strategies.push(strategy);
+    await saveSignalStrategies(strategies);
+    closeSignalStrategyDialog();
+    return strategy;
+  }, (strategy) => `${strategy.name} saved. Rules run from top to bottom; the first match wins.`);
+});
 
 elements.signalBridgeEnabled.addEventListener("change", () => void runAction(
   () => saveSignalBridgeSettings({ trackalackerSignalBridgeEnabled: elements.signalBridgeEnabled.checked }),
