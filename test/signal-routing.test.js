@@ -40,6 +40,34 @@ test("fresh desired Amazon signals can use a sanitized direct entry", () => {
   assert.equal(route.entry, "amazon-buy-now");
 });
 
+test("Signals mode permits a direct route without enabling broad Autopilot", () => {
+  const route = planSignalRoute({
+    signal,
+    settings: settings({ automationEnabled: false, signalsEnabled: true }),
+    now: NOW
+  });
+  assert.equal(route.state, "pending");
+  assert.equal(route.entry, "amazon-buy-now");
+});
+
+test("Signals mode rejects explicit over-cap and non-first-party hints before activation", () => {
+  const signalSettings = settings({ automationEnabled: false, signalsEnabled: true });
+  const overCap = planSignalRoute({
+    signal: { ...signal, price: amazonProduct.maxPrice + 0.01 },
+    settings: signalSettings,
+    now: NOW
+  });
+  assert.equal(overCap.state, "disabled");
+  assert.equal(overCap.reason, "over-price");
+  const marketplace = planSignalRoute({
+    signal: { ...signal, seller: "Marketplace Seller" },
+    settings: signalSettings,
+    now: NOW
+  });
+  assert.equal(marketplace.state, "disabled");
+  assert.equal(marketplace.reason, "seller-unverified");
+});
+
 test("direct Amazon entry fails back to the product page without every proof", () => {
   for (const changed of [
     { price: 200 },

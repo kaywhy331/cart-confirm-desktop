@@ -6,9 +6,12 @@ const {
   clipboard,
   dialog,
   ipcMain,
+  Menu,
+  nativeImage,
   Notification,
   safeStorage,
-  shell
+  shell,
+  Tray
 } = require("electron");
 const fs = require("node:fs");
 const http = require("node:http");
@@ -31,6 +34,7 @@ const {
   normalizeSettings,
   preserveAdminCampaignFields,
   preserveCheckoutEvidence,
+  purchaseModeEnabled,
   reduceProductStatus,
   reduceStatus,
   toAutomationProduct,
@@ -50,14 +54,16 @@ const {
   planWalmartPrepCandidates
 } = require("./lib/catalog");
 const {
-  acceptTrackalackerCapture,
+  acceptTrackalackerCaptureFromNormalizedState,
   beginTrackalackerImport,
   cancelTrackalackerImport,
   clearTrackalackerState,
   emptyTrackalackerState,
   normalizeTrackalackerState,
   normalizeTrackalackerUrl,
-  planTrackalackerMissionImport
+  planTrackalackerMissionImport,
+  publicTrackalackerState,
+  trackalackerPriceHistory
 } = require("./lib/trackalacker-import");
 const { migrateStoredSettings } = require("./lib/migrations");
 const { itemProfileById } = require("./lib/item-defaults");
@@ -156,6 +162,15 @@ const {
 const { processDiscordMessageBatch } = require("./lib/discord-ingestion");
 const { upsertSignal } = require("./lib/signal-inbox");
 const { planSignalRoute } = require("./lib/signal-routing");
+const { activateSignalProduct, activeSignalActivations } = require("./lib/signal-activation");
+const {
+  loadSignalJournal,
+  publicSignalJournal,
+  saveSignalJournal,
+  updateSignalRecord: updateSignalJournalRecord
+} = require("./lib/signal-journal");
+const { buildTrackalackerSignalIndex } = require("./lib/trackalacker-signal-resolver");
+const { processTrackalackerSignal } = require("./lib/trackalacker-signal-service");
 const { validateRetailerShareUrl } = require("./lib/howl-link");
 const {
   RETAILERS,
@@ -182,6 +197,8 @@ const DISCORD_POLL_INTERVAL_MS = 2_500;
 const DISCORD_ERROR_RETRY_MS = 10_000;
 const QUIET_STORES = Object.freeze(["target", "walmart"]);
 const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60_000;
+const TRACKALACKER_CHECKPOINT_PRODUCTS = 5;
+const backgroundLaunch = process.argv.includes("--background");
 
 let mainWindow = null;
 let companionServer = null;
@@ -193,6 +210,10 @@ let events = [];
 let runtimeState = null;
 let catalogState = emptyCatalogState();
 let trackalackerState = emptyTrackalackerState();
+let trackalackerSignalIndex = buildTrackalackerSignalIndex();
+let signalJournal = { version: 1, records: [] };
+let trackalackerProductsSinceCheckpoint = 0;
+let trackalackerLastCheckpointProcessed = 0;
 let msrpResearchState = emptyMsrpResearchState();
 let msrpResearchInFlight = false;
 let msrpResearchKey = "";
@@ -206,6 +227,13 @@ let discordRoleNames = {};
 let discordChannelReady = false;
 let discordNextPollAt = 0;
 let discordConnectionEpoch = 0;
+let signalActivations = {};
+let signalBridgeProcess = null;
+const signalBridgeIntentionalStops = new WeakSet();
+let signalBridgeLastError = "";
+let signalBridgeAccessNonce = "";
+let tray = null;
+let isQuitting = false;
 let configVersion = 1;
 let companionHello = null;
 let serverDiagnostics = {
@@ -250,6 +278,169 @@ function catalogPath() {
 
 function trackalackerPath() {
   return path.join(app.getPath("userData"), "trackalacker-import.json");
+}
+
+function signalJournalPath() {
+  return path.join(app.getPath("userData"), "signal-journal.json");
+}
+
+function signalBridgeConfigPath() {
+  return path.join(app.getPath("userData"), "signal-bridge-config.json");
+}
+
+function signalBridgeStatusPath() {
+  return path.join(app.getPath("userData"), "signal-bridge-status.json");
+}
+
+function signalBridgeExecutablePath() {
+  return app.isPackaged
+    ? path.join(process.resourcesPath, "signal-bridge", "CartCollect.SignalBridge.exe")
+    : path.join(__dirname, "native", "CartCollect.SignalBridge", "publish", "win-x64", "CartCollect.SignalBridge.exe");
+}
+
+function writeSignalBridgeConfig() {
+  const dataDirectory = path.join(app.getPath("userData"), "signal-bridge");
+  const config = {
+    schemaVersion: 1,
+    enabled: Boolean(settings?.trackalackerSignalBridgeEnabled),
+    deliveryPaused: Boolean(settings?.trackalackerSignalDeliveryPaused),
+    startAtLogin: Boolean(settings?.trackalackerSignalStartAtLogin),
+    token: String(settings?.signalBridgeToken || ""),
+    apiPorts: PORT_CANDIDATES,
+    pendingDirectory: path.join(dataDirectory, "pending"),
+    failedDirectory: path.join(dataDirectory, "failed"),
+    statusPath: signalBridgeStatusPath(),
+    cartCollectExecutable: process.execPath,
+    requestAccessNonce: signalBridgeAccessNonce
+  };
+  fs.mkdirSync(path.dirname(signalBridgeConfigPath()), { recursive: true });
+  const temporary = `${signalBridgeConfigPath()}.tmp`;
+  fs.writeFileSync(temporary, JSON.stringify(config, null, 2), { mode: 0o600 });
+  fs.renameSync(temporary, signalBridgeConfigPath());
+}
+
+function configureSignalBridgeLoginLaunch() {
+  if (process.platform !== "win32" || process.windowsStore !== true) return;
+  if (signalBridgeProcess?.exitCode === null) return;
+  const executable = signalBridgeExecutablePath();
+  if (!fs.existsSync(executable)) return;
+  const startupProcess = spawn(executable, ["--config", signalBridgeConfigPath(), "--configure-startup"], {
+    windowsHide: true,
+    stdio: "ignore"
+  });
+  startupProcess.once("error", (error) => {
+    signalBridgeLastError = String(error?.message || "Windows login startup could not be updated.").slice(0, 240);
+    broadcast();
+  });
+  startupProcess.unref();
+}
+
+function startSignalBridgeProcess() {
+  if (
+    process.platform !== "win32"
+    || process.windowsStore !== true
+    || !settings?.trackalackerSignalBridgeEnabled
+    || signalBridgeProcess?.exitCode === null
+  ) return false;
+  const executable = signalBridgeExecutablePath();
+  if (!fs.existsSync(executable)) {
+    signalBridgeLastError = "The packaged Windows notification listener is missing. Reinstall the signed CartCollect package.";
+    return false;
+  }
+  try {
+    const child = spawn(executable, ["--config", signalBridgeConfigPath()], {
+      windowsHide: true,
+      stdio: "ignore"
+    });
+    signalBridgeProcess = child;
+    child.once("error", (error) => {
+      signalBridgeLastError = String(error?.message || "The notification listener could not start.").slice(0, 240);
+      broadcast();
+    });
+    child.once("exit", (code) => {
+      const intentionallyStopped = signalBridgeIntentionalStops.has(child);
+      if (signalBridgeProcess === child) signalBridgeProcess = null;
+      if (!isQuitting && settings?.trackalackerSignalBridgeEnabled) {
+        if (intentionallyStopped) {
+          startSignalBridgeProcess();
+        } else if (code) {
+          signalBridgeLastError = `The notification listener stopped with code ${code}.`;
+          broadcast();
+        }
+      }
+    });
+    child.unref();
+    signalBridgeLastError = "";
+    return true;
+  } catch (error) {
+    signalBridgeLastError = String(error?.message || "The notification listener could not start.").slice(0, 240);
+    return false;
+  }
+}
+
+function stopSignalBridgeProcess(options = {}) {
+  const child = signalBridgeProcess;
+  const afterExit = typeof options.afterExit === "function" ? options.afterExit : null;
+  if (child?.exitCode === null) {
+    signalBridgeIntentionalStops.add(child);
+    if (afterExit) child.once("exit", afterExit);
+    try {
+      if (child.kill()) return true;
+    } catch {
+      // The process exited between the state check and kill request.
+    }
+  }
+  if (signalBridgeProcess === child) signalBridgeProcess = null;
+  if (afterExit) afterExit();
+  return false;
+}
+
+function syncSignalBridgeRuntime() {
+  writeSignalBridgeConfig();
+  if (settings?.trackalackerSignalBridgeEnabled) {
+    startSignalBridgeProcess();
+  } else {
+    stopSignalBridgeProcess({
+      // Wait for the named helper mutex to be released before launching the
+      // one-shot startup-task reconciler. Otherwise a fast disable can leave
+      // Windows login startup enabled even though the saved setting is off.
+      afterExit: () => {
+        if (!isQuitting && !settings?.trackalackerSignalBridgeEnabled) {
+          configureSignalBridgeLoginLaunch();
+        }
+      }
+    });
+  }
+}
+
+function requestSignalBridgePermission() {
+  if (process.platform !== "win32" || process.windowsStore !== true) {
+    throw new Error("Windows notification access requires the signed CartCollect Windows package.");
+  }
+  if (!settings.trackalackerSignalBridgeEnabled) {
+    throw new Error("Enable the TrackaLacker signal bridge before requesting notification access.");
+  }
+  signalBridgeAccessNonce = crypto.randomUUID();
+  writeSignalBridgeConfig();
+  if (signalBridgeProcess?.exitCode === null) return { requested: true };
+  const executable = signalBridgeExecutablePath();
+  if (!fs.existsSync(executable)) throw new Error("The packaged Windows notification listener is missing. Reinstall CartCollect.");
+  const permissionProcess = spawn(executable, ["--config", signalBridgeConfigPath(), "--request-access"], {
+    windowsHide: true,
+    stdio: "ignore"
+  });
+  signalBridgeProcess = permissionProcess;
+  permissionProcess.once("error", (error) => {
+    signalBridgeLastError = String(error?.message || "Notification access could not be requested.").slice(0, 240);
+    broadcast();
+  });
+  permissionProcess.once("exit", () => {
+    if (signalBridgeProcess === permissionProcess) signalBridgeProcess = null;
+    if (!isQuitting && settings?.trackalackerSignalBridgeEnabled) startSignalBridgeProcess();
+    broadcast();
+  });
+  permissionProcess.unref();
+  return { requested: true };
 }
 
 function discordTokenPath() {
@@ -311,10 +502,21 @@ function loadSettings() {
     settings = normalizeSettings(DEFAULT_SETTINGS, DEFAULT_SETTINGS);
   }
 
-  startupWasDisarmed = settings.automationEnabled;
+  startupWasDisarmed = purchaseModeEnabled(settings);
+  const resumeSignalsAtLogin = backgroundLaunch
+    && settings.trackalackerSignalStartAtLogin
+    && settings.trackalackerSignalBridgeEnabled
+    && settings.signalsEnabled;
   // Every process launch starts inert. Only an explicit Arm, Test, Open, or
   // Open-all action may lift this pause after the operator sees the dashboard.
-  settings = { ...settings, automationEnabled: false, monitoringPaused: true };
+  settings = {
+    ...settings,
+    automationEnabled: false,
+    signalsEnabled: resumeSignalsAtLogin,
+    monitoringPaused: !resumeSignalsAtLogin,
+    ...(resumeSignalsAtLogin ? { automationRunId: crypto.randomUUID() } : {})
+  };
+  signalActivations = {};
 
   resetProductStatuses();
   persistSettings();
@@ -334,7 +536,12 @@ function loadPersistedRuntimeState() {
   for (const [retailer, deadline] of Object.entries(runtimeState.storeOverloadUntil)) {
     if (deadline > Date.now()) storeOverloadUntil.set(retailer, deadline);
   }
-  if (startupWasDisarmed) {
+  if (settings.signalsEnabled && backgroundLaunch) {
+    status = {
+      ...status,
+      lastMessage: "Signals resumed at Windows login from the explicit background-start setting. TrackaLacker alerts can activate exact armed missions."
+    };
+  } else if (startupWasDisarmed) {
     status = {
       ...status,
       lastMessage: "Automation was disarmed and monitoring paused when Cart Confirm started. Review the current run and arm it again explicitly."
@@ -342,7 +549,7 @@ function loadPersistedRuntimeState() {
   } else {
     status = {
       ...status,
-      lastMessage: "Monitoring is paused after startup. Choose Autopilot, Test, Open, or Open all enabled to begin."
+      lastMessage: "Monitoring is paused after startup. Choose Signals, Autopilot, Monitor, or Open to begin."
     };
   }
 }
@@ -371,12 +578,29 @@ function loadTrackalackerState() {
     stored = {};
   }
   trackalackerState = normalizeTrackalackerState(stored);
+  rebuildTrackalackerSignalIndex();
   persistTrackalackerState();
+}
+
+function rebuildTrackalackerSignalIndex() {
+  trackalackerSignalIndex = buildTrackalackerSignalIndex(
+    trackalackerState,
+    settings?.trackalackerSignalAliases || []
+  );
 }
 
 function persistTrackalackerState() {
   fs.mkdirSync(path.dirname(trackalackerPath()), { recursive: true });
-  fs.writeFileSync(trackalackerPath(), JSON.stringify(trackalackerState, null, 2), { mode: 0o600 });
+  fs.writeFileSync(trackalackerPath(), JSON.stringify(trackalackerState), { mode: 0o600 });
+}
+
+function loadSignalJournalState() {
+  signalJournal = loadSignalJournal(signalJournalPath());
+  persistSignalJournal();
+}
+
+function persistSignalJournal() {
+  signalJournal = saveSignalJournal(signalJournalPath(), signalJournal);
 }
 
 function loadMsrpResearchState() {
@@ -396,7 +620,7 @@ function persistMsrpResearchState() {
 }
 
 async function runMsrpResearch() {
-  if (settings.automationEnabled) throw new Error("Switch Autopilot off before researching MSRP defaults.");
+  if (purchaseModeEnabled(settings)) throw new Error("Stop Autopilot or Signals before researching MSRP defaults.");
   if (msrpResearchInFlight) throw new Error("MSRP research is already running.");
   if (!msrpResearchKey) throw new Error("Configure an OpenAI API key before researching prices.");
   msrpResearchInFlight = true;
@@ -431,6 +655,19 @@ function persistSettings() {
   fs.writeFileSync(settingsPath(), JSON.stringify(settings, null, 2), { mode: 0o600 });
 }
 
+function purchaseRunMode(value = settings) {
+  if (value?.automationEnabled) return "autopilot";
+  if (value?.signalsEnabled) return "signals";
+  return "monitor";
+}
+
+function clearSignalActivations() {
+  if (!Object.keys(signalActivations).length) return false;
+  signalActivations = {};
+  configVersion += 1;
+  return true;
+}
+
 function extensionPath() {
   return app.isPackaged
     ? path.join(process.resourcesPath, "extension")
@@ -452,6 +689,7 @@ function publicSettings() {
     }),
     missionGroups: settings.missionGroups,
     automationEnabled: settings.automationEnabled,
+    signalsEnabled: settings.signalsEnabled,
     monitoringPaused: settings.monitoringPaused,
     automationRunId: settings.automationRunId,
     fastMode: settings.fastMode,
@@ -472,6 +710,11 @@ function publicSettings() {
     discordEnabled: settings.discordEnabled,
     discordChannelId: settings.discordChannelId,
     discordAutoOpen: settings.discordAutoOpen,
+    trackalackerSignalBridgeEnabled: settings.trackalackerSignalBridgeEnabled,
+    trackalackerSignalDeliveryPaused: settings.trackalackerSignalDeliveryPaused,
+    trackalackerSignalStartAtLogin: settings.trackalackerSignalStartAtLogin,
+    trackalackerSignalDedupeWindowSeconds: settings.trackalackerSignalDedupeWindowSeconds,
+    trackalackerSignalAliases: settings.trackalackerSignalAliases,
     configurationProfiles: settings.configurationProfiles,
     msrpCatalog: settings.msrpCatalog,
     itemProfiles: settings.itemProfiles,
@@ -483,7 +726,69 @@ function publicSettings() {
   };
 }
 
+function readSignalBridgeStatus() {
+  try {
+    const value = JSON.parse(fs.readFileSync(signalBridgeStatusPath(), "utf8"));
+    if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+    return {
+      state: String(value.state || "").slice(0, 40),
+      permission: String(value.permission || "unknown").slice(0, 40),
+      listenerReady: value.listenerReady === true,
+      startupState: String(value.startupState || "unknown").slice(0, 40),
+      pendingSignals: Math.max(0, Math.min(100_000, Number(value.pendingSignals) || 0)),
+      lastNotificationAt: String(value.lastNotificationAt || "").slice(0, 40),
+      lastDeliveryAt: String(value.lastDeliveryAt || "").slice(0, 40),
+      lastError: String(value.lastError || "").slice(0, 240),
+      updatedAt: String(value.updatedAt || "").slice(0, 40)
+    };
+  } catch {
+    return {};
+  }
+}
+
+function signalLatencySummary() {
+  const values = signalJournal.records.slice(0, 100).map((record) => {
+    const start = new Date(record.timing?.listenerReceivedAt || "").getTime();
+    const end = new Date(record.timing?.missionEvaluatedAt || "").getTime();
+    return Number.isFinite(start) && Number.isFinite(end) && end >= start ? end - start : null;
+  }).filter(Number.isFinite).sort((left, right) => left - right);
+  if (!values.length) return { samples: 0, medianMs: null, p95Ms: null };
+  return {
+    samples: values.length,
+    medianMs: values[Math.floor((values.length - 1) * 0.5)],
+    p95Ms: values[Math.floor((values.length - 1) * 0.95)]
+  };
+}
+
+function signalBridgeSnapshot() {
+  const helper = readSignalBridgeStatus();
+  const latest = signalJournal.records[0] || null;
+  return {
+    supported: process.platform === "win32" && process.windowsStore === true,
+    enabled: Boolean(settings?.trackalackerSignalBridgeEnabled),
+    deliveryPaused: Boolean(settings?.trackalackerSignalDeliveryPaused),
+    startAtLogin: Boolean(settings?.trackalackerSignalStartAtLogin),
+    helperRunning: Boolean(signalBridgeProcess && signalBridgeProcess.exitCode === null),
+    helperState: helper.state || (signalBridgeLastError ? "error" : "stopped"),
+    notificationPermission: helper.permission || "unknown",
+    listenerReady: helper.listenerReady === true,
+    startupState: helper.startupState || "unknown",
+    mappingCount: trackalackerSignalIndex.mappings.length,
+    pendingSignals: helper.pendingSignals || 0,
+    lastNotificationAt: helper.lastNotificationAt || "",
+    lastDeliveryAt: helper.lastDeliveryAt || "",
+    lastError: helper.lastError || signalBridgeLastError,
+    updatedAt: helper.updatedAt || "",
+    latestSignal: latest ? { ...latest, rawBody: latest.rawBody.slice(0, 500) } : null,
+    recentSignals: publicSignalJournal(signalJournal, 100),
+    latency: signalLatencySummary()
+  };
+}
+
 function snapshot() {
+  const liveSignalActivations = settings?.signalsEnabled
+    ? currentSignalActivations(Date.now())
+    : {};
   return {
     settings: publicSettings(),
     status,
@@ -493,10 +798,15 @@ function snapshot() {
     events,
     signals: (runtimeState?.signals || []).map((signal) => ({
       ...signal,
-      desired: settings.products.some((product) => product.id === signal.productId)
+      desired: settings.products.some((product) => product.id === signal.productId),
+      activated: liveSignalActivations[signal.productId]?.signalId === signal.id,
+      activationExpiresAt: liveSignalActivations[signal.productId]?.signalId === signal.id
+        ? liveSignalActivations[signal.productId].expiresAt
+        : 0
     })),
     catalog: catalogState,
-    trackalacker: trackalackerState,
+    trackalacker: publicTrackalackerState(trackalackerState),
+    signalBridge: signalBridgeSnapshot(),
     msrpResearch: {
       configured: hasEncryptedCredential(msrpResearchKeyPath()),
       credentialUsable: Boolean(msrpResearchKey),
@@ -546,6 +856,7 @@ function broadcast() {
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send("cart-assist:update", snapshot());
   }
+  refreshTrayMenu();
 }
 
 function publishUpdaterState(payload) {
@@ -557,7 +868,10 @@ function publishUpdaterState(payload) {
 }
 
 function automaticUpdatesSupported() {
-  return app.isPackaged && process.platform === "win32" && process.arch === "x64";
+  return app.isPackaged
+    && process.platform === "win32"
+    && process.arch === "x64"
+    && process.windowsStore !== true;
 }
 
 async function refreshUpdateAvailability() {
@@ -565,7 +879,9 @@ async function refreshUpdateAvailability() {
     availableUpdatePlan = null;
     publishUpdaterState({
       status: "unavailable",
-      message: "Automatic updates are available in the packaged 64-bit Windows app."
+      message: process.windowsStore === true
+        ? "Install newer signed AppX releases from the official GitHub release page."
+        : "Automatic updates are available in the packaged 64-bit Windows app."
     });
     return null;
   }
@@ -639,7 +955,13 @@ function pauseAutomationForUpdate() {
   resetQuietMonitorSchedule(quietState.schedule);
   storeOpenQueue.cancelPending();
   openRequests.cancelAll();
-  settings = { ...settings, automationEnabled: false, monitoringPaused: true };
+  settings = {
+    ...settings,
+    automationEnabled: false,
+    signalsEnabled: false,
+    monitoringPaused: true
+  };
+  clearSignalActivations();
   runtimeState.productExecutionContexts = {};
   runtimeState.queueCaptures = {};
   persistSettings();
@@ -738,8 +1060,8 @@ async function installAvailableUpdate() {
 
 function appendMissionProducts(additions, message) {
   if (!Array.isArray(additions) || !additions.length) return snapshot();
-  if (settings.automationEnabled) {
-    throw new Error("Switch Autopilot off before adding items.");
+  if (purchaseModeEnabled(settings)) {
+    throw new Error("Stop Autopilot or Signals before adding items.");
   }
   if (settings.products.length + additions.length > MAX_PRODUCTS) {
     throw new Error(`An item plan can contain at most ${MAX_PRODUCTS} store options.`);
@@ -768,10 +1090,10 @@ function appendMissionProducts(additions, message) {
 }
 
 function quickAddMissionRequest(input) {
-  if (settings.automationEnabled) {
+  if (purchaseModeEnabled(settings)) {
     return {
       statusCode: 409,
-      payload: { ok: false, reason: "automation-armed", error: "Switch Autopilot off before using Quick add." }
+      payload: { ok: false, reason: "automation-armed", error: "Stop Autopilot or Signals before using Quick add." }
     };
   }
 
@@ -865,10 +1187,10 @@ function quickAddMissionRequest(input) {
 }
 
 function approveCheckoutPreflightRequest(input) {
-  if (settings.automationEnabled) {
+  if (purchaseModeEnabled(settings)) {
     return {
       statusCode: 409,
-      payload: { ok: false, reason: "automation-armed", error: "Switch Autopilot off before approving checkout preflight." }
+      payload: { ok: false, reason: "automation-armed", error: "Stop Autopilot or Signals before approving checkout preflight." }
     };
   }
   const productId = String(input?.productId || "").slice(0, 80);
@@ -909,10 +1231,10 @@ function approveCheckoutPreflightRequest(input) {
 }
 
 function authorizeOperatorResolutionRequest(input) {
-  if (settings.automationEnabled) {
+  if (purchaseModeEnabled(settings)) {
     return {
       statusCode: 409,
-      payload: { ok: false, reason: "automation-armed", error: "Switch Autopilot off before resolving a held item." }
+      payload: { ok: false, reason: "automation-armed", error: "Stop Autopilot or Signals before resolving a held item." }
     };
   }
   const productId = String(input?.productId || "").slice(0, 80);
@@ -946,11 +1268,32 @@ function catalogResultsRequest(input) {
 
 function trackalackerCaptureRequest(input) {
   try {
-    const accepted = acceptTrackalackerCapture(trackalackerState, input, Date.now());
+    // This state was normalized when loaded and every accepted item is
+    // normalized at the capture boundary. Avoid revalidating every prior
+    // history row for each progress event in a hundreds-item scan.
+    const accepted = acceptTrackalackerCaptureFromNormalizedState(trackalackerState, input, Date.now());
     trackalackerState = accepted.state;
-    persistTrackalackerState();
-    configVersion += 1;
-    broadcast();
+    const phase = String(input?.phase || "");
+    if (phase === "started") {
+      trackalackerProductsSinceCheckpoint = 0;
+      trackalackerLastCheckpointProcessed = 0;
+    }
+    if (phase === "product") trackalackerProductsSinceCheckpoint += accepted.accepted;
+    const processed = Math.max(0, Number(input?.processed) || 0);
+    // Full histories make the local state materially larger. Checkpoint and
+    // refresh the preview in small recoverable batches instead of rewriting
+    // the growing file and rebuilding hundreds of cards for every row.
+    const checkpoint = ["started", "inventory", "complete", "error"].includes(phase)
+      || phase === "progress" && processed - trackalackerLastCheckpointProcessed >= TRACKALACKER_CHECKPOINT_PRODUCTS
+      || trackalackerProductsSinceCheckpoint >= TRACKALACKER_CHECKPOINT_PRODUCTS;
+    if (checkpoint) {
+      persistTrackalackerState();
+      if (["complete", "error"].includes(phase)) rebuildTrackalackerSignalIndex();
+      trackalackerProductsSinceCheckpoint = 0;
+      trackalackerLastCheckpointProcessed = processed;
+      configVersion += 1;
+      broadcast();
+    }
     return {
       statusCode: 202,
       payload: {
@@ -968,13 +1311,15 @@ function trackalackerCaptureRequest(input) {
 }
 
 async function startTrackalackerImport() {
-  if (settings.automationEnabled) {
-    throw new Error("Switch Autopilot off before scanning TrackaLacker.");
+  if (purchaseModeEnabled(settings)) {
+    throw new Error("Stop Autopilot or Signals before scanning TrackaLacker.");
   }
   trackalackerState = beginTrackalackerImport(trackalackerState, {
     id: crypto.randomUUID(),
     now: Date.now()
   });
+  trackalackerProductsSinceCheckpoint = 0;
+  trackalackerLastCheckpointProcessed = 0;
   persistTrackalackerState();
   configVersion += 1;
   broadcast();
@@ -985,6 +1330,8 @@ async function startTrackalackerImport() {
 
 function cancelActiveTrackalackerImport() {
   trackalackerState = cancelTrackalackerImport(trackalackerState, Date.now());
+  trackalackerProductsSinceCheckpoint = 0;
+  trackalackerLastCheckpointProcessed = 0;
   persistTrackalackerState();
   configVersion += 1;
   broadcast();
@@ -992,8 +1339,8 @@ function cancelActiveTrackalackerImport() {
 }
 
 async function startCatalogSearch(input) {
-  if (settings.automationEnabled) {
-    throw new Error("Switch Autopilot off before searching retailer catalogs.");
+  if (purchaseModeEnabled(settings)) {
+    throw new Error("Stop Autopilot or Signals before searching retailer catalogs.");
   }
   catalogState = beginCatalogSearch(catalogState, input, {
     id: crypto.randomUUID(),
@@ -1014,7 +1361,7 @@ async function startCatalogSearch(input) {
 function addEvent(event, options = {}) {
   const product = settings?.products?.find((candidate) => candidate.id === event.productId) || null;
   const activity = createActivityEvent(event, {
-    automationEnabled: settings?.automationEnabled === true,
+    automationEnabled: purchaseModeEnabled(settings),
     product,
     runId: settings?.automationRunId
   });
@@ -1227,7 +1574,7 @@ async function openProduct(productId, options = {}) {
   if (options.resumeMonitoring === false) {
     if (
       settings.monitoringPaused
-      || !settings.automationEnabled
+      || !purchaseModeEnabled(settings)
       || (options.stopEpoch !== undefined && options.stopEpoch !== stopEpoch)
     ) {
       return { productId: product.id, via: "cancelled", entry: "product", directFallback: false };
@@ -1350,7 +1697,7 @@ async function openBuyList(retailer = "", options = {}) {
     background: backgroundProducts.length - Number(bootstrapIsBackgroundProduct),
     prepMonitoring: prepCandidates.length,
     scheduled: plan.scheduled.length,
-    armed: settings.automationEnabled,
+    armed: purchaseModeEnabled(settings),
     connectionOpened: connection.opened,
     connectionProductId: connection.productId,
     connectionRetailer: connection.retailer
@@ -1548,6 +1895,69 @@ function updateSignalRecord(signalId, changes) {
   broadcast();
 }
 
+function currentSignalActivations(now = Date.now()) {
+  signalActivations = activeSignalActivations(
+    signalActivations,
+    settings.automationRunId,
+    now
+  );
+  return signalActivations;
+}
+
+function activateMatchedSignal(signal, product, now = Date.now()) {
+  if (!settings.signalsEnabled || !product?.id || signal?.productId !== product.id) return null;
+  signalActivations = activateSignalProduct(signalActivations, {
+    productId: product.id,
+    signalId: signal.id,
+    source: signal.source,
+    runId: settings.automationRunId
+  }, now);
+  configVersion += 1;
+  return signalActivations[product.id] || null;
+}
+
+function browserSignalForEvent(event, product) {
+  return {
+    id: `browser:${settings.automationRunId}:${product.id}`,
+    source: "browser",
+    retailer: product.retailer,
+    sku: product.sku,
+    productId: product.id,
+    title: product.title || `${retailerLabel(product.retailer)} ${product.sku}`,
+    price: event.price,
+    seller: event.seller,
+    productUrl: product.productUrl,
+    observedAt: event.timestamp
+  };
+}
+
+function handleBrowserSignalEvent(event, product) {
+  if (
+    !settings.signalsEnabled
+    || !product?.enabled
+    || event.eventType !== "offer-observed"
+    || event.eligible !== true
+  ) return null;
+  const signal = browserSignalForEvent(event, product);
+  const route = planSignalRoute({
+    signal,
+    settings,
+    autoOpenEnabled: true,
+    now: Date.now()
+  });
+  if (route.state !== "pending") return null;
+  const activation = activateMatchedSignal(signal, route.product, Date.now());
+  if (!activation) return null;
+  runtimeState.signals = upsertSignal(runtimeState.signals, {
+    ...signal,
+    autoOpenState: "opened",
+    autoOpenedAt: new Date().toISOString(),
+    note: "The browser verified this exact item, store, first-party seller, and capped price. Signals authorized only this mission for a bounded purchase attempt."
+  });
+  persistRuntimeState();
+  return activation;
+}
+
 function signalSummary(signal) {
   const details = [];
   if (Number.isFinite(signal.price)) details.push(`$${signal.price.toFixed(2)}`);
@@ -1590,6 +2000,8 @@ function handleDiscordSignal(signal, historical) {
     return;
   }
 
+  activateMatchedSignal(signal, route.product, Date.now());
+
   notifyOnce(
     `discord-match:${signal.id}`,
     `${retailerLabel(signal.retailer)} desired restock`,
@@ -1631,6 +2043,144 @@ function handleDiscordSignal(signal, historical) {
       note: String(error?.message || "The browser entry failed.").slice(0, 180)
     });
   });
+}
+
+function updateTrackalackerSignalAction(signalId, changes) {
+  const current = signalJournal.records.find((record) => record.signalId === signalId || record.id === signalId);
+  if (!current) return;
+  signalJournal = updateSignalJournalRecord(signalJournal, signalId, {
+    ...changes,
+    timing: { ...current.timing, ...(changes.timing || {}) }
+  });
+  persistSignalJournal();
+  broadcast();
+}
+
+function handleTrackalackerSignalRequest(envelope, idempotencyKey) {
+  const previousJournal = signalJournal;
+  const outcome = processTrackalackerSignal({
+    envelope,
+    idempotencyKey,
+    journal: signalJournal,
+    index: trackalackerSignalIndex,
+    settings,
+    now: Date.now()
+  });
+  signalJournal = outcome.journal;
+  // The mission decision receipt must reach disk before any activation or
+  // browser opening can begin. A crash can therefore be reconstructed and a
+  // replay remains idempotent.
+  try {
+    persistSignalJournal();
+  } catch (error) {
+    // Do not let an unsaved in-memory receipt turn the helper's retry into a
+    // duplicate. Restore the last durable view and surface a retryable local
+    // service failure instead.
+    signalJournal = previousJournal;
+    error.statusCode = 503;
+    throw error;
+  }
+
+  if (outcome.resolution?.canonicalSignal && !outcome.duplicate) {
+    runtimeState.signals = upsertSignal(runtimeState.signals, {
+      ...outcome.resolution.canonicalSignal,
+      autoOpenState: outcome.route?.state === "pending"
+        ? "pending"
+        : outcome.route?.state === "stale"
+          ? "stale"
+          : outcome.resolution.mission ? "disabled" : "new-product",
+      note: outcome.record.reason
+    });
+    try {
+      persistRuntimeState();
+    } catch (error) {
+      // The signal journal above is the authoritative delivery receipt. A
+      // secondary inbox write must not suppress a safely persisted mission
+      // decision or cause the native helper to replay it as a duplicate.
+      status = {
+        ...status,
+        lastMessage: `The signal decision was saved, but the dashboard inbox could not be persisted: ${String(error?.message || "local storage error").slice(0, 120)}`
+      };
+    }
+  }
+  broadcast();
+
+  if (!outcome.shouldOpen) {
+    return { statusCode: 200, payload: outcome.response };
+  }
+
+  const signal = outcome.resolution.canonicalSignal;
+  const route = outcome.route;
+  const activation = activateMatchedSignal(signal, route.product, Date.now());
+  if (!activation) {
+    updateTrackalackerSignalAction(signal.id, {
+      missionDecision: "failed",
+      actionState: "failed",
+      reason: "Signals mode changed before this mission could be activated."
+    });
+    return {
+      statusCode: 200,
+      payload: { ...outcome.response, action: "failed", reason: "Signals mode changed before mission activation." }
+    };
+  }
+
+  const actionStartedAt = new Date().toISOString();
+  updateTrackalackerSignalAction(signal.id, {
+    actionState: "opening",
+    timing: { actionStartedAt }
+  });
+  notifyOnce(
+    `trackalacker-match:${signal.id}`,
+    `${retailerLabel(signal.retailer)} TrackaLacker signal`,
+    `${signal.title} matched an armed mission. CartCollect is opening the verified product flow.`,
+    true
+  );
+  const taskEpoch = stopEpoch;
+  void openProduct(route.product.id, {
+    urlOverride: route.url,
+    spacingMs: DESKTOP_DROP_SPACING_MS,
+    actionKind: `trackalacker-signal-${route.entry}`,
+    resumeMonitoring: false,
+    stopEpoch: taskEpoch,
+    signalOrderLimit: route.signalOrderLimit
+  }).then((result) => {
+    if (result.via === "cancelled") {
+      updateTrackalackerSignalAction(signal.id, {
+        actionState: "cancelled",
+        reason: "Stop cancelled this signal opening before a store page was opened."
+      });
+      updateSignalRecord(signal.id, {
+        autoOpenState: "disabled",
+        note: "Stop cancelled this TrackaLacker opening before a store page was opened."
+      });
+      return;
+    }
+    const acknowledgedAt = new Date().toISOString();
+    updateTrackalackerSignalAction(signal.id, {
+      actionState: "opened",
+      timing: { acknowledgedAt },
+      reason: result.directFallback
+        ? "The direct entry lacked browser context, so the canonical product page opened for in-tab validation."
+        : `${route.note} Opened via ${result.via}.`
+    });
+    updateSignalRecord(signal.id, {
+      autoOpenState: "opened",
+      autoOpenedAt: acknowledgedAt,
+      note: result.directFallback
+        ? "The canonical product page opened for full in-tab verification."
+        : `${route.note} Opened via ${result.via}.`
+    });
+  }).catch((error) => {
+    const message = String(error?.message || "The browser entry failed.").slice(0, 180);
+    updateTrackalackerSignalAction(signal.id, {
+      missionDecision: "failed",
+      actionState: "failed",
+      reason: message
+    });
+    updateSignalRecord(signal.id, { autoOpenState: "failed", note: message });
+  });
+
+  return { statusCode: 202, payload: outcome.response };
 }
 
 async function ensureDiscordChannelSetup(epoch, token, channelId) {
@@ -1727,7 +2277,23 @@ async function openSignal(signalId, requestedEntry = "product") {
     const opened = await openExternalRetailer(signal.productUrl, { actionKind: "discord-signal-manual" });
     return { productId: "", via: opened.via };
   }
-  if (requestedEntry === "product") return openProduct(product.id);
+  if (requestedEntry === "product") {
+    const productRoute = planSignalRoute({
+      signal,
+      settings: {
+        ...settings,
+        discordAutoOpen: true,
+        products: settings.products.map((candidate) => (
+          candidate.id === product.id
+            ? { ...candidate, signalAutoOpen: true, signalEntry: "product" }
+            : candidate
+        ))
+      },
+      now: Date.now()
+    });
+    if (productRoute.state === "pending") activateMatchedSignal(signal, product, Date.now());
+    return openProduct(product.id);
+  }
   const route = planSignalRoute({
     signal,
     settings: {
@@ -1743,8 +2309,9 @@ async function openSignal(signalId, requestedEntry = "product") {
     now: Date.now()
   });
   if (route.entry !== requestedEntry) {
-    throw new Error("Direct entry requires Autopilot, a fresh under-cap price, a matching sanitized link, and Amazon.com as seller for Amazon. Open the product page instead.");
+    throw new Error("Direct entry requires Autopilot or Signals, a fresh under-cap price, a matching sanitized link, and Amazon.com as seller for Amazon. Open the product page instead.");
   }
+  activateMatchedSignal(signal, product, Date.now());
   return openProduct(product.id, {
     urlOverride: route.url,
     spacingMs: DESKTOP_DROP_SPACING_MS,
@@ -1762,6 +2329,7 @@ function handleCompanionEvent(rawEvent) {
   if (result.error) return { accepted: false, reason: result.error };
 
   const { event, product } = result;
+  const signalActivation = handleBrowserSignalEvent(event, product);
   if (product && event.imageUrl && event.imageUrl !== product.imageUrl) {
     settings = {
       ...settings,
@@ -1819,6 +2387,7 @@ function handleCompanionEvent(rawEvent) {
   broadcast();
   return {
     accepted: true,
+    signalActivated: Boolean(signalActivation),
     openRequestDrainMs: queueFanout?.openRequestDrainMs || 0,
     queueCapture
   };
@@ -1856,6 +2425,27 @@ function hasAllowedLocalOrigin(req) {
   );
 }
 
+function signalBridgeAuthorized(req) {
+  const authorization = String(req.headers.authorization || "");
+  const match = authorization.match(/^Bearer ([A-Za-z0-9]+)$/);
+  const expected = Buffer.from(String(settings?.signalBridgeToken || ""));
+  const supplied = Buffer.from(match?.[1] || "");
+  return expected.length >= 32
+    && expected.length === supplied.length
+    && crypto.timingSafeEqual(expected, supplied);
+}
+
+function signalHealthPayload() {
+  return {
+    status: "ready",
+    mission_engine: settings ? "ready" : "unavailable",
+    database: runtimeState && signalJournal ? "ready" : "unavailable",
+    signal_delivery: settings?.trackalackerSignalDeliveryPaused ? "paused" : "ready",
+    mappings: trackalackerSignalIndex.mappings.length,
+    port: companionPort
+  };
+}
+
 function writeJson(req, res, statusCode, payload) {
   const origin = corsOrigin(req);
   res.statusCode = statusCode;
@@ -1885,7 +2475,11 @@ function readJsonRequest(req, res, handler) {
       const result = handler(JSON.parse(body));
       writeJson(req, res, result.statusCode, result.payload);
     } catch (error) {
-      writeJson(req, res, 400, { error: error.message });
+      const requestedStatus = Number(error?.statusCode || 400);
+      const statusCode = [400, 409, 422, 500, 503].includes(requestedStatus)
+        ? requestedStatus
+        : 400;
+      writeJson(req, res, statusCode, { error: error.message });
     }
   });
 }
@@ -1909,13 +2503,23 @@ function extensionConfig() {
         expiresAt: trackalackerState.activeImport.expiresAt
       }
     : null;
+  const liveSignalActivations = settings.signalsEnabled
+    ? currentSignalActivations(Date.now())
+    : {};
+  const signalPurchaseActive = settings.signalsEnabled
+    && Object.keys(liveSignalActivations).length > 0;
+  const effectiveAutomationEnabled = settings.automationEnabled || signalPurchaseActive;
   return {
     // Howl source and resolved tracking URLs are sharing-only. Chrome receives
     // only the canonical purchasing fields used by the automation pipeline.
     products: settings.products.map((product) => {
       const context = productExecutionContext(runtimeState, product.id, settings.automationRunId);
+      const signalActivation = liveSignalActivations[product.id] || null;
       return {
         ...toAutomationProduct(product),
+        enabled: product.enabled && (!settings.signalsEnabled || Boolean(signalActivation)),
+        signalActivated: Boolean(signalActivation),
+        signalActivationExpiresAt: signalActivation?.expiresAt || 0,
         // Affiliate-first navigation target: affiliate open link, then the
         // admin campaign link, then the canonical product link. All three are
         // validated against this mission's exact store and item ID.
@@ -1927,7 +2531,8 @@ function extensionConfig() {
         executionCohortId: context?.cohortId || ""
       };
     }),
-    automationEnabled: settings.automationEnabled,
+    automationEnabled: effectiveAutomationEnabled,
+    signalsEnabled: settings.signalsEnabled,
     monitoringPaused: settings.monitoringPaused,
     automationRunId: settings.automationRunId,
     queueCaptures: runtimeState.queueCaptures,
@@ -1944,7 +2549,7 @@ function extensionConfig() {
     firstPartyOnly: true,
     checkoutTrust: settings.checkoutTrust,
     combinedOrder: combinedOrderStatus(
-      settings,
+      settings.signalsEnabled ? { ...settings, combinedOrderEnabled: false } : settings,
       productStatuses,
       (product) => productCalendarOwned(settings, product)
     ),
@@ -1960,6 +2565,24 @@ function startServerOnPort(port) {
   return new Promise((resolve, reject) => {
     const server = http.createServer((req, res) => {
       const requestUrl = new URL(req.url || "/", `http://127.0.0.1:${port}`);
+
+      if (["/api/v1/health", "/api/v1/signals"].includes(requestUrl.pathname)) {
+        if (!signalBridgeAuthorized(req)) {
+          writeJson(req, res, 401, { error: "invalid-bearer-token" });
+          return;
+        }
+        if (req.method === "GET" && requestUrl.pathname === "/api/v1/health") {
+          writeJson(req, res, 200, signalHealthPayload());
+          return;
+        }
+        if (req.method === "POST" && requestUrl.pathname === "/api/v1/signals") {
+          const idempotencyKey = String(req.headers["idempotency-key"] || "");
+          readJsonRequest(req, res, (body) => handleTrackalackerSignalRequest(body, idempotencyKey));
+          return;
+        }
+        writeJson(req, res, 405, { error: "method-not-allowed" });
+        return;
+      }
 
       if (req.method === "OPTIONS") {
         const origin = corsOrigin(req);
@@ -2162,7 +2785,85 @@ async function startCompanionServer() {
   throw new Error("The local companion ports are already in use.");
 }
 
-function createWindow() {
+function showDashboard() {
+  if (!mainWindow || mainWindow.isDestroyed()) createWindow({ show: true });
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+}
+
+function refreshTrayMenu() {
+  if (!tray) return;
+  const bridge = signalBridgeSnapshot();
+  const permission = bridge.notificationPermission === "allowed" ? "granted" : bridge.notificationPermission;
+  tray.setToolTip(`CartCollect · ${bridge.enabled ? bridge.helperState : "bridge disabled"}`);
+  tray.setContextMenu(Menu.buildFromTemplate([
+    { label: "Open Dashboard", click: showDashboard },
+    { type: "separator" },
+    { label: `Listener: ${bridge.listenerReady ? "ready" : bridge.helperState}`, enabled: false },
+    { label: `Notification access: ${permission}`, enabled: false },
+    { label: `Windows login: ${bridge.startAtLogin ? bridge.startupState : "disabled"}`, enabled: false },
+    { label: `Mappings: ${bridge.mappingCount}`, enabled: false },
+    { label: `Pending signals: ${bridge.pendingSignals}`, enabled: false },
+    { type: "separator" },
+    {
+      label: "Pause TrackaLacker delivery",
+      type: "checkbox",
+      checked: bridge.deliveryPaused,
+      enabled: bridge.enabled,
+      click: (item) => {
+        settings = { ...settings, trackalackerSignalDeliveryPaused: item.checked };
+        persistSettings();
+        syncSignalBridgeRuntime();
+        broadcast();
+      }
+    },
+    {
+      label: "Start bridge at Windows login",
+      type: "checkbox",
+      checked: bridge.startAtLogin,
+      enabled: bridge.supported && bridge.enabled,
+      click: (item) => {
+        settings = { ...settings, trackalackerSignalStartAtLogin: item.checked };
+        persistSettings();
+        syncSignalBridgeRuntime();
+        broadcast();
+      }
+    },
+    {
+      label: "Request notification access",
+      enabled: bridge.enabled && bridge.supported,
+      click: () => {
+        try {
+          requestSignalBridgePermission();
+        } catch (error) {
+          dialog.showErrorBox("Notification access", error.message);
+        }
+      }
+    },
+    { label: "View Signal Audit", click: () => shell.showItemInFolder(signalJournalPath()) },
+    { type: "separator" },
+    {
+      label: "Exit CartCollect",
+      click: () => {
+        isQuitting = true;
+        app.quit();
+      }
+    }
+  ]));
+}
+
+function createTray() {
+  if (tray || process.platform !== "win32") return;
+  const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32"><rect width="32" height="32" rx="8" fill="#2563eb"/><path d="M8 9h3l2 12h10l2-8H12" fill="none" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/><circle cx="15" cy="25" r="2" fill="white"/><circle cx="23" cy="25" r="2" fill="white"/></svg>';
+  const icon = nativeImage.createFromDataURL(`data:image/svg+xml;base64,${Buffer.from(svg).toString("base64")}`);
+  tray = new Tray(icon);
+  tray.on("click", showDashboard);
+  refreshTrayMenu();
+}
+
+function createWindow(options = {}) {
+  const showWindow = options.show !== undefined ? Boolean(options.show) : !backgroundLaunch;
   mainWindow = new BrowserWindow({
     width: 1240,
     height: 900,
@@ -2183,12 +2884,20 @@ function createWindow() {
 
   mainWindow.loadFile(path.join(__dirname, "src", "index.html"));
   mainWindow.once("ready-to-show", () => {
-    mainWindow.show();
-    mainWindow.focus();
+    if (showWindow) {
+      mainWindow.show();
+      mainWindow.focus();
+    }
   });
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   mainWindow.webContents.on("will-navigate", (event, targetUrl) => {
     if (!targetUrl.startsWith("file://")) event.preventDefault();
+  });
+  mainWindow.on("close", (event) => {
+    if (!isQuitting && (settings?.trackalackerSignalBridgeEnabled || settings?.signalsEnabled)) {
+      event.preventDefault();
+      mainWindow.hide();
+    }
   });
   mainWindow.on("closed", () => {
     mainWindow = null;
@@ -2213,7 +2922,8 @@ function registerIpc() {
   });
 
   ipcMain.handle("cart-assist:save-settings", (_event, nextSettings) => {
-    const wasArmed = settings.automationEnabled;
+    const wasArmed = purchaseModeEnabled(settings);
+    const previousRunMode = purchaseRunMode(settings);
     const previousProducts = settings.products;
     const previousDiscordChannelId = settings.discordChannelId;
     const userSettings = nextSettings && typeof nextSettings === "object"
@@ -2232,12 +2942,16 @@ function registerIpc() {
     const requestedAutomationEnabled = userSettings?.automationEnabled !== undefined
       ? Boolean(userSettings.automationEnabled)
       : settings.automationEnabled;
+    const requestedSignalsEnabled = userSettings?.signalsEnabled !== undefined
+      ? Boolean(userSettings.signalsEnabled)
+      : settings.signalsEnabled;
     let normalized = normalizeSettings({
       ...userSettings,
       // Normalize and compare the renderer's untrusted mission fields before
       // the desktop reattaches any existing approval. The armed validation is
       // then run a second time against the resulting trusted contracts.
-      automationEnabled: false
+      automationEnabled: false,
+      signalsEnabled: false
     }, settings);
     normalized = {
       ...normalized,
@@ -2245,7 +2959,8 @@ function registerIpc() {
         preserveCheckoutEvidence(normalized.products, settings.products),
         settings.products
       ),
-      automationEnabled: requestedAutomationEnabled
+      automationEnabled: requestedAutomationEnabled,
+      signalsEnabled: requestedSignalsEnabled
     };
     normalized = normalizeSettings(normalized, settings);
     assertSafeArmedUpdate(settings, normalized);
@@ -2253,15 +2968,21 @@ function registerIpc() {
       throw new Error("Choose a future date and time for the single store schedule.");
     }
     assertNoNewPastProductSchedules(normalized.products, settings.products, Date.now());
-    if (normalized.automationEnabled && !wasArmed) {
+    const nextRunMode = purchaseRunMode(normalized);
+    const modeChanged = nextRunMode !== previousRunMode;
+    if (modeChanged && wasArmed) {
+      stopEpoch += 1;
+      quietAbortRegistry.abortAll();
+      resetQuietMonitorSchedule(quietState.schedule);
+      storeOpenQueue.cancelPending();
+      openRequests.cancelAll();
+    }
+    if (modeChanged) clearSignalActivations();
+    if (purchaseModeEnabled(normalized) && modeChanged) {
       normalized = { ...normalized, automationRunId: crypto.randomUUID(), monitoringPaused: false };
       runtimeState.queueCaptures = {};
       resetQuietMonitorSchedule(quietState.schedule);
       resetQuietProductState();
-    } else if (wasArmed && !normalized.automationEnabled) {
-      stopEpoch += 1;
-      quietAbortRegistry.abortAll();
-      resetQuietMonitorSchedule(quietState.schedule);
     }
     reconcileProductExecutionContexts(
       runtimeState,
@@ -2270,6 +2991,8 @@ function registerIpc() {
       normalized.automationRunId
     );
     settings = normalized;
+    rebuildTrackalackerSignalIndex();
+    syncSignalBridgeRuntime();
     const prepIds = new Set(settings.walmartPrepCandidates.map((candidate) => candidate.id));
     runtimeState.walmartPrepObservations = Object.fromEntries(
       Object.entries(runtimeState.walmartPrepObservations || {}).filter(([productId]) => prepIds.has(productId))
@@ -2292,8 +3015,8 @@ function registerIpc() {
     if (input.length > 50_000) {
       throw new Error("The bulk import is too large. Paste no more than 50,000 characters.");
     }
-    if (settings.automationEnabled) {
-      throw new Error("Switch Autopilot off before importing items.");
+    if (purchaseModeEnabled(settings)) {
+      throw new Error("Stop Autopilot or Signals before importing items.");
     }
     const profile = itemProfileById(settings.defaultItemProfileId, settings.itemProfiles);
     return planBulkImport(input, settings.products, MAX_PRODUCTS, {
@@ -2331,8 +3054,8 @@ function registerIpc() {
   ipcMain.handle("cart-assist:trackalacker-cancel", () => cancelActiveTrackalackerImport());
 
   ipcMain.handle("cart-assist:trackalacker-add-missions", (_event, input) => {
-    if (settings.automationEnabled) {
-      throw new Error("Switch Autopilot off before adding TrackaLacker products to Items.");
+    if (purchaseModeEnabled(settings)) {
+      throw new Error("Stop Autopilot or Signals before adding TrackaLacker products to Items.");
     }
     const profile = itemProfileById(
       String(input?.profileId || settings.defaultItemProfileId),
@@ -2362,11 +3085,18 @@ function registerIpc() {
 
   ipcMain.handle("cart-assist:trackalacker-clear", () => {
     trackalackerState = clearTrackalackerState();
+    rebuildTrackalackerSignalIndex();
+    trackalackerProductsSinceCheckpoint = 0;
+    trackalackerLastCheckpointProcessed = 0;
     persistTrackalackerState();
     configVersion += 1;
     broadcast();
     return snapshot();
   });
+
+  ipcMain.handle("cart-assist:trackalacker-price-history", (_event, input) => (
+    trackalackerPriceHistory(trackalackerState, input?.itemId, input?.retailer, input?.listingId)
+  ));
 
   ipcMain.handle("cart-assist:trackalacker-open-source", async (_event, input) => {
     const kind = input?.kind === "history" ? "history" : "product";
@@ -2391,8 +3121,8 @@ function registerIpc() {
   });
 
   ipcMain.handle("cart-assist:catalog-add-missions", (_event, input) => {
-    if (settings.automationEnabled) {
-      throw new Error("Switch Autopilot off before adding catalog results to Items.");
+    if (purchaseModeEnabled(settings)) {
+      throw new Error("Stop Autopilot or Signals before adding catalog results to Items.");
     }
     const selectedIds = Array.isArray(input) ? input : input?.selectedIds;
     const requestedProfileId = Array.isArray(input)
@@ -2416,7 +3146,7 @@ function registerIpc() {
   });
 
   ipcMain.handle("cart-assist:catalog-add-walmart-prep", (_event, input) => {
-    if (settings.automationEnabled) throw new Error("Switch Autopilot off before adding Walmart prep candidates.");
+    if (purchaseModeEnabled(settings)) throw new Error("Stop Autopilot or Signals before adding Walmart prep candidates.");
     const profile = itemProfileById(String(input?.profileId || settings.defaultItemProfileId), settings.itemProfiles);
     const plan = planWalmartPrepCandidates(
       catalogState,
@@ -2478,7 +3208,7 @@ function registerIpc() {
   ipcMain.handle("cart-assist:msrp-research", () => runMsrpResearch());
 
   ipcMain.handle("cart-assist:msrp-suggestion-accept", (_event, suggestionId) => {
-    if (settings.automationEnabled) throw new Error("Switch Autopilot off before approving MSRP defaults.");
+    if (purchaseModeEnabled(settings)) throw new Error("Stop Autopilot or Signals before approving MSRP defaults.");
     const suggestion = msrpResearchState.suggestions.find((candidate) => candidate.id === String(suggestionId || ""));
     if (!suggestion) throw new Error("That MSRP suggestion is no longer available.");
     settings = normalizeSettings({
@@ -2529,9 +3259,11 @@ function registerIpc() {
     settings = {
       ...settings,
       automationEnabled: false,
+      signalsEnabled: false,
       monitoringPaused: true,
       scheduledOpenEnabled: false
     };
+    clearSignalActivations();
     runtimeState.productExecutionContexts = {};
     runtimeState.queueCaptures = {};
     runtimeState.walmartPrepObservations = {};
@@ -2540,7 +3272,7 @@ function registerIpc() {
     configVersion += 1;
     status = {
       ...status,
-      lastMessage: "Stopped. Autopilot off, monitoring paused, and queued openings cancelled. Your item plan and scheduled times were preserved."
+      lastMessage: "Stopped. Signals and Autopilot are off, monitoring is paused, and queued openings were cancelled. Your item plan and scheduled times were preserved."
     };
     broadcast();
     return snapshot();
@@ -2654,6 +3386,34 @@ function registerIpc() {
     openSignal(signalId, String(entry || "product"))
   ));
 
+  ipcMain.handle("cart-assist:signal-bridge-request-access", () => requestSignalBridgePermission());
+
+  ipcMain.handle("cart-assist:signal-bridge-replay", (_event, input = {}) => {
+    const now = new Date();
+    const signalId = `synthetic:trackalacker:${crypto.randomUUID()}`;
+    const result = handleTrackalackerSignalRequest({
+      schemaVersion: 1,
+      signalId,
+      testSignal: true,
+      source: {
+        provider: "trackalacker",
+        transport: "synthetic_replay",
+        notificationId: signalId,
+        applicationName: "Google Chrome",
+        applicationId: "Google.Chrome",
+        domain: "trackalacker.com",
+        createdAt: now.toISOString(),
+        receivedAt: now.toISOString()
+      },
+      notification: {
+        title: String(input?.title || "IN STOCK at Walmart!").slice(0, 500),
+        body: String(input?.body || "Synthetic TrackaLacker product\nin stock for $1.00 (~ MSRP)\nwww.trackalacker.com").slice(0, 4_000),
+        textElements: []
+      }
+    }, signalId);
+    return { ...result.payload, dryRun: true };
+  });
+
   ipcMain.handle("cart-assist:show-extension", () => {
     shell.showItemInFolder(path.join(extensionPath(), "manifest.json"));
     return extensionPath();
@@ -2675,7 +3435,7 @@ function registerIpc() {
   });
   ipcMain.handle("cart-assist:test-event", () => {
     if (!companionPort) throw new Error("The local companion server is not running.");
-    if (settings.automationEnabled) throw new Error("Switch Autopilot off before testing.");
+    if (purchaseModeEnabled(settings)) throw new Error("Stop Autopilot or Signals before monitoring only.");
     return openBuyList("", { ensureCompanion: true });
   });
 }
@@ -3252,7 +4012,7 @@ function startScheduler() {
     if (
       settings.msrpResearchEnabled
       && msrpResearchKey
-      && !settings.automationEnabled
+      && !purchaseModeEnabled(settings)
       && !msrpResearchInFlight
       && researchIsDue(msrpResearchState)
     ) {
@@ -3262,6 +4022,10 @@ function startScheduler() {
     // Startup and Stop are hard pause boundaries. Scheduled work remains
     // pending until an explicit Arm, Test, or Open action resumes monitoring.
     if (settings.monitoringPaused) return;
+
+    // Signals is event-driven: calendar openings and broad watcher sweeps stay
+    // dormant until the operator selects a different run mode.
+    if (settings.signalsEnabled) return;
 
     for (const productDecision of evaluateProductSchedules(
       settings.products,
@@ -3348,10 +4112,7 @@ if (!gotLock) {
   app.quit();
 } else {
   app.on("second-instance", () => {
-    if (!mainWindow) return;
-    if (mainWindow.isMinimized()) mainWindow.restore();
-    mainWindow.show();
-    mainWindow.focus();
+    showDashboard();
   });
 
   app.whenReady().then(async () => {
@@ -3360,6 +4121,7 @@ if (!gotLock) {
     loadPersistedRuntimeState();
     loadCatalogState();
     loadTrackalackerState();
+    loadSignalJournalState();
     loadMsrpResearchState();
     discordToken = loadDiscordToken(discordTokenPath(), safeStorage);
     msrpResearchKey = loadEncryptedCredential(msrpResearchKeyPath(), safeStorage, normalizeOpenAiApiKey);
@@ -3385,27 +4147,35 @@ if (!gotLock) {
     } catch (error) {
       dialog.showErrorBox("Companion server error", error.message);
     }
+    syncSignalBridgeRuntime();
 
-    createWindow();
+    createWindow({ show: !backgroundLaunch });
+    createTray();
     startUpdateChecks();
     startScheduler();
     startQuietMonitorDispatcher();
     startDiscordPoller();
     app.on("activate", () => {
-      if (BrowserWindow.getAllWindows().length === 0) createWindow();
+      showDashboard();
     });
   });
 }
 
 app.on("window-all-closed", () => {
-  if (process.platform !== "darwin") app.quit();
+  if (
+    process.platform !== "darwin"
+    && !settings?.trackalackerSignalBridgeEnabled
+    && !settings?.signalsEnabled
+  ) app.quit();
 });
 
 app.on("before-quit", () => {
+  isQuitting = true;
   if (schedulerTimer) clearInterval(schedulerTimer);
   if (quietMonitorTimer) clearInterval(quietMonitorTimer);
   if (discordPollTimer) clearInterval(discordPollTimer);
   if (updateCheckTimer) clearInterval(updateCheckTimer);
   quietAbortRegistry.abortAll();
+  stopSignalBridgeProcess();
   if (companionServer) companionServer.close();
 });

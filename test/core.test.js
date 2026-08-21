@@ -172,8 +172,46 @@ test("normalizes a multi-store buy list and preserves a private token", () => {
   assert.equal(result.scheduledRetailer, "amazon");
   assert.equal(result.discordEnabled, false);
   assert.equal(result.discordAutoOpen, true);
+  assert.equal(result.trackalackerSignalBridgeEnabled, false);
+  assert.equal(result.trackalackerSignalDeliveryPaused, false);
+  assert.equal(result.trackalackerSignalStartAtLogin, false);
+  assert.equal(result.trackalackerSignalDedupeWindowSeconds, 300);
+  assert.match(result.signalBridgeToken, /^[a-f0-9]{48}$/);
   assert.equal(result.products[2].signalEntry, "product");
   assert.equal(result.products[2].signalAutoOpen, true);
+});
+
+test("normalizes TrackaLacker signal bridge controls and approved aliases", () => {
+  const normalized = normalizeSettings({
+    products: PRODUCTS,
+    trackalackerSignalBridgeEnabled: true,
+    trackalackerSignalDeliveryPaused: true,
+    trackalackerSignalStartAtLogin: true,
+    trackalackerSignalDedupeWindowSeconds: 600,
+    trackalackerSignalAliases: [
+      { sourceProductId: "12345", retailer: "WALMART", alias: "  Perfect   Order Box " },
+      { sourceProductId: "12345", retailer: "walmart", alias: "Perfect Order Box" },
+      { sourceProductId: "bad", retailer: "target", alias: "Ignored" }
+    ]
+  });
+  assert.equal(normalized.trackalackerSignalBridgeEnabled, true);
+  assert.equal(normalized.trackalackerSignalDeliveryPaused, true);
+  assert.equal(normalized.trackalackerSignalStartAtLogin, true);
+  assert.equal(normalized.trackalackerSignalDedupeWindowSeconds, 600);
+  assert.deepEqual(normalized.trackalackerSignalAliases, [{
+    sourceProductId: "12345",
+    retailer: "walmart",
+    alias: "Perfect Order Box"
+  }]);
+  assert.throws(() => normalizeSettings({
+    products: PRODUCTS,
+    trackalackerSignalDedupeWindowSeconds: 10
+  }), /Signal dedupe window/);
+  assert.equal(normalizeSettings({
+    products: PRODUCTS,
+    trackalackerSignalBridgeEnabled: false,
+    trackalackerSignalStartAtLogin: true
+  }).trackalackerSignalStartAtLogin, false);
 });
 
 test("accepts 100 store options and rejects a 101st", () => {
@@ -425,15 +463,38 @@ test("TrackaLacker source metadata and CDN images stay renderer-only and survive
     sourceListingUrl: "https://www.trackalacker.com/products/showcase/pokemon-box/listings/301/pokemon-box",
     expectedPrice: 49.99,
     expectedPriceConfidence: "history",
-    expectedPriceObservedAt: "2026-08-20T19:00:00Z"
+    expectedPriceObservedAt: "2026-08-20T19:00:00Z",
+    sourcePriceSummary: {
+      sampleCount: 4,
+      trustedSamples: 3,
+      surgeSamples: 1,
+      aboveSamples: 0,
+      latestPrice: 189.99,
+      latestObservedAt: "2026-08-20T19:30:00Z",
+      latestPriceChangedAt: "2026-08-20T19:29:00Z",
+      latestClassification: "surge",
+      lowestPrice: 44.99,
+      highestPrice: 189.99,
+      normalLowPrice: 44.99,
+      normalHighPrice: 49.99,
+      referencePrice: 44.99,
+      referenceObservedAt: "2026-08-20T19:00:00Z",
+      referencePriceChangedAt: "2026-08-20T18:59:00Z",
+      previousPrice: 44.99,
+      changeAmount: 145,
+      trend: "up"
+    }
   };
   const product = normalizeProduct(source);
   assert.equal(product.imageUrl, source.imageUrl);
   assert.equal(toRendererProduct(product).sourceUrl, source.sourceUrl);
   assert.equal("sourceUrl" in toAutomationProduct(product), false);
+  assert.equal("sourcePriceSummary" in toAutomationProduct(product), false);
+  assert.equal(toRendererProduct(product).sourcePriceSummary.latestClassification, "surge");
   const saved = preserveAdminCampaignFields([{ ...toRendererProduct(product), title: "Updated" }], [product])[0];
   assert.equal(saved.sourceUrl, source.sourceUrl);
   assert.equal(saved.expectedPrice, 49.99);
+  assert.equal(saved.sourcePriceSummary.highestPrice, 189.99);
   assert.equal(normalizeProduct({ ...source, sourceUrl: "https://evil.example/products/showcase/item" }).sourceProvider, "");
   assert.equal(normalizeProduct({ ...source, sourceUrl: "https://evil.trackalacker.com/products/showcase/item" }).sourceProvider, "");
 });

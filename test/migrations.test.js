@@ -99,3 +99,26 @@ test("the legacy global schedule migrates onto matching enabled products", () =>
   assert.equal(migrated.products[2].openAt, undefined);
   assert.equal(migrated.products[3].openAt, "2026-08-20T10:00:00.000Z");
 });
+
+test("conflicting persisted purchase modes fail closed without discarding the plan", () => {
+  const stored = {
+    automationEnabled: true,
+    signalsEnabled: true,
+    products: [{
+      retailer: "target",
+      productUrl: "https://www.target.com/p/example/-/A-1011960739",
+      sku: "1011960739",
+      maxPrice: 50,
+      maxOrderTotal: 86,
+      quantity: 1,
+      action: "cart",
+      fulfillmentMode: "manual",
+      enabled: true
+    }]
+  };
+  const migrated = migrateStoredSettings(stored);
+  assert.equal(migrated.automationEnabled, false);
+  assert.equal(migrated.signalsEnabled, false);
+  assert.equal(migrated.monitoringPaused, true);
+  assert.equal(migrated.products.length, 1);
+});

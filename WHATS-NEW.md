@@ -6,6 +6,13 @@ update dialog shows exactly these bullets. Keep every entry short, plain, and
 about what the user will notice — one bullet per change, no internals.
 Publishing fails if the version being released has no section here.
 
+## 3.8.0
+- New Signals mode keeps every item dormant until an exact TrackaLacker, browser, or Discord alert matches that item and store, then reuses the existing price, seller, quantity, fulfillment, and checkout safeguards
+- The signed Windows package can capture TrackaLacker Chrome desktop alerts without polling, retain them through restarts, remove duplicates, wake CartCollect, and evaluate the matching mission in near real time
+- TrackaLacker scans now swap in a complete mapping snapshot atomically, so a failed or cancelled rescan never creates a temporary matching outage
+- Signal diagnostics show listener permission, mapping and queue health, recent outcomes, duplicate counts, and measured latency; delivery can pause without losing captured alerts, and a dry-run replay can never open a store
+- TrackaLacker store price histories now preserve the latest, low, high, reference price, and trend while excluding surge-only observations from automatic caps
+
 ## 3.7.8
 - Fixed TrackaLacker scans incorrectly reporting that no followed products were found on signed-in accounts
 - Followed products, exact store links, images, and Listing History prices now import from TrackaLacker's current page data, with clearer sign-in and browser-verification guidance when access is blocked

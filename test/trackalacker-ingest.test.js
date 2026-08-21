@@ -4,8 +4,10 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { JSDOM } = require("jsdom");
 const {
+  analyzePriceHistory,
   chooseStoreListings,
   estimateHistoryPrice,
+  mergeCurrentPriceHistory,
   parseFollowedPage,
   parseHistoryPage,
   parseProductPage,
@@ -118,7 +120,12 @@ test("product JSON itemizes exact retailer URLs and future stores", () => {
         url: "https://howl.link/target-route",
         preferred_product_url: "https://www.target.com/p/item/-/A-91234567",
         show_path: "/products/showcase/scarlet-violet-booster-bundle/listings/401/item",
-        current_status: { price: "26.94", short_stock_status_text: "In Stock" }
+        current_status: {
+          price: "26.94",
+          price_changed_at: "2026-08-20T18:30:00Z",
+          short_stock_status_text: "In Stock",
+          msrp_state: { code_str: "equal_to", full_text: "At MSRP" }
+        }
       }, {
         id: 402,
         provider: { display_name: "Best Buy" },
@@ -140,40 +147,57 @@ test("product JSON itemizes exact retailer URLs and future stores", () => {
   ]);
   assert.equal(parsed.listings[0].outboundUrl, "https://www.target.com/p/item/-/A-91234567");
   assert.equal(parsed.listings[0].currentPrice, 26.94);
+  assert.equal(parsed.listings[0].currentPriceChangedAt, "2026-08-20T18:30:00.000Z");
+  assert.equal(parsed.listings[0].currentMsrpCode, "equal_to");
   assert.equal(parsed.listings[0].historyUrl, "https://www.trackalacker.com/products/showcase/scarlet-violet-booster-bundle/listings/401/item");
 });
 
-test("history estimates reject surge and above-MSRP observations and use the stable normal price", () => {
+test("history analysis preserves spikes but uses the newest normal observation instead of an older modal price", () => {
   const entries = parseHistoryPage(doc(`
     <table><tbody>
-      <tr><td>8/20/2026, 10:18:12 PM</td><td>$189.99</td><td><div title="The price is significantly higher than the original MSRP; likely a scalper price.">Price Surge</div></td></tr>
+      <tr><td>8/20/2026, 10:18:12 PM</td><td>$189.99</td><td><div title="The price is significantly higher than the original MSRP; likely a scalper price.">Out of Stock</div></td></tr>
       <tr><td>8/18/2026, 9:04:02 AM</td><td>$69.99</td><td><div title="The price is higher than the original MSRP.">Preorder (Above MSRP)</div></td></tr>
+      <tr><td>8/17/2026, 3:36:23 PM</td><td>$44.99</td><td><div title="We estimate this price is basically the same as the original MSRP.">Out of Stock</div></td></tr>
       <tr><td>7/10/2026, 3:36:23 PM</td><td>$49.99</td><td><div title="We estimate this price is basically the same as the original MSRP.">Out of Stock</div></td></tr>
       <tr><td>7/09/2026, 3:36:23 PM</td><td>$49.99</td><td><div title="We estimate this price is basically the same as the original MSRP.">In Stock</div></td></tr>
       <tr><td>7/08/2026, 3:36:23 PM</td><td>$39.99</td><td><div title="We estimate this price is below the original MSRP.">Sale</div></td></tr>
     </tbody></table>
   `));
   const estimate = estimateHistoryPrice(entries);
-  assert.equal(estimate.price, 49.99);
+  const analysis = analyzePriceHistory(entries);
+  assert.equal(estimate.price, 44.99);
   assert.equal(estimate.confidence, "history");
-  assert.equal(estimate.samples, 3);
-  assert.equal(estimate.observedAt, "2026-07-10T15:36:23.000Z");
+  assert.equal(estimate.samples, 4);
+  assert.equal(estimate.observedAt, "2026-08-17T15:36:23.000Z");
+  assert.equal(analysis.history.length, 6);
+  assert.deepEqual(analysis.history.slice(0, 3).map((entry) => entry.classification), ["surge", "above", "normal"]);
+  assert.equal(analysis.summary.latestPrice, 189.99);
+  assert.equal(analysis.summary.lowestPrice, 39.99);
+  assert.equal(analysis.summary.highestPrice, 189.99);
+  assert.equal(analysis.summary.normalLowPrice, 39.99);
+  assert.equal(analysis.summary.normalHighPrice, 49.99);
+  assert.equal(analysis.summary.surgeSamples, 1);
+  assert.equal(analysis.summary.trend, "up");
+  assert.equal(analysis.summary.changeAmount, 120);
 });
 
 test("history estimates read TrackaLacker React hydration data", () => {
   const props = {
     statuses: [{
       price: "69.99",
+      created_at: "2026-08-18T09:05:02Z",
       price_changed_at: "2026-08-18T09:04:02Z",
       short_stock_status_text: "Preorder",
       msrp_state: { code_str: "above_msrp", full_text: "Above MSRP" }
     }, {
       price: "49.99",
+      created_at: "2026-07-10T15:40:23Z",
       price_changed_at: "2026-07-10T15:36:23Z",
       short_stock_status_text: "Out of Stock",
       msrp_state: { code_str: "equal_to", full_text: "At MSRP" }
     }, {
       price: 49.99,
+      created_at: "2026-07-09T15:40:23Z",
       price_changed_at: "2026-07-09T15:36:23Z",
       short_stock_status_text: "In Stock",
       msrp_state: { code_str: "equal_to", full_text: "At MSRP" }
@@ -187,6 +211,41 @@ test("history estimates read TrackaLacker React hydration data", () => {
   assert.equal(estimate.price, 49.99);
   assert.equal(estimate.samples, 2);
   assert.equal(estimate.observedAt, "2026-07-10T15:36:23.000Z");
+  assert.equal(estimate.priceChangedAt, "2026-07-10T15:36:23.000Z");
+  assert.equal(entries[0].classification, "above");
+});
+
+test("the current listing status becomes the latest observation without duplicating its history row", () => {
+  const historical = [{
+    observedAt: "2026-08-19T18:30:00Z",
+    priceChangedAt: "2026-08-19T18:00:00Z",
+    price: 49.99,
+    status: "In Stock",
+    msrpCode: "equal_to",
+    classification: "normal"
+  }];
+  const merged = mergeCurrentPriceHistory(historical, {
+    currentPrice: 189.99,
+    currentPriceChangedAt: "2026-08-20T18:00:00Z",
+    status: "Price Surge",
+    currentMsrpCode: "price_surge"
+  }, "2026-08-20T20:00:00Z");
+  const analysis = analyzePriceHistory(merged);
+  assert.equal(analysis.history.length, 2);
+  assert.equal(analysis.history[0].isCurrent, true);
+  assert.equal(analysis.summary.latestPrice, 189.99);
+  assert.equal(analysis.summary.latestClassification, "surge");
+  assert.equal(analysis.summary.referencePrice, 49.99);
+
+  const deduplicated = mergeCurrentPriceHistory(historical, {
+    currentPrice: 49.99,
+    currentPriceChangedAt: "2026-08-19T18:00:00Z",
+    status: "In Stock",
+    currentMsrpCode: "equal_to"
+  }, "2026-08-20T20:00:00Z");
+  assert.equal(deduplicated.length, 1);
+  assert.equal(deduplicated[0].isCurrent, true);
+  assert.equal(deduplicated[0].observedAt, "2026-08-20T20:00:00.000Z");
 });
 
 test("one store toggle is selected per retailer, favoring exact history over product fallback", () => {
@@ -207,4 +266,31 @@ test("one store toggle is selected per retailer, favoring exact history over pro
   assert.equal(stores[0].expectedPrice, 49.99);
   assert.equal(stores[0].priceConfidence, "history");
   assert.equal(stores[0].alternateCount, 1);
+});
+
+test("history capture is bounded and omits long classification prose from the loopback payload", () => {
+  const entries = Array.from({ length: 55 }, (_, index) => ({
+    observedAt: new Date(Date.parse("2026-08-20T20:00:00Z") - index * 60_000).toISOString(),
+    priceChangedAt: new Date(Date.parse("2026-08-20T19:59:00Z") - index * 60_000).toISOString(),
+    price: 49.99 + index,
+    status: "x".repeat(60),
+    msrpCode: "equal_to",
+    assessment: "x".repeat(500)
+  }));
+  const analysis = analyzePriceHistory(entries);
+  assert.equal(analysis.history.length, 50);
+  assert.equal("assessment" in analysis.history[0], false);
+  const store = {
+    retailer: "target",
+    listingId: "301",
+    productUrl: "https://www.target.com/p/item/-/A-1010892076",
+    historyUrl: "https://www.trackalacker.com/products/showcase/item/listings/301/item",
+    priceHistory: analysis.history,
+    priceHistorySummary: analysis.summary
+  };
+  const worstSupportedStorePayload = JSON.stringify({
+    phase: "product",
+    item: { sourceProductId: "1", title: "x".repeat(80), stores: [store, store, store] }
+  });
+  assert.ok(Buffer.byteLength(worstSupportedStorePayload) < 64 * 1024);
 });

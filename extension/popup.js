@@ -70,7 +70,7 @@ function renderPreview(product) {
   elements.seller.textContent = product.seller
     ? `${product.seller}${product.firstParty ? " · first-party match" : " · seller will be checked again"}`
     : "Seller text is not visible; the mission will still require first-party verification.";
-  elements.addButton.disabled = !desktopConfig || desktopConfig.automationEnabled || !QuickAdd.hasUsablePrice(product.price);
+  elements.addButton.disabled = !desktopConfig || desktopConfig.automationEnabled || desktopConfig.signalsEnabled || !QuickAdd.hasUsablePrice(product.price);
 }
 
 async function loadPreview() {
@@ -109,6 +109,7 @@ async function loadPreview() {
     && tabContext.resolutionRequired
     && desktopConfig
     && !desktopConfig.automationEnabled
+    && !desktopConfig.signalsEnabled
   ) {
     currentResolution = tabContext;
     elements.resolution.hidden = false;
@@ -121,10 +122,10 @@ async function loadPreview() {
     elements.preflight.hidden = false;
     elements.preflightStore.textContent = STORE_LABELS[preflight.retailer] || preflight.retailer;
     elements.preflightDetail.textContent = `Mission ${preflight.sku} is on a fully verified final review page.`;
-    elements.preflightButton.disabled = !desktopConfig || desktopConfig.automationEnabled;
+    elements.preflightButton.disabled = !desktopConfig || desktopConfig.automationEnabled || desktopConfig.signalsEnabled;
     setStatus(
-      desktopConfig?.automationEnabled
-        ? "Checkout found. Switch Autopilot off before locking its optional preflight."
+      desktopConfig?.automationEnabled || desktopConfig?.signalsEnabled
+        ? "Checkout found. Stop Autopilot or Signals before locking its optional preflight."
         : "Checkout found. You may optionally lock its destination and payment evidence."
     );
     elements.refreshButton.disabled = false;
@@ -138,8 +139,8 @@ async function loadPreview() {
   renderPreview(inspected.product);
   if (!desktopConfig) {
     setStatus("Product found, but the Cart Confirm desktop app is not reachable.", "error");
-  } else if (desktopConfig.automationEnabled) {
-    setStatus("Product found. Switch Autopilot off before adding a mission.", "error");
+  } else if (desktopConfig.automationEnabled || desktopConfig.signalsEnabled) {
+    setStatus("Product found. Stop Autopilot or Signals before adding a mission.", "error");
   } else if (!QuickAdd.hasUsablePrice(inspected.product.price)) {
     setStatus("The exact item was found, but its current retailer price is not readable yet.", "error");
   } else {

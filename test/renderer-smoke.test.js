@@ -38,6 +38,7 @@ function snapshotFixture() {
       }],
       missionGroups: [],
       automationEnabled: false,
+      signalsEnabled: false,
       monitoringPaused: true,
       automationRunId: "",
       fastMode: true,
@@ -75,7 +76,7 @@ function snapshotFixture() {
     events: [],
     signals: [],
     catalog: { version: 1, activeSearch: null, items: [] },
-    trackalacker: { version: 1, activeImport: null, items: [], lastImport: null },
+    trackalacker: { version: 2, activeImport: null, items: [], lastImport: null },
     msrpResearch: {
       configured: false,
       credentialUsable: false,
@@ -132,6 +133,7 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   const catalogSearchInputs = [];
   const catalogAddInputs = [];
   const trackalackerAddInputs = [];
+  const trackalackerHistoryInputs = [];
   const openedTrackalackerSources = [];
   const openedTrackalackerStores = [];
   let catalogClearCalls = 0;
@@ -153,7 +155,7 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
       next.settings = {
         ...next.settings,
         ...input,
-        monitoringPaused: input.automationEnabled ? false : input.monitoringPaused
+        monitoringPaused: input.automationEnabled || input.signalsEnabled ? false : input.monitoringPaused
       };
       return next;
     },
@@ -260,6 +262,20 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
     startTrackalackerImport: async () => ({ snapshot: snapshotFixture(), via: "chrome" }),
     cancelTrackalackerImport: async () => snapshotFixture(),
     clearTrackalackerImport: async () => snapshotFixture(),
+    getTrackalackerPriceHistory: async (itemId, retailer, listingId) => {
+      trackalackerHistoryInputs.push({ itemId, retailer, listingId });
+      return {
+        itemId,
+        retailer,
+        listingId: retailer === "target" ? "301" : "302",
+        entries: retailer === "target" ? [
+          { observedAt: "2026-08-20T19:30:00Z", price: 189.99, status: "Price Surge", classification: "surge" },
+          { observedAt: "2026-08-20T19:00:00Z", price: 44.99, status: "In Stock", classification: "normal" },
+          { observedAt: "2026-08-19T19:00:00Z", price: 49.99, status: "Out of Stock", classification: "normal" },
+          { observedAt: "2026-08-18T19:00:00Z", price: 49.99, status: "In Stock", classification: "normal" }
+        ] : []
+      };
+    },
     openTrackalackerSource: async (url, kind) => {
       openedTrackalackerSources.push({ url, kind });
       return { via: "chrome", url };
@@ -293,10 +309,23 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
           retailer: "target",
           sku: "1010892076",
           productUrl: "https://www.target.com/p/item/-/A-1010892076",
-          maxPrice: 49.99,
+          maxPrice: 44.99,
           maxOrderTotal: 0,
           enabled: true,
-          expectedPriceConfidence: "history"
+          expectedPriceConfidence: "history",
+          sourceListingId: "301",
+          sourcePriceSummary: {
+            sampleCount: 4,
+            trustedSamples: 3,
+            surgeSamples: 1,
+            latestPrice: 129.99,
+            latestClassification: "surge",
+            lowestPrice: 44.99,
+            highestPrice: 189.99,
+            referencePrice: 44.99,
+            trend: "up",
+            changeAmount: 145
+          }
         },
         {
           ...shared,
@@ -310,6 +339,7 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
           expectedPriceConfidence: "product"
         }
       );
+      next.trackalacker = trackalackerPreview.trackalacker;
       return {
         snapshot: next,
         summary: { selectedItems: 1, selectedStores: 2, importedItems: 1, importedStores: 2, ready: 1, needsReview: 1, duplicates: 0, missing: 0, overCapacity: 0 }
@@ -913,6 +943,22 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   await new Promise((resolve) => setTimeout(resolve, 10));
   assert.equal(openBuyListCalls, 1, "turning Autopilot off must not launch another sweep");
 
+  // Signals is a separate event-driven mode: starting it opens no broad item
+  // sweep and clearly reports that only exact matches receive authorization.
+  doc.getElementById("signalsToggle").click();
+  assert.equal(doc.getElementById("runReviewDialog").hasAttribute("open"), true);
+  doc.getElementById("runReviewSignalsButton").click();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(openBuyListCalls, 1, "Signals must not start an Autopilot-style sweep");
+  assert.equal(savedSettingsInputs.at(-1).automationEnabled, false);
+  assert.equal(savedSettingsInputs.at(-1).signalsEnabled, true);
+  assert.equal(doc.getElementById("signalsState").textContent, "ON");
+  assert.equal(doc.getElementById("runStateTitle").textContent, "Signals listening");
+  assert.match(doc.getElementById("message").textContent, /exact TrackaLacker, browser, or Discord signal/);
+  doc.getElementById("signalsToggle").click();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(savedSettingsInputs.at(-1).signalsEnabled, false);
+
   doc.getElementById("openAllButton").click();
   await new Promise((resolve) => setTimeout(resolve, 10));
   assert.equal(openBuyListCalls, 2);
@@ -1113,6 +1159,23 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
     "finishing the plan session resumes exactly once"
   );
 
+  const signalsArmed = snapshotFixture();
+  signalsArmed.settings.signalsEnabled = true;
+  signalsArmed.settings.monitoringPaused = false;
+  pushUpdate(signalsArmed);
+  const signalsEditStart = savedSettingsInputs.length;
+  doc.querySelector(".mission-card .mission-edit").click();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  doc.querySelector(".mission-edit-card").dispatchEvent(new window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  doc.getElementById("planEditButton").click();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  const signalsEditSaves = savedSettingsInputs.slice(signalsEditStart);
+  assert.equal(signalsEditSaves.filter((input) => input.signalsEnabled === false).length, 1);
+  assert.equal(signalsEditSaves.filter((input) => input.signalsEnabled === true).length, 1);
+  assert.equal(signalsEditSaves.some((input) => input.automationEnabled === true), false);
+  assert.equal(doc.getElementById("signalsState").textContent, "ON");
+
   // A hard Stop during an armed edit cancels the editor's deferred re-arm.
   pushUpdate(armed);
   const stopDuringEditStart = savedSettingsInputs.length;
@@ -1302,7 +1365,7 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   // store toggles, source/history links, image, and price-confidence labels.
   const trackalackerPreview = snapshotFixture();
   trackalackerPreview.trackalacker = {
-    version: 1,
+    version: 2,
     activeImport: {
       id: "track-import-1",
       state: "complete",
@@ -1329,9 +1392,30 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
           listingId: "301",
           productUrl: "https://www.target.com/p/item/-/A-1010892076",
           historyUrl: "https://www.trackalacker.com/products/showcase/pokemon-followed-box/listings/301/pokemon-followed-box",
-          expectedPrice: 49.99,
+          currentPrice: 189.99,
+          expectedPrice: 44.99,
           priceConfidence: "history",
-          historySamples: 4,
+          historySamples: 3,
+          historyObservedAt: "2026-08-20T19:00:00Z",
+          priceHistorySummary: {
+            sampleCount: 4,
+            trustedSamples: 3,
+            surgeSamples: 1,
+            aboveSamples: 0,
+            latestPrice: 189.99,
+            latestObservedAt: "2026-08-20T19:30:00Z",
+            latestPriceChangedAt: "2026-08-20T19:29:00Z",
+            latestClassification: "surge",
+            lowestPrice: 44.99,
+            highestPrice: 189.99,
+            normalLowPrice: 44.99,
+            normalHighPrice: 49.99,
+            referencePrice: 44.99,
+            referenceObservedAt: "2026-08-20T19:00:00Z",
+            previousPrice: 44.99,
+            changeAmount: 145,
+            trend: "up"
+          },
           alternateCount: 1
         },
         {
@@ -1344,6 +1428,20 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
           expectedPrice: 49.99,
           priceConfidence: "product",
           historySamples: 0,
+          priceHistorySummary: {
+            sampleCount: 1,
+            trustedSamples: 0,
+            surgeSamples: 1,
+            aboveSamples: 0,
+            latestPrice: 189.99,
+            latestObservedAt: "2026-08-20T19:45:00Z",
+            latestClassification: "surge",
+            lowestPrice: 189.99,
+            highestPrice: 189.99,
+            referencePrice: null,
+            trend: "unknown",
+            changeAmount: null
+          },
           alternateCount: 0
         }
       ]
@@ -1354,7 +1452,18 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   assert.equal(doc.querySelectorAll(".trackalacker-store-option").length, 2);
   assert.equal([...doc.querySelectorAll(".trackalacker-store-option input")].every((input) => input.checked), true);
   assert.match(doc.querySelector(".trackalacker-card").textContent, /Best Buy/);
-  assert.match(doc.querySelector(".trackalacker-card").textContent, /history sample/);
+  assert.match(doc.querySelector(".trackalacker-card").textContent, /Latest\$189\.99Low\$44\.99High\$189\.99/);
+  assert.match(doc.querySelector(".trackalacker-card").textContent, /Surge/);
+  const targetHistory = doc.querySelector(".trackalacker-store-option[data-retailer='target'] .trackalacker-price-history");
+  targetHistory.open = true;
+  targetHistory.dispatchEvent(new window.Event("toggle"));
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.deepEqual(trackalackerHistoryInputs, [{ itemId: "trackalacker:12345", retailer: "target", listingId: "301" }]);
+  assert.equal(targetHistory.querySelectorAll(".trackalacker-history-row").length, 4);
+  assert.equal(targetHistory.querySelectorAll(".trackalacker-sparkline").length, 1);
+  pushUpdate(trackalackerPreview);
+  assert.equal(doc.contains(targetHistory), true, "an unrelated identical update preserves the expanded lazy history");
+  assert.equal(targetHistory.open, true);
   doc.querySelector(".trackalacker-title-row .trackalacker-link-button").click();
   await new Promise((resolve) => setTimeout(resolve, 10));
   assert.equal(openedTrackalackerSources[0].kind, "product");
@@ -1375,6 +1484,7 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   assert.ok(importedItem, "TrackaLacker stores render as one grouped item");
   assert.equal(importedItem.querySelectorAll(".item-store-option.selected").length, 2);
   assert.equal(importedItem.querySelector(".mission-source").hidden, false);
+  assert.match(importedItem.textContent, /\$189\.99 latest surge/);
 
   window.close();
 });

@@ -11,7 +11,27 @@ const packageJson = require("../package.json");
 const root = path.resolve(__dirname, "..");
 const output = path.join(root, "dist");
 
-async function buildTarget(target, artifactName, targetOutput) {
+function publishSignalBridge() {
+  if (process.platform !== "win32") return;
+  const project = path.join(root, "native", "CartCollect.SignalBridge", "CartCollect.SignalBridge.csproj");
+  const publishDirectory = path.join(root, "native", "CartCollect.SignalBridge", "publish", "win-x64");
+  const result = spawnSync("dotnet", [
+    "publish",
+    project,
+    "--configuration", "Release",
+    "--runtime", "win-x64",
+    "--self-contained", "true",
+    "--output", publishDirectory,
+    "--nologo"
+  ], { cwd: root, stdio: "inherit" });
+  if (result.error) throw result.error;
+  if (result.status !== 0) throw new Error(`Windows signal bridge compilation failed with exit code ${result.status}.`);
+  if (!fs.existsSync(path.join(publishDirectory, "CartCollect.SignalBridge.exe"))) {
+    throw new Error("Windows signal bridge publish did not produce CartCollect.SignalBridge.exe.");
+  }
+}
+
+async function buildTarget(target, artifactName, targetOutput, extension) {
   await build({
     projectDir: root,
     targets: Platform.WINDOWS.createTarget([target], Arch.x64),
@@ -26,7 +46,7 @@ async function buildTarget(target, artifactName, targetOutput) {
     }
   });
   const artifacts = fs.readdirSync(targetOutput)
-    .filter((name) => name.toLowerCase().endsWith(".exe"));
+    .filter((name) => name.toLowerCase().endsWith(extension));
   if (artifacts.length !== 1) {
     throw new Error(`Expected exactly one ${target} executable, found ${artifacts.length}.`);
   }
@@ -44,21 +64,33 @@ async function main() {
       throw new Error("Windows packaging on this host requires Wine; use the Windows CI packaging job instead.");
     }
   }
+  publishSignalBridge();
   const staging = fs.mkdtempSync(path.join(os.tmpdir(), "cart-confirm-windows-"));
   let artifacts;
   try {
     const setup = await buildTarget(
       "nsis",
       "Cart-Confirm-Setup-${version}-${arch}.${ext}",
-      path.join(staging, "setup")
+      path.join(staging, "setup"),
+      ".exe"
     );
     const portable = await buildTarget(
       "portable",
       "Cart-Confirm-Portable-${version}-${arch}.${ext}",
-      path.join(staging, "portable")
+      path.join(staging, "portable"),
+      ".exe"
     );
+    const signedPackageRequested = Boolean(process.env.CSC_LINK || process.env.WIN_CSC_LINK);
+    const appx = signedPackageRequested
+      ? await buildTarget(
+          "appx",
+          "Cart-Confirm-Signals-${version}-${arch}.${ext}",
+          path.join(staging, "appx"),
+          ".appx"
+        )
+      : null;
     fs.mkdirSync(output, { recursive: true });
-    artifacts = [setup, portable].map((source) => {
+    artifacts = [setup, portable, appx].filter(Boolean).map((source) => {
       const name = path.basename(source);
       fs.copyFileSync(source, path.join(output, name));
       return name;

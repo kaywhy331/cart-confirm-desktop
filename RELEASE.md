@@ -28,6 +28,10 @@ The manual workflow:
 6. Creates a GitHub **prerelease**, never a stable release, with the unsigned and
    SmartScreen warning in its release notes.
 
+The native TrackaLacker notification listener is not published in this lane as
+an installable package. Windows notification access requires the signed AppX
+identity from the stable lane.
+
 To publish, open **Actions → Unsigned Windows prerelease → Run workflow**, select
 `main`, and enter the confirmation phrase. Bump `package.json` before publishing
 another unsigned prerelease; the workflow refuses to replace an existing tag.
@@ -47,9 +51,10 @@ The first explicitly authorized unsigned prerelease is available as
 3. Requires the tag to be **GPG/SSH-verified by GitHub** (`verification.verified`
    from the GitHub API) — an unsigned annotated tag also fails.
 4. Requires `secrets.WINDOWS_CERTIFICATE` to be non-empty.
-5. After building, requires exactly two `.exe` artifacts in `dist/`, each with a
-   `Valid` Authenticode signature status, and cross-checks every file in
-   `dist/SHA256SUMS.txt` against a freshly computed hash.
+5. After building, requires exactly two `.exe` artifacts plus one notification-
+   capable `.appx` in `dist/`, each with a `Valid` signature status, and
+   cross-checks all three files in `dist/SHA256SUMS.txt` against freshly computed
+   hashes.
 
 If any of these fail, no stable GitHub Release is created. There is no unsigned
 override in the stable workflow; use the separately labeled prerelease lane.
@@ -91,8 +96,9 @@ override in the stable workflow; use the separately labeled prerelease lane.
    certificate checks, nothing was built or published — fix the underlying
    secret/tag issue and push a new tag rather than retrying blindly.
 5. Once the workflow succeeds, confirm the GitHub Release has both `.exe`
-   artifacts and `SHA256SUMS.txt` attached, and spot-check one checksum
-   locally before announcing the release.
+   artifacts, `Cart-Confirm-Signals-…appx`, and `SHA256SUMS.txt` attached. Install
+   the AppX on a Windows test account, grant notification access, and spot-check
+   one checksum before announcing the release.
 
 ## Current release status
 

@@ -7,6 +7,8 @@ const MAX_MISSIONS = 100;
 const elements = {
   autopilotToggle: document.getElementById("autopilotToggle"),
   autopilotState: document.getElementById("autopilotState"),
+  signalsToggle: document.getElementById("signalsToggle"),
+  signalsState: document.getElementById("signalsState"),
   disarmButton: document.getElementById("disarmButton"),
   runStateBanner: document.getElementById("runStateBanner"),
   runStateTitle: document.getElementById("runStateTitle"),
@@ -18,6 +20,7 @@ const elements = {
   runReviewMetrics: document.getElementById("runReviewMetrics"),
   runReviewIssues: document.getElementById("runReviewIssues"),
   runReviewMonitorButton: document.getElementById("runReviewMonitorButton"),
+  runReviewSignalsButton: document.getElementById("runReviewSignalsButton"),
   runReviewAutopilotButton: document.getElementById("runReviewAutopilotButton"),
   updateNotice: document.getElementById("updateNotice"),
   updateAvailableText: document.getElementById("updateAvailableText"),
@@ -170,6 +173,16 @@ const elements = {
   discordLauncher: document.getElementById("discordLauncher"),
   showDiscordButton: document.getElementById("showDiscordButton"),
   signalPanel: document.getElementById("signalPanel"),
+  signalBridgeState: document.getElementById("signalBridgeState"),
+  signalBridgeHint: document.getElementById("signalBridgeHint"),
+  signalBridgeMetrics: document.getElementById("signalBridgeMetrics"),
+  signalBridgeEnabled: document.getElementById("signalBridgeEnabled"),
+  signalBridgeDeliveryPaused: document.getElementById("signalBridgeDeliveryPaused"),
+  signalBridgeStartAtLogin: document.getElementById("signalBridgeStartAtLogin"),
+  signalBridgeDedupeSeconds: document.getElementById("signalBridgeDedupeSeconds"),
+  signalBridgePermissionButton: document.getElementById("signalBridgePermissionButton"),
+  signalBridgeReplayButton: document.getElementById("signalBridgeReplayButton"),
+  signalBridgeRecent: document.getElementById("signalBridgeRecent"),
   discordState: document.getElementById("discordState"),
   discordHint: document.getElementById("discordHint"),
   discordBotToken: document.getElementById("discordBotToken"),
@@ -266,7 +279,7 @@ for (const toggle of document.querySelectorAll(".panel-toggle")) {
 let currentSnapshot = null;
 let messageTimer = null;
 let openRunInFlight = false;
-let runReviewApproved = false;
+let runReviewApprovedMode = "";
 let updateOperationInFlight = false;
 let updateButtonMode = "check";
 let availableUpdateVersion = "";
@@ -274,7 +287,7 @@ let lastUpdaterRevision = -1;
 let editingId = null; // null | product id | "new"
 let editCardNode = null;
 let planEditMode = false;
-let resumeAutopilotAfterPlanEdit = false;
+let resumePurchaseModeAfterPlanEdit = "";
 let planEditBaseline = null;
 let planEditUndoStack = [];
 let restoringPlanSnapshot = false;
@@ -289,12 +302,15 @@ let catalogImportInFlight = false;
 let renderedCatalogSearchId = "";
 let trackalackerOperationInFlight = false;
 let renderedTrackalackerImportId = "";
+let renderedTrackalackerSignature = "";
 let lastReadinessIssueItemIds = new Set();
 let missionVisibleLimit = 25;
 const catalogSelectedIds = new Set();
 const catalogSeenIds = new Set();
 const trackalackerSelectedStores = new Set();
 const trackalackerSeenStores = new Set();
+const trackalackerHistoryCache = new Map();
+const trackalackerHistoryRequests = new Map();
 const bulkMissionSelectedIds = new Set();
 let editingItemProfileId = "";
 // Persisted feed entries are history, not fresh alarm triggers. Only events
@@ -575,7 +591,23 @@ function savedMissionGroups() {
 }
 
 function isArmed() {
+  return isAutopilot() || isSignalsMode();
+}
+
+function isAutopilot() {
   return Boolean(currentSnapshot?.settings?.automationEnabled);
+}
+
+function isSignalsMode() {
+  return Boolean(currentSnapshot?.settings?.signalsEnabled);
+}
+
+function activePurchaseMode() {
+  return isAutopilot() ? "autopilot" : isSignalsMode() ? "signals" : "";
+}
+
+function activePurchaseModeLabel() {
+  return isSignalsMode() ? "Signals" : "Autopilot";
 }
 
 function productTitle(productId) {
@@ -812,7 +844,8 @@ function globalSettings(products, overrides = {}) {
   const current = {
     products,
     missionGroups: overrides.missionGroups ?? savedMissionGroups(),
-    automationEnabled: isArmed(),
+    automationEnabled: isAutopilot(),
+    signalsEnabled: isSignalsMode(),
     fastMode: elements.fastMode.checked,
     combinedOrderEnabled: elements.combinedOrder.checked,
     watcherIntervalSeconds: Number(elements.watcherIntervalSeconds.value),
@@ -843,7 +876,8 @@ function globalSettings(products, overrides = {}) {
     ...overrides,
     products,
     missionGroups: overrides.missionGroups ?? current.missionGroups,
-    automationEnabled: isArmed()
+    automationEnabled: isAutopilot(),
+    signalsEnabled: isSignalsMode()
   };
 }
 
@@ -892,12 +926,13 @@ async function saveMissionList(products, overrides = {}) {
   return next;
 }
 
-// --- Plan editing pauses Autopilot once, then resumes once when the plan is ready ---
+// --- Plan editing pauses the purchase mode once, then resumes it once ---
 
-async function pauseAutopilot() {
+async function pausePurchaseMode() {
   const next = await window.cartAssist.saveSettings({
     ...currentSnapshot.settings,
-    automationEnabled: false
+    automationEnabled: false,
+    signalsEnabled: false
   });
   render(next);
 }
@@ -917,17 +952,22 @@ function liveVerificationWarning(count) {
     : "";
 }
 
-async function resumeAutopilot() {
+async function resumePurchaseMode(mode) {
   const saved = currentSnapshot.settings;
   const autoSubmit = autoSubmitArmingSummary(saved);
+  const label = mode === "signals" ? "Signals" : "Autopilot";
   if (
     autoSubmit.count > 0
-    && !window.confirm(`${autoSubmit.count} enabled store option${autoSubmit.count === 1 ? "" : "s"} may submit a real order.${liveVerificationWarning(autoSubmit.liveVerificationCount)} Resuming starts a new run. Switch Autopilot back on?`)
+    && !window.confirm(`${autoSubmit.count} enabled store option${autoSubmit.count === 1 ? "" : "s"} may submit a real order.${liveVerificationWarning(autoSubmit.liveVerificationCount)} Resuming starts a new run. Switch ${label} back on?`)
   ) {
-    setMessage("Autopilot stayed off. Switch it on from the header when ready.", "warn");
+    setMessage(`${label} stayed off. Switch it on from the header when ready.`, "warn");
     return false;
   }
-  const next = await window.cartAssist.saveSettings({ ...saved, automationEnabled: true });
+  const next = await window.cartAssist.saveSettings({
+    ...saved,
+    automationEnabled: mode === "autopilot",
+    signalsEnabled: mode === "signals"
+  });
   render(next);
   return true;
 }
@@ -937,9 +977,10 @@ async function beginPlanEditSession() {
   const actionStopEpoch = stopUiEpoch;
   try {
     if (isArmed()) {
-      await pauseAutopilot();
+      const mode = activePurchaseMode();
+      await pausePurchaseMode();
       if (actionStopEpoch !== stopUiEpoch) return false;
-      resumeAutopilotAfterPlanEdit = true;
+      resumePurchaseModeAfterPlanEdit = mode;
     }
     planEditMode = true;
     planEditBaseline = capturePlanSnapshot();
@@ -947,8 +988,8 @@ async function beginPlanEditSession() {
     renderMissions();
     renderPlanHistoryControls();
     setMessage(
-      resumeAutopilotAfterPlanEdit
-        ? "Autopilot paused once. Make every plan change, then choose Finish editing to start the updated run."
+      resumePurchaseModeAfterPlanEdit
+        ? `${resumePurchaseModeAfterPlanEdit === "signals" ? "Signals" : "Autopilot"} paused once. Make every plan change, then choose Finish editing to start the updated run.`
         : "Plan editor open. Select filtered items for bulk changes, or edit individual items.",
       "warn"
     );
@@ -965,23 +1006,24 @@ async function finishPlanEditSession() {
     setMessage("Finish the open item editor first (Done or Cancel).", "error");
     return;
   }
-  const shouldResume = resumeAutopilotAfterPlanEdit;
+  const modeToResume = resumePurchaseModeAfterPlanEdit;
   const actionStopEpoch = stopUiEpoch;
   planEditMode = false;
-  resumeAutopilotAfterPlanEdit = false;
+  resumePurchaseModeAfterPlanEdit = "";
   planEditBaseline = null;
   planEditUndoStack = [];
   bulkMissionSelectedIds.clear();
   renderMissions();
-  if (!shouldResume || actionStopEpoch !== stopUiEpoch) {
+  if (!modeToResume || actionStopEpoch !== stopUiEpoch) {
     setMessage("Plan editor closed. Your changes are saved.", "success");
     return;
   }
   try {
-    const resumed = await resumeAutopilot();
-    if (resumed) setMessage("Plan saved and Autopilot resumed with one new run.", "success");
+    const resumed = await resumePurchaseMode(modeToResume);
+    const label = modeToResume === "signals" ? "Signals" : "Autopilot";
+    if (resumed) setMessage(`Plan saved and ${label} resumed with one new run.`, "success");
   } catch (error) {
-    setMessage(error.message || "The plan was saved, but Autopilot could not resume.", "error");
+    setMessage(error.message || "The plan was saved, but the purchase mode could not resume.", "error");
   }
 }
 
@@ -1218,9 +1260,28 @@ function buildProductViewCard(product, status) {
   if (product.affiliateOpenUrl) subParts.push("Custom Open link");
   if (product.affiliateUrl) subParts.push("Campaign share ready");
   if (product.sourceProvider === "trackalacker") {
-    subParts.push(product.expectedPriceConfidence === "history"
-      ? "TrackaLacker history price"
-      : "TrackaLacker estimate needs review");
+    const summary = currentTrackalackerPriceSummary(product) || product.sourcePriceSummary;
+    if (summary) {
+      const latestSince = trackalackerHistoryDate(summary.latestPriceChangedAt || summary.latestObservedAt);
+      const latestLabel = `${money(summary.latestPrice)} latest${summary.latestClassification === "surge" ? " surge" : summary.latestClassification === "above" ? " above MSRP" : ""}${latestSince ? ` since ${latestSince}` : ""}`;
+      const rangeLabel = summary.lowestPrice !== null && summary.highestPrice !== null
+        ? `${money(summary.lowestPrice)}–${money(summary.highestPrice)} range`
+        : "";
+      const trendLabel = summary.trend === "up" ? "↑ trend" : summary.trend === "down" ? "↓ trend" : summary.trend === "steady" ? "→ steady" : "";
+      let referenceLabel = summary.referencePrice
+        ? `TrackaLacker normal reference ${money(summary.referencePrice)}`
+        : "TrackaLacker estimate needs review";
+      if (
+        summary.referencePrice
+        && Number(product.maxPrice) > 0
+        && Math.round(Number(product.maxPrice) * 100) !== Math.round(Number(summary.referencePrice) * 100)
+      ) referenceLabel += `; saved cap remains ${money(product.maxPrice)}`;
+      subParts.push([referenceLabel, latestLabel, rangeLabel, trendLabel].filter(Boolean).join("; "));
+    } else {
+      subParts.push(product.expectedPriceConfidence === "history"
+        ? "TrackaLacker history price"
+        : "TrackaLacker estimate needs review");
+    }
   }
   if (product.action === "checkout") {
     subParts.push(product.checkoutPreflightApproved
@@ -1269,8 +1330,8 @@ function buildProductViewCard(product, status) {
   setMissionButtonLabel(editButton, `Edit ${productLabel(product)}`);
   setMissionButtonLabel(removeButton, `Remove ${productLabel(product)}`);
   if (armedNow) {
-    editButton.title = "Pauses Autopilot once and opens the plan editor";
-    removeButton.title = "Pauses Autopilot once and keeps the plan editor open";
+    editButton.title = "Pauses the active purchase mode once and opens the plan editor";
+    removeButton.title = "Pauses the active purchase mode once and keeps the plan editor open";
   }
 
   card.dataset.productId = product.id;
@@ -2264,6 +2325,17 @@ function trackalackerStoreKey(itemId, retailer) {
   return `${itemId}:${retailer}`;
 }
 
+function currentTrackalackerPriceSummary(product) {
+  const item = (currentSnapshot?.trackalacker?.items || []).find((candidate) => (
+    candidate.sourceProductId === product.sourceProductId
+  ));
+  const store = item?.stores?.find((candidate) => (
+    candidate.retailer === product.retailer
+    && candidate.listingId === product.sourceListingId
+  ));
+  return store?.priceHistorySummary || null;
+}
+
 function trackalackerStoreAlreadyAdded(item, store) {
   return (currentSnapshot?.settings?.products || []).some((product) => (
     product.id === store.id
@@ -2293,14 +2365,195 @@ function trackalackerStatusText(trackalacker = {}) {
 }
 
 function trackalackerPriceLabel(store) {
+  const summary = store.priceHistorySummary;
   if (!(Number(store.expectedPrice) > 0)) return { text: "No expected price", note: "review required" };
   if (store.priceConfidence === "history") {
+    const latestRisk = summary?.latestClassification === "surge"
+      ? `latest ${money(summary.latestPrice)} surge`
+      : summary?.latestClassification === "above"
+        ? `latest ${money(summary.latestPrice)} above MSRP`
+        : summary?.latestPrice
+          ? `latest ${money(summary.latestPrice)}`
+          : "";
+    const latestSince = trackalackerHistoryDate(summary?.latestPriceChangedAt || summary?.latestObservedAt);
+    const referenceSince = trackalackerHistoryDate(summary?.referencePriceChangedAt || summary?.referenceObservedAt);
     return {
-      text: `${money(store.expectedPrice)} expected`,
-      note: `${store.historySamples || 1} normal history sample${store.historySamples === 1 ? "" : "s"} · ready`
+      text: `${money(store.expectedPrice)} normal cap`,
+      note: [latestRisk, latestSince ? `current since ${latestSince}` : "", referenceSince ? `normal reference ${referenceSince}` : "", `${summary?.trustedSamples || store.historySamples || 1} trusted of ${summary?.sampleCount || store.historySamples || 1} points`, "ready"].filter(Boolean).join(" · ")
     };
   }
-  return { text: `${money(store.expectedPrice)} estimate`, note: "product fallback · review required" };
+  const risk = summary?.latestClassification === "surge"
+    ? `latest ${money(summary.latestPrice)} surge · no normal reference`
+    : summary?.latestClassification === "above"
+      ? `latest ${money(summary.latestPrice)} above MSRP · no normal reference`
+      : "product fallback";
+  return { text: `${money(store.expectedPrice)} estimate`, note: `${risk} · review required` };
+}
+
+function trackalackerHistoryDate(value) {
+  const date = new Date(value || "");
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleString([], { year: "numeric", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+}
+
+function trackalackerTrendLabel(summary = {}) {
+  if (summary.trend === "up") return `↑ ${money(Math.abs(summary.changeAmount || 0))}`;
+  if (summary.trend === "down") return `↓ ${money(Math.abs(summary.changeAmount || 0))}`;
+  if (summary.trend === "steady") return "→ Steady";
+  return "Trend —";
+}
+
+function trackalackerPriceMetric(label, value, tone = "") {
+  const metric = document.createElement("span");
+  metric.className = `trackalacker-price-metric${tone ? ` ${tone}` : ""}`;
+  const name = document.createElement("small");
+  name.textContent = label;
+  const amount = document.createElement("strong");
+  amount.textContent = value;
+  metric.append(name, amount);
+  return metric;
+}
+
+function trackalackerPriceSummary(store) {
+  const summary = store.priceHistorySummary;
+  if (!summary) return null;
+  const row = document.createElement("div");
+  row.className = "trackalacker-price-summary";
+  const latestTone = ["surge", "above"].includes(summary.latestClassification) ? "risk" : "";
+  row.append(
+    trackalackerPriceMetric("Latest", money(summary.latestPrice), latestTone),
+    trackalackerPriceMetric("Low", money(summary.lowestPrice)),
+    trackalackerPriceMetric("High", money(summary.highestPrice)),
+    trackalackerPriceMetric("Trend", trackalackerTrendLabel(summary), summary.trend)
+  );
+  if (["surge", "above"].includes(summary.latestClassification)) {
+    const badge = document.createElement("span");
+    badge.className = `trackalacker-price-alert ${summary.latestClassification}`;
+    badge.textContent = summary.latestClassification === "surge" ? "Surge" : "Above MSRP";
+    row.append(badge);
+  }
+  const latestSince = trackalackerHistoryDate(summary.latestPriceChangedAt || summary.latestObservedAt);
+  const referenceSince = trackalackerHistoryDate(summary.referencePriceChangedAt || summary.referenceObservedAt);
+  if (latestSince || referenceSince) {
+    const dates = document.createElement("small");
+    dates.className = "trackalacker-price-dates";
+    dates.textContent = [latestSince ? `Current price since ${latestSince}` : "", referenceSince ? `normal cap reference ${referenceSince}` : ""].filter(Boolean).join(" · ");
+    row.append(dates);
+  }
+  const titleParts = [`Latest observation ${formatDateTime(summary.latestObservedAt)}.`];
+  titleParts.push(summary.referencePrice
+    ? `Normal reference ${money(summary.referencePrice)} from ${formatDateTime(summary.referenceObservedAt)}.`
+    : "No normal price reference was captured.");
+  row.title = titleParts.join(" ");
+  return row;
+}
+
+function trackalackerHistoryCacheKey(item, store) {
+  const summary = store.priceHistorySummary || {};
+  return `${item.id}:${store.retailer}:${store.listingId}:${summary.latestObservedAt || ""}:${summary.sampleCount || 0}`;
+}
+
+function trackalackerSparkline(entries) {
+  const points = [...entries].reverse();
+  if (points.length < 2) return null;
+  const prices = points.map((entry) => Number(entry.price));
+  const minimum = Math.min(...prices);
+  const maximum = Math.max(...prices);
+  const width = 360;
+  const height = 72;
+  const padding = 7;
+  const spread = Math.max(1, maximum - minimum);
+  const coordinates = points.map((entry, index) => {
+    const x = padding + (index * (width - padding * 2)) / Math.max(1, points.length - 1);
+    const y = height - padding - ((entry.price - minimum) / spread) * (height - padding * 2);
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  });
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.classList.add("trackalacker-sparkline");
+  svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+  svg.setAttribute("role", "img");
+  svg.setAttribute("aria-label", `Price trend from ${money(points[0].price)} to ${money(points.at(-1).price)}`);
+  const line = document.createElementNS("http://www.w3.org/2000/svg", "polyline");
+  line.setAttribute("points", coordinates.join(" "));
+  svg.append(line);
+  return svg;
+}
+
+function renderTrackalackerHistory(container, payload) {
+  const entries = Array.isArray(payload?.entries) ? payload.entries : [];
+  container.replaceChildren();
+  if (!entries.length) {
+    container.textContent = "No captured price points are available for this listing.";
+    return;
+  }
+  const chart = trackalackerSparkline(entries);
+  if (chart) container.append(chart);
+  const list = document.createElement("div");
+  list.className = "trackalacker-history-list";
+  for (const entry of entries) {
+    const historyRow = document.createElement("div");
+    historyRow.className = `trackalacker-history-row ${entry.classification || "unknown"}`;
+    const date = document.createElement("time");
+    date.dateTime = entry.observedAt || "";
+    date.textContent = formatDateTime(entry.observedAt);
+    const price = document.createElement("strong");
+    price.textContent = money(entry.price);
+    const status = document.createElement("span");
+    const classification = entry.classification === "surge"
+      ? "Surge"
+      : entry.classification === "above"
+        ? "Above MSRP"
+        : entry.classification === "normal"
+          ? "Normal"
+          : "Unclassified";
+    status.textContent = [entry.isCurrent ? "Current" : "", entry.status, classification].filter(Boolean).join(" · ");
+    historyRow.append(date, price, status);
+    list.append(historyRow);
+  }
+  container.append(list);
+}
+
+async function loadTrackalackerHistory(item, store, container) {
+  const key = trackalackerHistoryCacheKey(item, store);
+  if (trackalackerHistoryCache.has(key)) {
+    renderTrackalackerHistory(container, trackalackerHistoryCache.get(key));
+    return;
+  }
+  container.textContent = "Loading captured price history…";
+  let request = trackalackerHistoryRequests.get(key);
+  if (!request) {
+    request = window.cartAssist.getTrackalackerPriceHistory(item.id, store.retailer, store.listingId);
+    trackalackerHistoryRequests.set(key, request);
+  }
+  try {
+    const payload = await request;
+    trackalackerHistoryCache.set(key, payload);
+    renderTrackalackerHistory(container, payload);
+  } catch (error) {
+    container.textContent = error?.message || "The captured price history could not be loaded.";
+  } finally {
+    trackalackerHistoryRequests.delete(key);
+  }
+}
+
+function trackalackerHistoryDetails(item, store) {
+  const count = store.priceHistorySummary?.sampleCount || 0;
+  if (!count) return null;
+  const details = document.createElement("details");
+  details.className = "trackalacker-price-history";
+  const heading = document.createElement("summary");
+  heading.textContent = `Price history (${count})`;
+  const body = document.createElement("div");
+  body.className = "trackalacker-history-body";
+  body.textContent = "Expand to load the captured price points.";
+  details.append(heading, body);
+  details.addEventListener("toggle", () => {
+    if (details.open && !details.dataset.loaded) {
+      details.dataset.loaded = "true";
+      void loadTrackalackerHistory(item, store, body);
+    }
+  });
+  return details;
 }
 
 function trackalackerSourceButton(label, url, kind = "product") {
@@ -2415,6 +2668,10 @@ function buildTrackalackerCard(item) {
       trackalackerSourceButton("History", store.historyUrl, "history")
     );
     option.append(label, links);
+    const priceSummary = trackalackerPriceSummary(store);
+    const historyDetails = trackalackerHistoryDetails(item, store);
+    if (priceSummary) option.append(priceSummary);
+    if (historyDetails) option.append(historyDetails);
     stores.append(option);
   }
   if (item.otherStores?.length) {
@@ -2433,8 +2690,11 @@ function renderTrackalacker(trackalacker = {}) {
   const importId = String(active?.id || "");
   if (importId !== renderedTrackalackerImportId) {
     renderedTrackalackerImportId = importId;
+    renderedTrackalackerSignature = "";
     trackalackerSelectedStores.clear();
     trackalackerSeenStores.clear();
+    trackalackerHistoryCache.clear();
+    trackalackerHistoryRequests.clear();
   }
   const items = Array.isArray(trackalacker.items) ? trackalacker.items : [];
   const validKeys = new Set();
@@ -2454,6 +2714,19 @@ function renderTrackalacker(trackalacker = {}) {
   for (const key of [...trackalackerSelectedStores]) {
     if (!validKeys.has(key)) trackalackerSelectedStores.delete(key);
   }
+
+  const addedRoutes = (currentSnapshot?.settings?.products || []).map((product) => (
+    `${product.id}:${ItemMissions.itemIdForProduct(product)}:${product.retailer}`
+  ));
+  const renderSignature = JSON.stringify([
+    trackalacker,
+    addedRoutes,
+    [...trackalackerSelectedStores].sort(),
+    trackalackerOperationInFlight,
+    isArmed()
+  ]);
+  if (renderSignature === renderedTrackalackerSignature) return;
+  renderedTrackalackerSignature = renderSignature;
 
   elements.trackalackerList.replaceChildren();
   if (!items.length) {
@@ -2677,7 +2950,7 @@ function buildMsrpRow(record) {
   remove.textContent = "✕";
   remove.setAttribute("aria-label", `Remove ${record.productType}`);
   save.addEventListener("click", () => void runAction(async () => {
-    if (isArmed()) throw new Error("Switch Autopilot off before changing MSRP defaults.");
+    if (isArmed()) throw new Error("Stop Autopilot or Signals before changing MSRP defaults.");
     const nextRecord = msrpRowRecord(row, record);
     const catalog = (currentSnapshot.settings.msrpCatalog || []).map((candidate) => (
       candidate.id === record.id ? nextRecord : candidate
@@ -2687,7 +2960,7 @@ function buildMsrpRow(record) {
     return nextRecord.productType;
   }, (name) => `${name} MSRP saved as an approved local default.`));
   remove.addEventListener("click", () => void runAction(async () => {
-    if (isArmed()) throw new Error("Switch Autopilot off before changing MSRP defaults.");
+    if (isArmed()) throw new Error("Stop Autopilot or Signals before changing MSRP defaults.");
     const next = await window.cartAssist.saveSettings({
       ...currentSnapshot.settings,
       msrpCatalog: currentSnapshot.settings.msrpCatalog.filter((candidate) => candidate.id !== record.id)
@@ -2836,7 +3109,7 @@ function renderItemDefaults(settings) {
 async function startTrackalackerScan() {
   if (trackalackerOperationInFlight) return;
   if (isArmed()) {
-    setMessage("Switch Autopilot off before scanning TrackaLacker.", "error");
+    setMessage("Stop Autopilot or Signals before scanning TrackaLacker.", "error");
     return;
   }
   trackalackerOperationInFlight = true;
@@ -2933,7 +3206,7 @@ async function addSelectedTrackalackerMissions() {
 async function submitCatalogSearch() {
   if (catalogSearchInFlight || catalogImportInFlight) return;
   if (isArmed()) {
-    setMessage("Switch Autopilot off before searching retailer catalogs.", "error");
+    setMessage("Stop Autopilot or Signals before searching retailer catalogs.", "error");
     return;
   }
   if (!elements.catalogQuery.checkValidity()) {
@@ -2975,7 +3248,7 @@ async function addSelectedCatalogMissions() {
     return;
   }
   if (isArmed()) {
-    setMessage("Switch Autopilot off before adding catalog results to Items.", "error");
+    setMessage("Stop Autopilot or Signals before adding catalog results to Items.", "error");
     return;
   }
   const selectedIds = [...catalogSelectedIds];
@@ -3375,8 +3648,8 @@ function updateWorstCase() {
     : "No spending exposure: only watch-only items are enabled.";
   const liveNote = isArmed()
     ? autoBuyCount > 0
-      ? ` Autopilot is ON — ${autoBuyCount} auto-buy item${autoBuyCount === 1 ? "" : "s"} can place a real order through its first successful store.`
-      : " Autopilot is ON."
+      ? ` ${activePurchaseModeLabel()} is ON — ${autoBuyCount} auto-buy item${autoBuyCount === 1 ? "" : "s"} can place a real order through its first successful store${isSignalsMode() ? " only after an exact signal match" : ""}.`
+      : ` ${activePurchaseModeLabel()} is ON.`
     : "";
   elements.worstCase.textContent = `${exposure}${liveNote}`;
 }
@@ -3419,10 +3692,11 @@ function renderReadiness(settings, status, productStatuses = {}) {
   if (blocked.length) issues.push(`${blocked.length} active item${blocked.length === 1 ? " has" : "s have"} a blocking status.`);
   lastReadinessIssueItemIds = new Set([...unpriced, ...missed, ...blocked].map((item) => item.id));
 
-  const running = Boolean(settings.automationEnabled);
+  const running = Boolean(settings.automationEnabled || settings.signalsEnabled);
+  const runningLabel = settings.signalsEnabled ? "Signals" : "Autopilot";
   const ready = !issues.length;
   elements.readinessState.textContent = running
-    ? ready ? "Autopilot running" : "Running · action needed"
+    ? ready ? `${runningLabel} running` : "Running · action needed"
     : ready ? "Ready" : items.length ? "Needs review" : "No plan";
   elements.readinessState.classList.toggle("ready", ready);
   elements.readinessState.classList.toggle("attention", !ready);
@@ -3439,7 +3713,7 @@ function renderReadiness(settings, status, productStatuses = {}) {
     ? issues.join(" ")
     : autoBuyCount
       ? `${autoBuyCount} item${autoBuyCount === 1 ? " can" : "s can"} submit one real order through the first successful store after live verification.`
-      : "No blockers found. Starting Autopilot will use the saved plan as shown.";
+      : "No blockers found. Choose Signals for event-driven attempts or Autopilot for continuous monitoring.";
   elements.readinessNote.classList.toggle("attention", Boolean(issues.length));
   elements.readinessReviewButton.textContent = issues.length ? `Review ${lastReadinessIssueItemIds.size || "run"} issue${lastReadinessIssueItemIds.size === 1 ? "" : "s"}` : "Review & start";
 }
@@ -3508,9 +3782,11 @@ function openRunReview() {
     return row;
   }));
   elements.runReviewMonitorButton.disabled = model.enabled.length === 0 || openRunInFlight || isArmed();
-  elements.runReviewMonitorButton.textContent = isArmed() ? "Stop Autopilot before monitoring only" : "Start monitoring only";
-  elements.runReviewAutopilotButton.disabled = model.hardIssues.length > 0 || openRunInFlight || isArmed();
-  elements.runReviewAutopilotButton.textContent = isArmed() ? "Autopilot already active" : "Start Autopilot";
+  elements.runReviewMonitorButton.textContent = isArmed() ? `Stop ${activePurchaseModeLabel()} before monitoring only` : "Start monitoring only";
+  elements.runReviewSignalsButton.disabled = model.hardIssues.length > 0 || openRunInFlight || isSignalsMode();
+  elements.runReviewSignalsButton.textContent = isSignalsMode() ? "Signals already active" : isAutopilot() ? "Switch to Signals" : "Start Signals";
+  elements.runReviewAutopilotButton.disabled = model.hardIssues.length > 0 || openRunInFlight || isAutopilot();
+  elements.runReviewAutopilotButton.textContent = isAutopilot() ? "Autopilot already active" : isSignalsMode() ? "Switch to Autopilot" : "Start Autopilot";
   if (typeof elements.runReviewDialog.showModal === "function") elements.runReviewDialog.showModal();
   else elements.runReviewDialog.setAttribute("open", "");
 }
@@ -3785,6 +4061,7 @@ function renderEvents(allEvents) {
 // --- Discord connection and restock signal inbox ---
 
 function signalStateLabel(signal) {
+  if (signal.activated) return "Authorized";
   const labels = {
     historical: "History",
     "new-product": "New product",
@@ -3874,7 +4151,10 @@ function buildSignalCard(signal) {
 
   const metadata = document.createElement("small");
   metadata.className = "signal-meta";
-  const parts = [signal.sku, money(signal.price)];
+  const sourceLabel = signal.source === "browser"
+    ? "Browser"
+    : signal.source === "trackalacker" ? "TrackaLacker" : "Discord";
+  const parts = [sourceLabel, signal.sku, money(signal.price)];
   if (Number.isInteger(signal.stock)) parts.push(`stock ${signal.stock}`);
   if (Number.isInteger(signal.orderLimit)) parts.push(`limit ${signal.orderLimit}`);
   if (signal.seller) parts.push(signal.seller);
@@ -3927,7 +4207,7 @@ function buildSignalCard(signal) {
       : ["review", "checkout"].includes(desiredProduct?.action);
     button.disabled = !directAllowed || !sellerAllowed || !actionAllowed;
     button.title = button.disabled
-      ? "Direct entry requires a desired item/store match, Autopilot ON, a signal under two minutes old and under its cap, plus Amazon.com seller proof for Amazon."
+      ? "Direct entry requires a desired item/store match, Autopilot or Signals ON, a signal under two minutes old and under its cap, plus Amazon.com seller proof for Amazon."
       : "Uses the sanitized exact-SKU link; the browser still re-verifies every purchase condition.";
     button.addEventListener("click", () => void runAction(
       () => window.cartAssist.openSignal(signal.id, entry),
@@ -3946,6 +4226,94 @@ function buildSignalCard(signal) {
 
   card.append(top, metadata, note, actions);
   return card;
+}
+
+function buildSignalAuditRow(record) {
+  const row = document.createElement("article");
+  row.className = "signal-audit-row";
+  const heading = document.createElement("div");
+  heading.className = "signal-audit-heading";
+  const title = document.createElement("strong");
+  title.textContent = record.productNameRaw || record.rawTitle || "Unparsed notification";
+  const decision = document.createElement("span");
+  decision.className = "signal-match";
+  decision.textContent = String(record.missionDecision || "recorded").replaceAll("_", " ");
+  heading.append(title, decision);
+  const metadata = document.createElement("small");
+  metadata.className = "signal-meta";
+  metadata.textContent = [
+    STORE_LABELS[record.retailer] || record.retailer || "Unknown store",
+    money(record.price),
+    record.matchMethod ? `match: ${record.matchMethod}` : "",
+    record.occurrenceCount > 1 ? `${record.occurrenceCount} occurrences` : "",
+    relativeTime(record.receivedAt)
+  ].filter(Boolean).join(" · ");
+  const reason = document.createElement("p");
+  reason.className = "signal-note";
+  reason.textContent = record.reason || "Signal retained in the local audit journal.";
+  row.append(heading, metadata, reason);
+  return row;
+}
+
+function renderSignalBridge(bridge = {}, settings = {}) {
+  const supported = Boolean(bridge.supported);
+  const ready = Boolean(bridge.listenerReady && bridge.enabled && !bridge.deliveryPaused);
+  const attention = Boolean(bridge.lastError || bridge.enabled && !bridge.listenerReady);
+  elements.signalBridgeState.className = `step-state ${ready ? "ready" : attention ? "attention" : ""}`.trim();
+  elements.signalBridgeState.textContent = !supported
+    ? "Signed Windows package required"
+    : !bridge.enabled
+      ? "Disabled"
+      : bridge.deliveryPaused
+        ? "Delivery paused"
+        : ready ? "Ready" : bridge.helperState || "Starting…";
+  elements.signalBridgeHint.textContent = bridge.lastError
+    || (!supported
+      ? "Native notification capture is available in the signed Windows AppX package; installer and portable builds keep the existing browser and Discord signal sources."
+      : bridge.startAtLogin && ["disabledbyuser", "disabledbypolicy"].includes(bridge.startupState)
+        ? "Windows has blocked login startup. Re-enable CartCollect in Windows Settings > Apps > Startup, or leave Start at login off."
+      : bridge.notificationPermission !== "allowed"
+        ? "Enable the bridge, then grant Windows notification access. Capture is event-driven and does not poll TrackaLacker or retailers."
+        : "TrackaLacker Chrome alerts are resolved against the last completed pre-sync snapshot and evaluated by the existing mission engine.");
+  const latency = bridge.latency || {};
+  const metrics = [
+    `${Number(bridge.mappingCount || 0).toLocaleString()} mappings`,
+    `${Number(bridge.pendingSignals || 0).toLocaleString()} pending`,
+    bridge.startAtLogin ? `login ${bridge.startupState || "unknown"}` : "login off",
+    latency.medianMs === null || latency.medianMs === undefined ? "latency —" : `median ${latency.medianMs} ms`,
+    latency.p95Ms === null || latency.p95Ms === undefined ? "p95 —" : `p95 ${latency.p95Ms} ms`,
+    bridge.lastNotificationAt ? `last alert ${relativeTime(bridge.lastNotificationAt)}` : "no alerts yet"
+  ];
+  elements.signalBridgeMetrics.replaceChildren(...metrics.map((label) => {
+    const metric = document.createElement("span");
+    metric.textContent = label;
+    return metric;
+  }));
+  if (document.activeElement !== elements.signalBridgeEnabled) {
+    elements.signalBridgeEnabled.checked = settings.trackalackerSignalBridgeEnabled === true;
+  }
+  if (document.activeElement !== elements.signalBridgeDeliveryPaused) {
+    elements.signalBridgeDeliveryPaused.checked = settings.trackalackerSignalDeliveryPaused === true;
+  }
+  if (document.activeElement !== elements.signalBridgeStartAtLogin) {
+    elements.signalBridgeStartAtLogin.checked = settings.trackalackerSignalStartAtLogin === true;
+  }
+  if (document.activeElement !== elements.signalBridgeDedupeSeconds) {
+    elements.signalBridgeDedupeSeconds.value = settings.trackalackerSignalDedupeWindowSeconds || 300;
+  }
+  elements.signalBridgeDeliveryPaused.disabled = !bridge.enabled;
+  elements.signalBridgeStartAtLogin.disabled = !supported || !bridge.enabled;
+  elements.signalBridgePermissionButton.disabled = !supported || !bridge.enabled;
+  elements.signalBridgeReplayButton.disabled = false;
+  const recent = Array.isArray(bridge.recentSignals) ? bridge.recentSignals.slice(0, 20) : [];
+  if (!recent.length) {
+    const empty = document.createElement("div");
+    empty.className = "empty-state";
+    empty.textContent = "No TrackaLacker alerts recorded yet.";
+    elements.signalBridgeRecent.replaceChildren(empty);
+  } else {
+    elements.signalBridgeRecent.replaceChildren(...recent.map(buildSignalAuditRow));
+  }
 }
 
 function renderDiscord(discord = {}, settings = {}) {
@@ -3969,8 +4337,8 @@ function renderDiscord(discord = {}, settings = {}) {
     : connected
       ? `Last checked ${relativeTime(discord.lastPollAt)}. New desired signals are matched by store + SKU.`
       : configured
-        ? "The bot token is saved securely. Connect to resume listening, or remove the saved token."
-        : "Connect an official bot with View Channel, Read Message History, and Message Content access. Discord user tokens and self-bots are never accepted.";
+        ? "Browser observations remain available. The bot token is saved securely; connect to resume Discord listening, or remove the saved token."
+        : "Open store tabs can provide browser signals. To add Discord, connect an official bot with View Channel, Read Message History, and Message Content access; user tokens and self-bots are never accepted.";
   if (document.activeElement !== elements.discordChannelId) {
     elements.discordChannelId.value = discord.channelId || settings.discordChannelId || "";
   }
@@ -3992,7 +4360,8 @@ function renderDiscord(discord = {}, settings = {}) {
 function renderSignals(signals = []) {
   const desired = signals.filter((signal) => signal.desired).length;
   const fresh = signals.filter(freshSignal).length;
-  elements.signalCount.textContent = `${signals.length} signal${signals.length === 1 ? "" : "s"} · ${desired} desired · ${fresh} fresh`;
+  const activated = signals.filter((signal) => signal.activated).length;
+  elements.signalCount.textContent = `${signals.length} signal${signals.length === 1 ? "" : "s"} · ${desired} desired · ${fresh} fresh${activated ? ` · ${activated} authorized` : ""}`;
   elements.clearSignalsButton.disabled = signals.length === 0;
   if (!signals.length) {
     const empty = document.createElement("div");
@@ -4040,14 +4409,22 @@ function render(snapshot) {
     : companionState.label;
   elements.connectionPill.title = companionState.hint;
 
-  const armed = Boolean(settings.automationEnabled);
+  const autopilot = Boolean(settings.automationEnabled);
+  const signals = Boolean(settings.signalsEnabled);
+  const armed = autopilot || signals;
   const paused = Boolean(settings.monitoringPaused);
-  elements.autopilotToggle.classList.toggle("on", armed);
-  elements.autopilotState.textContent = armed ? "ON" : paused ? "STOPPED" : "OFF";
-  elements.runStateBanner.dataset.mode = armed ? "autopilot" : paused ? "stopped" : "monitor";
-  elements.runStateTitle.textContent = armed ? "Autopilot active" : paused ? "Stopped" : "Monitoring only";
-  elements.runStateDetail.textContent = armed
-    ? "Purchase actions are enabled. Item-level locks ensure only the first successful selected store can secure each item."
+  elements.autopilotToggle.classList.toggle("on", autopilot);
+  elements.autopilotToggle.setAttribute("aria-pressed", String(autopilot));
+  elements.autopilotState.textContent = autopilot ? "ON" : paused ? "STOPPED" : "OFF";
+  elements.signalsToggle.classList.toggle("on", signals);
+  elements.signalsToggle.setAttribute("aria-pressed", String(signals));
+  elements.signalsState.textContent = signals ? "ON" : paused ? "STOPPED" : "OFF";
+  elements.runStateBanner.dataset.mode = autopilot ? "autopilot" : signals ? "signals" : paused ? "stopped" : "monitor";
+  elements.runStateTitle.textContent = autopilot ? "Autopilot active" : signals ? "Signals listening" : paused ? "Stopped" : "Monitoring only";
+  elements.runStateDetail.textContent = autopilot
+    ? "Every due mission may monitor continuously and act after live store verification. Item-level locks prevent duplicate purchases."
+    : signals
+      ? "Missions stay dormant until an exact TrackaLacker, browser, or Discord signal matches an enabled item and store. Only that mission receives bounded purchase authorization."
     : paused
       ? "Monitoring is paused, queued openings are cancelled, and purchase actions are off. Your plan and schedule remain saved."
       : "Store pages may keep checking and alerting, but nothing can be added or purchased.";
@@ -4066,6 +4443,7 @@ function render(snapshot) {
   renderCatalog(snapshot.catalog || {});
   renderItemDefaults(settings);
   renderTrackalacker(snapshot.trackalacker || {});
+  renderSignalBridge(snapshot.signalBridge || {}, settings);
   renderDiscord(snapshot.discord, settings);
   renderSignals(snapshot.signals || []);
   checkForAlarmEvents(events);
@@ -4077,7 +4455,7 @@ function render(snapshot) {
 
 elements.autopilotToggle.addEventListener("click", async () => {
   if (openRunInFlight) return;
-  if (!currentSnapshot?.settings?.automationEnabled && !runReviewApproved) {
+  if (!currentSnapshot?.settings?.automationEnabled && runReviewApprovedMode !== "autopilot") {
     if (editingId) {
       setMessage("Finish the open item editor first (Done or Cancel).", "error");
       return;
@@ -4093,13 +4471,13 @@ elements.autopilotToggle.addEventListener("click", async () => {
   try {
     await runAction(async () => {
       if (!currentSnapshot) throw new Error("Settings have not loaded yet.");
-      const approvedFromReview = runReviewApproved;
-      runReviewApproved = false;
+      const approvedFromReview = runReviewApprovedMode === "autopilot";
+      runReviewApprovedMode = "";
       if (editingId) throw new Error("Finish the open item editor first (Done or Cancel).");
       if (planEditMode) throw new Error("Choose Finish editing before starting Autopilot.");
       const saved = currentSnapshot.settings;
       if (saved.automationEnabled) {
-        const next = await window.cartAssist.saveSettings({ ...saved, automationEnabled: false });
+        const next = await window.cartAssist.saveSettings({ ...saved, automationEnabled: false, signalsEnabled: false });
         render(next);
         return { armed: false };
       }
@@ -4111,7 +4489,7 @@ elements.autopilotToggle.addEventListener("click", async () => {
       ) {
         throw new Error("Autopilot was not switched on.");
       }
-      const next = await window.cartAssist.saveSettings({ ...saved, automationEnabled: true });
+      const next = await window.cartAssist.saveSettings({ ...saved, automationEnabled: true, signalsEnabled: false });
       render(next);
       setMessage("Autopilot ON. Connecting the Chrome companion automatically, then starting every due item…");
       try {
@@ -4119,7 +4497,7 @@ elements.autopilotToggle.addEventListener("click", async () => {
         return { armed: true, ...launch };
       } catch (error) {
         try {
-          const stopped = await window.cartAssist.saveSettings({ ...next.settings, automationEnabled: false });
+          const stopped = await window.cartAssist.saveSettings({ ...next.settings, automationEnabled: false, signalsEnabled: false });
           render(stopped);
         } catch (rollbackError) {
           throw new Error(`Autopilot could not finish starting and may still be ON. Stop it before retrying. Startup error: ${error.message || "unknown opening error"}. Stop error: ${rollbackError.message || "unknown save error"}`);
@@ -4160,9 +4538,55 @@ elements.autopilotToggle.addEventListener("click", async () => {
   }
 });
 
+elements.signalsToggle.addEventListener("click", async () => {
+  if (openRunInFlight) return;
+  if (!isSignalsMode() && runReviewApprovedMode !== "signals") {
+    if (editingId) {
+      setMessage("Finish the open item editor first (Done or Cancel).", "error");
+      return;
+    }
+    if (planEditMode) {
+      setMessage("Choose Finish editing before starting Signals.", "error");
+      return;
+    }
+    openRunReview();
+    return;
+  }
+  setMissionOpenBusy(true);
+  try {
+    await runAction(async () => {
+      if (!currentSnapshot) throw new Error("Settings have not loaded yet.");
+      runReviewApprovedMode = "";
+      const saved = currentSnapshot.settings;
+      if (saved.signalsEnabled) {
+        const next = await window.cartAssist.saveSettings({
+          ...saved,
+          automationEnabled: false,
+          signalsEnabled: false
+        });
+        render(next);
+        return { listening: false };
+      }
+      if (editingId) throw new Error("Finish the open item editor first (Done or Cancel).");
+      if (planEditMode) throw new Error("Choose Finish editing before starting Signals.");
+      const next = await window.cartAssist.saveSettings({
+        ...saved,
+        automationEnabled: false,
+        signalsEnabled: true
+      });
+      render(next);
+      return { listening: true };
+    }, (result) => result?.listening
+      ? "Signals ON. Enabled missions are dormant until an exact TrackaLacker, browser, or Discord signal matches the item and store; the live page must still pass price, seller, quantity, fulfillment, total, and checkout safeguards."
+      : "Signals OFF. Existing pages may continue monitoring, but no purchase action is authorized.");
+  } finally {
+    setMissionOpenBusy(false);
+  }
+});
+
 elements.disarmButton.addEventListener("click", () => {
   stopUiEpoch += 1;
-  resumeAutopilotAfterPlanEdit = false;
+  resumePurchaseModeAfterPlanEdit = "";
   planEditMode = false;
   planEditBaseline = null;
   planEditUndoStack = [];
@@ -4175,7 +4599,7 @@ elements.disarmButton.addEventListener("click", () => {
     const next = await window.cartAssist.stopAll();
     render(next);
     return next;
-  }, "Stopped. Autopilot off, all monitoring paused, and queued page openings cancelled. Your plan and scheduled times are still saved.");
+  }, "Stopped. Signals and Autopilot are off, all monitoring is paused, and queued page openings were cancelled. Your plan and scheduled times are still saved.");
 });
 
 elements.planEditButton.addEventListener("click", () => {
@@ -4224,8 +4648,13 @@ elements.runReviewMonitorButton.addEventListener("click", () => {
   closeRunReview();
   elements.testButton.click();
 });
+elements.runReviewSignalsButton.addEventListener("click", () => {
+  runReviewApprovedMode = "signals";
+  closeRunReview();
+  elements.signalsToggle.click();
+});
 elements.runReviewAutopilotButton.addEventListener("click", () => {
-  runReviewApproved = true;
+  runReviewApprovedMode = "autopilot";
   closeRunReview();
   elements.autopilotToggle.click();
 });
@@ -4312,7 +4741,7 @@ elements.trackalackerAddButton.addEventListener("click", () => void addSelectedT
 elements.storeAllowanceForm.addEventListener("submit", (event) => {
   event.preventDefault();
   void runAction(async () => {
-    if (isArmed()) throw new Error("Switch Autopilot off before changing tax or store order-total allowances.");
+    if (isArmed()) throw new Error("Stop Autopilot or Signals before changing tax or store order-total allowances.");
     const inputs = [
       elements.orderTaxPercent,
       elements.targetOrderAllowance,
@@ -4359,7 +4788,7 @@ elements.storeAllowanceForm.addEventListener("submit", (event) => {
 });
 
 elements.defaultItemProfile.addEventListener("change", () => void runAction(async () => {
-  if (isArmed()) throw new Error("Switch Autopilot off before changing the default item profile.");
+  if (isArmed()) throw new Error("Stop Autopilot or Signals before changing the default item profile.");
   const next = await window.cartAssist.saveSettings({
     ...currentSnapshot.settings,
     defaultItemProfileId: elements.defaultItemProfile.value
@@ -4371,7 +4800,7 @@ elements.defaultItemProfile.addEventListener("change", () => void runAction(asyn
 elements.itemProfileForm.addEventListener("submit", (event) => {
   event.preventDefault();
   void runAction(async () => {
-    if (isArmed()) throw new Error("Switch Autopilot off before changing item profiles.");
+    if (isArmed()) throw new Error("Stop Autopilot or Signals before changing item profiles.");
     const name = elements.itemProfileName.value.replace(/\s+/g, " ").trim();
     if (!name) throw new Error("Enter a profile name.");
     const profile = ItemDefaults.normalizeCustomItemProfile({
@@ -4442,7 +4871,7 @@ elements.itemProfileDeleteButton.addEventListener("click", () => {
   const profile = (currentSnapshot.settings.itemProfiles || []).find((candidate) => candidate.id === editingItemProfileId);
   if (!profile || !window.confirm(`Delete the item profile "${profile.name}"?`)) return;
   void runAction(async () => {
-    if (isArmed()) throw new Error("Switch Autopilot off before changing item profiles.");
+    if (isArmed()) throw new Error("Stop Autopilot or Signals before changing item profiles.");
     const profiles = currentSnapshot.settings.itemProfiles.filter((candidate) => candidate.id !== profile.id);
     const next = await window.cartAssist.saveSettings({
       ...currentSnapshot.settings,
@@ -4458,7 +4887,7 @@ elements.itemProfileDeleteButton.addEventListener("click", () => {
 });
 
 elements.addMsrpRecordButton.addEventListener("click", () => void runAction(async () => {
-  if (isArmed()) throw new Error("Switch Autopilot off before changing MSRP defaults.");
+  if (isArmed()) throw new Error("Stop Autopilot or Signals before changing MSRP defaults.");
   if (currentSnapshot.settings.msrpCatalog.length >= ItemDefaults.MAX_MSRP_RECORDS) {
     throw new Error(`You can save up to ${ItemDefaults.MAX_MSRP_RECORDS} MSRP product types.`);
   }
@@ -4479,7 +4908,7 @@ elements.addMsrpRecordButton.addEventListener("click", () => void runAction(asyn
 }, "New MSRP product type added. Edit its match terms and approved store prices."));
 
 elements.researchMsrpButton.addEventListener("click", () => void runAction(async () => {
-  if (isArmed()) throw new Error("Switch Autopilot off before researching MSRP defaults.");
+  if (isArmed()) throw new Error("Stop Autopilot or Signals before researching MSRP defaults.");
   const next = await window.cartAssist.researchMsrp();
   render(next);
   return next;
@@ -4534,7 +4963,7 @@ elements.copySelectedMissionListButton.addEventListener("click", () => void runA
   ({ count }) => `${bulkMissionSelectedIds.size} selected item${bulkMissionSelectedIds.size === 1 ? "" : "s"} (${count} store route${count === 1 ? "" : "s"}) copied as a consolidated list.`
 ));
 elements.combineSelectedItemsButton.addEventListener("click", () => void runAction(async () => {
-  if (isArmed()) throw new Error("Stop Autopilot before combining items.");
+  if (isArmed()) throw new Error("Stop Autopilot or Signals before combining items.");
   const selected = [...bulkMissionSelectedIds];
   const products = ItemMissions.combineItems(savedProducts(), selected);
   const combinedItemId = ItemMissions.itemIdForProduct(products.find((product) => selected.includes(ItemMissions.itemIdForProduct(product))) || {});
@@ -4545,7 +4974,7 @@ elements.combineSelectedItemsButton.addEventListener("click", () => void runActi
   return selected.length;
 }, (count) => `${count} store-specific entries combined into one item. Its stores now act as alternatives, and the first successful store stops the others.`));
 elements.applyBulkItemProfileButton.addEventListener("click", () => void runAction(async () => {
-  if (isArmed()) throw new Error("Switch Autopilot off before bulk updating items.");
+  if (isArmed()) throw new Error("Stop Autopilot or Signals before bulk updating items.");
   const profile = ItemDefaults.itemProfileById(elements.bulkItemProfile.value, currentSnapshot.settings.itemProfiles);
   if (!profile) throw new Error("Choose an item profile.");
   const products = savedProducts().map((product) => (
@@ -4583,7 +5012,7 @@ elements.applyBulkMissionGroupButton.addEventListener("click", () => void runAct
 }));
 
 elements.scheduleCandidateMissionsButton.addEventListener("click", () => void runAction(async () => {
-  if (isArmed()) throw new Error("Switch Autopilot off before scheduling items.");
+  if (isArmed()) throw new Error("Stop Autopilot or Signals before scheduling items.");
   if (!bulkMissionSelectedIds.size) throw new Error("Select at least one item first.");
   if (!elements.bulkMissionOpenAt.checkValidity() || !elements.bulkMissionOpenAt.value) {
     elements.bulkMissionOpenAt.reportValidity();
@@ -4606,7 +5035,7 @@ elements.scheduleCandidateMissionsButton.addEventListener("click", () => void ru
 )));
 
 elements.clearSelectedMissionSchedulesButton.addEventListener("click", () => void runAction(async () => {
-  if (isArmed()) throw new Error("Switch Autopilot off before clearing schedules.");
+  if (isArmed()) throw new Error("Stop Autopilot or Signals before clearing schedules.");
   const products = savedProducts().map((product) => (
     bulkMissionSelectedIds.has(ItemMissions.itemIdForProduct(product)) ? { ...product, openAt: "" } : product
   ));
@@ -4625,6 +5054,65 @@ elements.showDiscordButton.addEventListener("click", () => {
     toggle.focus();
   }
 });
+
+async function saveSignalBridgeSettings(changes) {
+  const next = await window.cartAssist.saveSettings({
+    ...currentSnapshot.settings,
+    ...changes
+  });
+  render(next);
+  return next;
+}
+
+elements.signalBridgeEnabled.addEventListener("change", () => void runAction(
+  () => saveSignalBridgeSettings({ trackalackerSignalBridgeEnabled: elements.signalBridgeEnabled.checked }),
+  () => elements.signalBridgeEnabled.checked
+    ? "TrackaLacker notification capture enabled. Grant Windows access if the listener is not ready."
+    : "TrackaLacker notification capture disabled. Existing audit history was retained."
+));
+
+elements.signalBridgeDeliveryPaused.addEventListener("change", () => void runAction(
+  () => saveSignalBridgeSettings({ trackalackerSignalDeliveryPaused: elements.signalBridgeDeliveryPaused.checked }),
+  () => elements.signalBridgeDeliveryPaused.checked
+    ? "TrackaLacker delivery paused. New alerts remain in the durable local queue."
+    : "TrackaLacker delivery resumed; queued alerts will be acknowledged without duplicate mission actions."
+));
+
+elements.signalBridgeStartAtLogin.addEventListener("change", () => void runAction(
+  () => saveSignalBridgeSettings({ trackalackerSignalStartAtLogin: elements.signalBridgeStartAtLogin.checked }),
+  () => elements.signalBridgeStartAtLogin.checked
+    ? "The signal bridge will start quietly at Windows login. Signals purchase mode resumes only if it was explicitly left armed."
+    : "Windows login startup disabled."
+));
+
+elements.signalBridgeDedupeSeconds.addEventListener("change", () => void runAction(async () => {
+  if (!elements.signalBridgeDedupeSeconds.checkValidity()) {
+    elements.signalBridgeDedupeSeconds.reportValidity();
+    throw new Error("Choose a dedupe window from 30 to 3,600 seconds.");
+  }
+  return saveSignalBridgeSettings({
+    trackalackerSignalDedupeWindowSeconds: Number(elements.signalBridgeDedupeSeconds.value)
+  });
+}, "TrackaLacker duplicate window saved."));
+
+elements.signalBridgePermissionButton.addEventListener("click", () => void runAction(
+  () => window.cartAssist.requestSignalBridgePermission(),
+  "Windows notification access requested. Approve the operating-system prompt, then return here to confirm Ready."
+));
+
+elements.signalBridgeReplayButton.addEventListener("click", () => void runAction(async () => {
+  const item = currentSnapshot?.trackalacker?.items?.find((candidate) => candidate?.stores?.length);
+  const store = item?.stores?.[0];
+  const retailer = store ? STORE_LABELS[store.retailer] : "Walmart";
+  const price = Number(store?.currentPrice || store?.expectedPrice || 1).toFixed(2);
+  const result = await window.cartAssist.replayTrackalackerSignal({
+    title: `IN STOCK at ${retailer}!`,
+    body: `${item?.title || "Synthetic TrackaLacker product"}\nin stock for $${price} (~ MSRP)\nwww.trackalacker.com`
+  });
+  const next = await window.cartAssist.getSnapshot();
+  render(next);
+  return result;
+}, (result) => `Dry run complete: ${String(result?.action || "recorded").replaceAll("_", " ")}. No store page was opened.`));
 
 elements.discordConnectButton.addEventListener("click", () => void runAction(async () => {
   if (!elements.discordChannelId.checkValidity()) {
@@ -4718,6 +5206,7 @@ elements.missionList.addEventListener("drop", (event) => {
 function setMissionOpenBusy(busy) {
   openRunInFlight = busy;
   elements.autopilotToggle.disabled = busy;
+  elements.signalsToggle.disabled = busy;
   elements.testButton.disabled = busy;
   elements.openAllButton.disabled = busy;
   elements.planEditButton.disabled = busy;
@@ -4730,7 +5219,7 @@ elements.testButton.addEventListener("click", async () => {
   try {
     await runAction(async () => {
       if (isArmed()) {
-        throw new Error("Switch Autopilot off before Monitor only — it opens item pages without buying anything.");
+        throw new Error("Stop Autopilot or Signals before Monitor only — it opens item pages without buying anything.");
       }
       return window.cartAssist.testEvent();
     }, (result) => {
@@ -4743,7 +5232,7 @@ elements.testButton.addEventListener("click", async () => {
       const browserNote = result?.defaultBrowser
         ? " Chrome was not found, so your default browser was used — the companion only checks pages opened in Chrome."
         : "";
-      return `${parts.join(", ")}. Autopilot is OFF, so nothing will be added.${browserNote}`;
+      return `${parts.join(", ")}. Signals and Autopilot are OFF, so nothing will be added.${browserNote}`;
     });
   } finally {
     setMissionOpenBusy(false);
@@ -4763,8 +5252,10 @@ elements.openAllButton.addEventListener("click", async () => {
     if (result.deduped) parts.push(`${result.deduped} already queued`);
     if (result.scheduled) parts.push(`${result.scheduled} waiting for ${result.scheduled === 1 ? "its" : "their"} calendar time`);
     const armNote = result.armed
-      ? "Autopilot is ON — items act as each store page loads."
-      : "Autopilot is OFF — nothing will be added until you switch it on.";
+      ? isSignalsMode()
+        ? "Signals is ON — an exact eligible offer observed on a page becomes a browser signal for only that mission."
+        : "Autopilot is ON — items act as each store page loads."
+      : "Signals and Autopilot are OFF — nothing will be added until you choose a purchase mode.";
     const browserNote = result.defaultBrowser
       ? " Chrome was not found, so your default browser was used — the companion only works inside Chrome."
       : "";
@@ -4824,7 +5315,7 @@ elements.configurationProfileSelect.addEventListener("change", () => {
 });
 
 elements.applyConfigurationProfileButton.addEventListener("click", () => void runAction(async () => {
-  if (isArmed()) throw new Error("Switch Autopilot off before applying a saved setup.");
+  if (isArmed()) throw new Error("Stop Autopilot or Signals before applying a saved setup.");
   const profile = selectedConfigurationProfile();
   if (!profile) throw new Error("Choose a setup first.");
   clearTimeout(settingsSaveTimer);
@@ -4928,7 +5419,7 @@ elements.enableScheduledButton.addEventListener("click", () => {
   );
 });
 elements.clearMissedSchedulesButton.addEventListener("click", () => void runAction(async () => {
-  if (isArmed()) throw new Error("Stop Autopilot before clearing missed schedule times.");
+  if (isArmed()) throw new Error("Stop Autopilot or Signals before clearing missed schedule times.");
   const missedIds = new Set(scheduledProducts(true)
     .filter((item) => item.openAtMs < Date.now() - 120_000)
     .map((item) => item.id));

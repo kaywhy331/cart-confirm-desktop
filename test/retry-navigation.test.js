@@ -320,7 +320,7 @@ test("Stop everything and re-arming clear quiet-lane residue and held lanes retr
   const stopBody = stopAll.slice(0, stopAll.indexOf("\n  });") + 6);
   assert.doesNotMatch(stopBody, /\bopenAt\b/, "Stop must preserve mission schedules");
   assert.doesNotMatch(stopBody, /walmartPrepCandidates:\s*\[\]/, "Stop must preserve prep candidates");
-  const armBranch = main.slice(main.indexOf("if (normalized.automationEnabled && !wasArmed) {"));
+  const armBranch = main.slice(main.indexOf("if (purchaseModeEnabled(normalized) && modeChanged) {"));
   assert.match(armBranch.slice(0, 400), /resetQuietProductState\(\);/);
 
   // A verified offer facing a held purchase lane keeps re-checking instead of
