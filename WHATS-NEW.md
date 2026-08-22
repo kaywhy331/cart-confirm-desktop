@@ -6,6 +6,11 @@ update dialog shows exactly these bullets. Keep every entry short, plain, and
 about what the user will notice — one bullet per change, no internals.
 Publishing fails if the version being released has no section here.
 
+## 3.8.12
+- TrackaLacker alerts titled “Available for pre-order!” are now recognized, including product-and-retailer sentences carried in the notification body
+- Generic preorder alerts select a store only from an exact TrackaLacker listing or retailer SKU; alerts without that store identity remain visible with a clear non-actionable reason instead of appearing unsupported
+- TrackaLacker test notifications remain dry-run only and can never create or activate a mission
+
 ## 3.8.11
 - Exact live TrackaLacker alerts can now create and enable a missing store mission while Signals is running, so newly followed products can flow into CartCollect without a separate manual import
 - New missions inherit your ordered CartSignals strategy, quantity, seller policy, and item defaults; duplicate, test, unresolved, ambiguous, and paused alerts remain non-actionable
