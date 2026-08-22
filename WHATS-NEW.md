@@ -6,6 +6,11 @@ update dialog shows exactly these bullets. Keep every entry short, plain, and
 about what the user will notice — one bullet per change, no internals.
 Publishing fails if the version being released has no section here.
 
+## 3.8.5
+- Signal price choices are now maximums, so At or below MSRP accepts MSRP and every lower qualifying offer
+- Each signal strategy can explicitly allow marketplace sellers, while first-party-only remains the default
+- Stock, price, and seller are checked again before cart actions; mismatches cancel only that attempt while later legitimate restock signals can try again
+
 ## 3.8.4
 - Signals now shows a guided setup path and blocks Start Signals until at least one item and one real browser, TrackaLacker, or Discord source are ready
 - Connect one page can establish the Chrome observation path without turning on an item, while Watch-only items no longer require a purchase price cap

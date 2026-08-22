@@ -2,16 +2,15 @@
 
 (() => {
   const CART_PROOF_MAX_AGE_MS = 5 * 60_000;
+  const OfferPolicy = globalThis.CartConfirmOfferPolicy
+    || (typeof require === "function" ? require("./offer-policy") : null);
 
   function effectiveLineOffer(product, line, proof = null, priceAnchor = null) {
-    if (!line) return { ok: false, reason: "unmatched-product" };
-    if (line.seller && line.firstParty !== true) {
-      return { ok: false, reason: "third-party", seller: line.seller, firstParty: false };
-    }
-
-    const firstParty = line.firstParty === true || proof?.firstParty === true;
+    if (!line || !OfferPolicy) return { ok: false, reason: "unmatched-product" };
     const seller = line.seller || proof?.seller || "";
-    if (!firstParty) return { ok: false, reason: seller ? "third-party" : "seller-unverified", seller, firstParty };
+    const firstParty = line.seller
+      ? line.firstParty === true
+      : line.firstParty === true || proof?.firstParty === true;
 
     let price = Number.isFinite(line.price) ? line.price : null;
     // The quantity-subtotal correction may use an aged price anchor: proving
@@ -23,14 +22,13 @@
     const anchorUnitPrice = Number.isFinite(proof?.price)
       ? proof.price
       : Number.isFinite(priceAnchor?.price) ? priceAnchor.price : null;
-    if (line.quantity > 1 && Number.isFinite(anchorUnitPrice) && price > product.maxPrice) {
+    const effectiveMaximum = OfferPolicy.maximumPriceForProduct(product);
+    if (line.quantity > 1 && Number.isFinite(anchorUnitPrice) && price > effectiveMaximum) {
       const expectedTotal = Math.round(anchorUnitPrice * line.quantity * 100) / 100;
       if (Math.abs(price - expectedTotal) <= 0.02) price = anchorUnitPrice;
     }
     if (price === null && Number.isFinite(proof?.price)) price = proof.price;
-    if (!Number.isFinite(price)) return { ok: false, reason: "price-unavailable", seller, firstParty };
-    if (price > product.maxPrice) return { ok: false, reason: "over-price", price, seller, firstParty };
-    return { ok: true, price, seller, firstParty };
+    return OfferPolicy.validateOffer(product, { available: true, price, seller, firstParty });
   }
 
   function verifySingleProductCart(product, inventory) {
@@ -66,12 +64,12 @@
       || proof.cartLineCount < 1
       || proof.cartLineCount > maxLineCount
       || proof.cartSku !== product.sku
-      || proof.firstParty !== true
       || !Number.isFinite(proof.price)
       || !Number.isFinite(proof.cartConfirmedAt)
       || now - proof.cartConfirmedAt < 0
       || now - proof.cartConfirmedAt > CART_PROOF_MAX_AGE_MS
     ) return null;
+    if (!OfferPolicy?.validateOffer(product, { available: true, ...proof }).ok) return null;
     return proof;
   }
 

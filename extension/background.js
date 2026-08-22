@@ -5,6 +5,7 @@ importScripts(
   "schedule-gate.js",
   "automation-state.js",
   "retailers.js",
+  "offer-policy.js",
   "trackalacker-links.js",
   "trackalacker-push.js",
   "tab-context.js",
@@ -14,6 +15,7 @@ importScripts(
 
 const Traffic = globalThis.CartConfirmTraffic;
 const Retailers = globalThis.CartConfirmRetailers;
+const OfferPolicy = globalThis.CartConfirmOfferPolicy;
 const TrackalackerLinks = globalThis.CartConfirmTrackalackerLinks;
 const TrackalackerPush = globalThis.CartConfirmTrackalackerPush;
 const ScheduleGate = globalThis.CartConfirmScheduleGate;
@@ -1936,6 +1938,8 @@ async function prepareProductAddAction(productId, ownerId, proof) {
   if (!automationActive(config)) return { ok: false, reason: "disarmed" };
   const product = configuredProduct(config, productId);
   if (!product) return { ok: false, reason: "product-disabled" };
+  const checkedOffer = OfferPolicy.validateOffer(product, proof);
+  if (!checkedOffer.ok) return checkedOffer;
   return withAutomationStateLock(async () => {
     const state = await readAutomationState(config);
     const now = Date.now();
@@ -1965,7 +1969,7 @@ async function prepareProductAddAction(productId, ownerId, proof) {
   });
 }
 
-async function authorizeProductAddClick(productId, ownerId) {
+async function authorizeProductAddClick(productId, ownerId, proof) {
   // This is the final Stop/config check and reservation revalidation directly
   // adjacent to the content-script click. It also records the purchase attempt
   // in the same durable write instead of adding another serialized round trip.
@@ -1976,6 +1980,13 @@ async function authorizeProductAddClick(productId, ownerId) {
   if (!product) return { ok: false, reason: "product-disabled" };
   return withAutomationStateLock(async () => {
     const state = await readAutomationState(config);
+    const checkedOffer = OfferPolicy.validateOffer(product, proof);
+    if (!checkedOffer.ok) {
+      AutomationState.markAddAction(state, product, ownerId, "canceled", Date.now());
+      await writeAutomationState(state);
+      return checkedOffer;
+    }
+    AutomationState.saveProof(state, product, proof, Date.now());
     const result = AutomationState.authorizeAddClick(state, product, ownerId, Date.now());
     await writeAutomationState(state);
     return result;
@@ -2359,7 +2370,8 @@ async function handleMessage(message, sender) {
     case "CART_CONFIRM_AUTHORIZE_ADD_CLICK":
       return authorizeProductAddClick(
         String(message.productId || ""),
-        `tab:${sender?.tab?.id ?? "unknown"}`
+        `tab:${sender?.tab?.id ?? "unknown"}`,
+        message.proof
       );
     case "CART_CONFIRM_PRODUCT_STATE":
       return getProductState(String(message.productId || ""));

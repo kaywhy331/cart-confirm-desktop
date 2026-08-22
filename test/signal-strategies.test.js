@@ -10,6 +10,7 @@ const {
   matchSignalStrategy,
   normalizeSignalStrategies,
   parseKeywordQuery,
+  priceBandWithinCap,
   signalPriceBand
 } = require("../lib/signal-strategies");
 
@@ -82,6 +83,7 @@ test("normalizes bounded editable strategy fields without changing list priority
       priceBand: "msrp",
       action: "prepare_checkout",
       quantity: 3,
+      allowThirdPartySeller: true,
       includeKeywords: " pokemon   +  \"elite trainer box\" ",
       excludeKeywords: "used | refurbished"
     }),
@@ -91,6 +93,8 @@ test("normalizes bounded editable strategy fields without changing list priority
   assert.equal(normalized[0].name, "First rule");
   assert.deepEqual(normalized[0].stores, ["target"]);
   assert.equal(normalized[0].quantity, 3);
+  assert.equal(normalized[0].allowThirdPartySeller, true);
+  assert.equal(normalized[1].allowThirdPartySeller, false);
   assert.equal(normalized[1].enabled, false);
   assert.throws(() => normalizeSignalStrategies([strategy({ quantity: 6 })]), /1 through 5/);
   assert.throws(() => normalizeSignalStrategies([strategy({ action: "buy_now" })]), /Choose Notify/);
@@ -162,7 +166,7 @@ test("strategy actions and quantities can narrow but never escalate the mission 
   assert.equal(maximum.signalLimitApplied, true);
 });
 
-test("MSRP bands use TrackaLacker semantics first and approved mission MSRP otherwise", () => {
+test("MSRP classifications use TrackaLacker semantics first and approved mission MSRP otherwise", () => {
   const configured = settings();
   assert.equal(signalPriceBand({ msrpStatus: "below_msrp", price: 999 }, product, configured), "below_msrp");
   assert.equal(signalPriceBand({ msrpStatus: "near_msrp" }, product, configured), "msrp");
@@ -174,6 +178,29 @@ test("MSRP bands use TrackaLacker semantics first and approved mission MSRP othe
   assert.equal(signalPriceBand({ price: 52 }, product, configured), "slightly_above_msrp");
   assert.equal(signalPriceBand({ price: 60 }, product, configured), "above_msrp");
   assert.equal(signalPriceBand({ price: 49.99 }, { ...product, msrpRecordId: "" }, configured), "unknown");
+});
+
+test("strategy price choices are cumulative caps rather than equality buckets", () => {
+  assert.equal(priceBandWithinCap("below_msrp", "below_msrp"), true);
+  assert.equal(priceBandWithinCap("below_msrp", "msrp"), true);
+  assert.equal(priceBandWithinCap("msrp", "msrp"), true);
+  assert.equal(priceBandWithinCap("slightly_above_msrp", "msrp"), false);
+  assert.equal(priceBandWithinCap("msrp", "slightly_above_msrp"), true);
+  assert.equal(priceBandWithinCap("above_msrp", "above_msrp"), true);
+  assert.equal(priceBandWithinCap("unknown", "above_msrp"), false);
+  assert.equal(priceBandWithinCap("unknown", "any"), true);
+
+  const atOrBelow = strategy({ priceBand: "msrp", action: "add_to_cart" });
+  assert.equal(matchSignalStrategy({
+    signal: { ...signal, msrpStatus: "below_msrp", price: 44.99 },
+    product,
+    settings: settings([atOrBelow])
+  }).state, "matched");
+  assert.equal(matchSignalStrategy({
+    signal: { ...signal, msrpStatus: "slightly_above_msrp", price: 52 },
+    product,
+    settings: settings([atOrBelow])
+  }).state, "unmatched");
 });
 
 test("Notify is a real no-navigation route and configured strategies reject unmatched signals", () => {

@@ -12,7 +12,7 @@ test("the Manifest V3 companion declares every safety script and required permis
   assert.equal(manifest.name, "Cart Confirm Companion");
   assert.equal(manifest.short_name, "Cart Confirm");
   assert.equal(manifest.version, packageJson.version);
-  assert.deepEqual(manifest.content_scripts[0].js, ["retailers.js", "quick-add.js", "catalog-search.js", "evidence.js", "safety.js", "schedule-gate.js", "queue-capture.js", "content.js"]);
+  assert.deepEqual(manifest.content_scripts[0].js, ["retailers.js", "quick-add.js", "catalog-search.js", "evidence.js", "offer-policy.js", "safety.js", "schedule-gate.js", "queue-capture.js", "content.js"]);
   assert.equal(manifest.permissions.includes("activeTab"), true);
   assert.equal(manifest.permissions.includes("notifications"), true);
   assert.equal(manifest.permissions.includes("scripting"), true);

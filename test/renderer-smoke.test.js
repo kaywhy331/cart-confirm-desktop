@@ -532,8 +532,8 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   assert.equal(doc.getElementById("walmartQueueCaptureReloads").value, "0");
   assert.match(card.querySelector("[data-view='sub']").textContent, /continuous watcher/);
 
-  // Signal strategies use available mission stores and preserve explicit
-  // first-match ordering through add, edit, reorder, and delete operations.
+  // Signal strategies use available mission stores, cumulative MSRP caps,
+  // explicit seller policy, and first-match ordering.
   assert.equal(doc.getElementById("signalStrategyCount").textContent, "Legacy mission actions");
   assert.equal(doc.getElementById("addDefaultSignalStrategyButton").hidden, false);
   assert.match(doc.getElementById("addDefaultSignalStrategyButton").textContent, /safe Notify catchall/);
@@ -546,6 +546,7 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   doc.getElementById("signalStrategyPriceBand").value = "msrp";
   doc.getElementById("signalStrategyAction").value = "prepare_checkout";
   doc.getElementById("signalStrategyQuantity").value = "2";
+  doc.getElementById("signalStrategyAllowThirdPartySeller").checked = true;
   doc.getElementById("signalStrategyIncludeKeywords").value = "pokemon + \"booster box\"";
   doc.getElementById("signalStrategyExcludeKeywords").value = "used | refurbished";
   doc.getElementById("signalStrategyForm").dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true }));
@@ -554,10 +555,14 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   assert.equal(savedStrategies.length, 1);
   assert.deepEqual(JSON.parse(JSON.stringify(savedStrategies[0].stores)), ["target"]);
   assert.equal(savedStrategies[0].quantity, 2);
+  assert.equal(savedStrategies[0].allowThirdPartySeller, true);
   assert.match(doc.querySelector(".signal-strategy-row").textContent, /Priority MSRP checkout/);
+  assert.match(doc.querySelector(".signal-strategy-row").textContent, /At or below MSRP/);
+  assert.match(doc.querySelector(".signal-strategy-row").textContent, /Third-party allowed/);
   assert.match(doc.querySelector(".signal-strategy-authorization").textContent, /capped below the requested action/);
   assert.match(doc.querySelector(".signal-strategy-authorization").textContent, /capped below the requested quantity/);
   [...doc.querySelectorAll(".signal-strategy-row button")].find((button) => button.textContent === "Edit").click();
+  assert.equal(doc.getElementById("signalStrategyAllowThirdPartySeller").checked, true);
   doc.getElementById("signalStrategyName").value = "Edited MSRP checkout";
   doc.getElementById("signalStrategyForm").dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true }));
   await new Promise((resolve) => setTimeout(resolve, 10));

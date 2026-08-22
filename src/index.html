@@ -644,7 +644,7 @@
 
     <footer>
       <span id="versionText">Cart Confirm</span>
-      <span>First-party sellers only, always capped — enforced in code. Unofficial personal-use tool; store names and marks belong to their respective owners.</span>
+      <span>Live seller policy and price caps are revalidated before purchase actions — enforced in code. Unofficial personal-use tool; store names and marks belong to their respective owners.</span>
     </footer>
   </div>
 
@@ -666,13 +666,13 @@
         <label class="field">
           <span>Price</span>
           <select id="signalStrategyPriceBand">
-            <option value="any">Any price classification</option>
+            <option value="any">Any signal price (mission cap still applies)</option>
             <option value="below_msrp">Below MSRP</option>
-            <option value="msrp">MSRP (or source-labeled near MSRP)</option>
-            <option value="slightly_above_msrp">Slightly above MSRP</option>
-            <option value="above_msrp">Above MSRP / price surge</option>
+            <option value="msrp">At or below MSRP</option>
+            <option value="slightly_above_msrp">At or below 10% above MSRP</option>
+            <option value="above_msrp">Any classified MSRP band</option>
           </select>
-          <small>TrackaLacker's explicit label is used when present. Otherwise, the exact approved MSRP is “MSRP” and a known price up to 10% higher is “slightly above.”</small>
+          <small>These choices are cumulative caps: “At or below MSRP” includes below-MSRP signals. Every purchase also stays under the mission dollar cap and the exact signaled price.</small>
         </label>
         <label class="field">
           <span>Action</span>
@@ -710,6 +710,8 @@
         <textarea id="signalStrategyExcludeKeywords" maxlength="1000" rows="2" spellcheck="false" placeholder="used | refurbished | &quot;open box&quot;"></textarea>
         <small>Any matching exclusion clause rejects this strategy.</small>
       </label>
+      <label class="toggle-row signal-strategy-third-party"><input id="signalStrategyAllowThirdPartySeller" type="checkbox"><span>Allow third-party sellers for this strategy</span></label>
+      <small class="row-help">Off requires the store's first-party offer. When on, the live marketplace seller must be visible and must match the named signal seller when one was supplied; the live price still cannot exceed either the signal or mission cap.</small>
       <label class="toggle-row signal-strategy-enabled"><input id="signalStrategyEnabled" type="checkbox" checked><span>Strategy enabled</span></label>
       <div class="dialog-actions">
         <button class="button primary" id="signalStrategySaveButton" type="submit">Save strategy</button>

@@ -166,7 +166,8 @@ const {
 const { processDiscordMessageBatch } = require("./lib/discord-ingestion");
 const { upsertSignal } = require("./lib/signal-inbox");
 const { planSignalRoute } = require("./lib/signal-routing");
-const { activateSignalProduct, activeSignalActivations } = require("./lib/signal-activation");
+const { activateSignalProductIfIdle, activeSignalActivations } = require("./lib/signal-activation");
+const OfferPolicy = require("./lib/offer-policy");
 const {
   loadSignalJournal,
   publicSignalJournal,
@@ -1694,16 +1695,53 @@ function validateProductEvent(event) {
     sku: product.sku
   };
 
-  if (checkedEvent.eventType === "offer-observed" && checkedEvent.eligible) {
-    if (checkedEvent.firstParty !== true) {
-      checkedEvent.eligible = false;
-      checkedEvent.reason = "seller-unverified";
-    } else if (checkedEvent.price === undefined) {
-      checkedEvent.eligible = false;
-      checkedEvent.reason = "price-unavailable";
-    } else if (checkedEvent.price > product.maxPrice) {
-      checkedEvent.eligible = false;
-      checkedEvent.reason = "over-price";
+  if (checkedEvent.eventType === "offer-observed") {
+    const activation = settings.signalsEnabled
+      ? currentSignalActivations(Date.now())[product.id] || null
+      : null;
+    if (activation) {
+      const offer = OfferPolicy.validateOffer({
+        ...toAutomationProduct(product),
+        signalOffer: activation.offerBinding
+      }, {
+        available: checkedEvent.availability === "available",
+        price: checkedEvent.price,
+        seller: checkedEvent.seller,
+        firstParty: checkedEvent.firstParty
+      });
+      checkedEvent.eligible = offer.ok;
+      checkedEvent.reason = offer.reason;
+      return {
+        event: checkedEvent,
+        product,
+        signalActivation: activation,
+        signalOfferMismatch: offer.ok ? "" : offer.reason
+      };
+    }
+
+    if (settings.signalsEnabled) {
+      // A dormant Signals mission reports the live offer to the ordered
+      // strategy router. Seller permission is decided by the winning rule,
+      // not by a global first-party assumption in the page observer.
+      if (checkedEvent.availability !== "available") {
+        checkedEvent.eligible = false;
+        checkedEvent.reason = "out-of-stock";
+      } else if (checkedEvent.price === undefined || checkedEvent.price <= 0) {
+        checkedEvent.eligible = false;
+        checkedEvent.reason = "price-unavailable";
+      } else {
+        checkedEvent.eligible = true;
+        checkedEvent.reason = "eligible";
+      }
+    } else {
+      const offer = OfferPolicy.validateOffer(toAutomationProduct(product), {
+        available: checkedEvent.availability === "available",
+        price: checkedEvent.price,
+        seller: checkedEvent.seller,
+        firstParty: checkedEvent.firstParty
+      });
+      checkedEvent.eligible = offer.ok;
+      checkedEvent.reason = offer.reason;
     }
   }
 
@@ -1735,10 +1773,15 @@ function sendEventNotification(event, product, queueFanout = null, options = {})
   };
 
   if (event.eventType === "offer-observed" && event.eligible && options.suppressEligibleOffer !== true) {
+    const sellerLabel = event.firstParty === true
+      ? "the store's first-party seller"
+      : event.seller
+        ? `approved seller ${event.seller}`
+        : "the strategy-approved seller policy";
     notifyOnce(
       key,
       `${store} offer is eligible`,
-      `${product.title || product.sku} is first-party at $${event.price.toFixed(2)} (cap $${product.maxPrice.toFixed(2)}).`,
+      `${product.title || product.sku} matched ${sellerLabel} at $${event.price.toFixed(2)} (mission cap $${product.maxPrice.toFixed(2)}).`,
       force,
       activity
     );
@@ -1862,12 +1905,25 @@ function currentSignalActivations(now = Date.now()) {
   return signalActivations;
 }
 
+function signalActivationIsCurrent(productId, signalId, now = Date.now()) {
+  return currentSignalActivations(now)[productId]?.signalId === signalId;
+}
+
 function activateMatchedSignal(signal, product, now = Date.now(), route = null) {
-  if (!settings.signalsEnabled || !product?.id || signal?.productId !== product.id) return null;
+  const signalMaximum = Number(route?.offerBinding?.maximumPrice);
+  if (
+    !settings.signalsEnabled
+    || !product?.id
+    || signal?.productId !== product.id
+    || !Number.isFinite(signalMaximum)
+    || signalMaximum <= 0
+  ) {
+    return { activation: null, created: false };
+  }
   const strategyDecision = route?.strategyDecision?.state === "matched"
     ? route.strategyDecision
     : null;
-  signalActivations = activateSignalProduct(signalActivations, {
+  const result = activateSignalProductIfIdle(signalActivations, {
     productId: product.id,
     signalId: signal.id,
     source: signal.source,
@@ -1876,15 +1932,52 @@ function activateMatchedSignal(signal, product, now = Date.now(), route = null) 
     quantity: strategyDecision ? product.quantity : null,
     acceptPartial: strategyDecision?.strategy?.quantity === "max",
     strategyId: strategyDecision?.strategy?.id,
-    strategyName: strategyDecision?.strategy?.name
+    strategyName: strategyDecision?.strategy?.name,
+    offerBinding: route?.offerBinding
   }, now);
+  signalActivations = result.activations;
+  if (result.created) configVersion += 1;
+  return { activation: result.activation, created: result.created };
+}
+
+function signalMismatchMessage(reason, product) {
+  const store = retailerLabel(product?.retailer || "");
+  if (reason === "out-of-stock") return `${store} no longer showed this offer in stock. This signal was cancelled; a later restock signal can try again.`;
+  if (reason === "signal-price-mismatch") return `${store}'s live price no longer matched the signal's price cap. This signal was cancelled; a later qualifying signal can try again.`;
+  if (["signal-seller-mismatch", "third-party", "seller-unverified"].includes(reason)) {
+    return `${store}'s live seller no longer matched the signal strategy. This signal was cancelled; a later qualifying signal can try again.`;
+  }
+  return `${store}'s live offer no longer matched this signal. This signal was cancelled; a later qualifying signal can try again.`;
+}
+
+function cancelMatchedSignalActivation(product, reason) {
+  const activation = currentSignalActivations(Date.now())[product?.id] || null;
+  if (!activation) return null;
+  delete signalActivations[product.id];
   configVersion += 1;
-  return signalActivations[product.id] || null;
+  const note = signalMismatchMessage(reason, product);
+  updateSignalRecord(activation.signalId, {
+    autoOpenState: "disabled",
+    note
+  });
+  if (activation.source === "trackalacker") {
+    updateTrackalackerSignalAction(activation.signalId, {
+      missionDecision: "offer_mismatch",
+      actionState: "cancelled",
+      reason: note,
+      timing: { acknowledgedAt: new Date().toISOString() }
+    });
+  }
+  return activation;
 }
 
 function browserSignalForEvent(event, product) {
+  const observedAt = new Date(event.timestamp || Date.now());
+  const observationMinute = Number.isNaN(observedAt.getTime())
+    ? Math.floor(Date.now() / 60_000)
+    : Math.floor(observedAt.getTime() / 60_000);
   return {
-    id: `browser:${settings.automationRunId}:${product.id}`,
+    id: `browser:${settings.automationRunId}:${product.id}:${observationMinute}`,
     source: "browser",
     retailer: product.retailer,
     sku: product.sku,
@@ -1892,6 +1985,7 @@ function browserSignalForEvent(event, product) {
     title: product.title || `${retailerLabel(product.retailer)} ${product.sku}`,
     price: event.price,
     seller: event.seller,
+    firstParty: event.firstParty,
     productUrl: product.productUrl,
     observedAt: event.timestamp
   };
@@ -1902,7 +1996,9 @@ function handleBrowserSignalEvent(event, product) {
     !settings.signalsEnabled
     || !product?.enabled
     || event.eventType !== "offer-observed"
-    || event.eligible !== true
+    || event.availability !== "available"
+    || !Number.isFinite(event.price)
+    || event.price <= 0
   ) return null;
   const signal = browserSignalForEvent(event, product);
   const route = planSignalRoute({
@@ -1911,20 +2007,23 @@ function handleBrowserSignalEvent(event, product) {
     autoOpenEnabled: true,
     now: Date.now()
   });
-  const activation = route.state === "pending"
+  const activationResult = route.state === "pending"
     ? activateMatchedSignal(signal, route.product, Date.now(), route)
     : null;
+  const activation = activationResult?.activation || null;
   if (route.state === "pending" && !activation) return { activation: null, route };
   runtimeState.signals = upsertSignal(runtimeState.signals, {
     ...signal,
     autoOpenState: route.state === "pending" ? "opened" : route.state,
     autoOpenedAt: route.state === "pending" ? new Date().toISOString() : "",
     note: route.state === "pending"
-      ? "The browser verified this exact item, store, first-party seller, and capped price. Signals authorized only this mission for a bounded purchase attempt."
+      ? activationResult.created
+        ? "The browser verified this exact item, store, seller policy, and capped price. Signals authorized only this mission for a bounded purchase attempt."
+        : "This browser observation corroborated a signal activation that is already handling the exact mission. No duplicate purchase flow was opened."
       : route.note
   });
   persistRuntimeState();
-  return { activation, route };
+  return { activation, activationCreated: activationResult?.created === true, route };
 }
 
 function signalSummary(signal) {
@@ -1970,7 +2069,18 @@ function handleDiscordSignal(signal, historical) {
     return;
   }
 
-  activateMatchedSignal(signal, route.product, Date.now(), route);
+  const signalScopedActivation = settings.signalsEnabled;
+  const activationResult = signalScopedActivation
+    ? activateMatchedSignal(signal, route.product, Date.now(), route)
+    : { activation: null, created: true };
+  if (signalScopedActivation && !activationResult.activation) return;
+  if (signalScopedActivation && !activationResult.created) {
+    updateSignalRecord(signal.id, {
+      autoOpenState: "opened",
+      note: "This signal corroborated an active purchase flow for the same item and store. No duplicate tab or cart action was created."
+    });
+    return;
+  }
 
   notifyOnce(
     `discord-match:${signal.id}`,
@@ -2000,6 +2110,10 @@ function handleDiscordSignal(signal, historical) {
       });
       return;
     }
+    // Live page validation may have cancelled this activation while the tab
+    // opening promise was settling. Never overwrite that terminal mismatch
+    // receipt with a late generic "opened" result.
+    if (signalScopedActivation && !signalActivationIsCurrent(route.product.id, signal.id)) return;
     updateSignalRecord(signal.id, {
       autoOpenState: "opened",
       autoOpenedAt: new Date().toISOString(),
@@ -2008,6 +2122,7 @@ function handleDiscordSignal(signal, historical) {
         : `${route.note} Opened via ${result.via}.`
     });
   }).catch((error) => {
+    if (signalScopedActivation && !signalActivationIsCurrent(route.product.id, signal.id)) return;
     updateSignalRecord(signal.id, {
       autoOpenState: "failed",
       note: String(error?.message || "The browser entry failed.").slice(0, 180)
@@ -2094,8 +2209,8 @@ function handleTrackalackerSignalRequest(envelope, idempotencyKey, options = {})
 
   const signal = outcome.resolution.canonicalSignal;
   const route = outcome.route;
-  const activation = activateMatchedSignal(signal, route.product, Date.now(), route);
-  if (!activation) {
+  const activationResult = activateMatchedSignal(signal, route.product, Date.now(), route);
+  if (!activationResult.activation) {
     updateTrackalackerSignalAction(signal.id, {
       missionDecision: "failed",
       actionState: "failed",
@@ -2104,6 +2219,20 @@ function handleTrackalackerSignalRequest(envelope, idempotencyKey, options = {})
     return {
       statusCode: 200,
       payload: { ...outcome.response, action: "failed", reason: "Signals mode changed before mission activation." }
+    };
+  }
+  if (!activationResult.created) {
+    const note = "This signal corroborated an active purchase flow for the same item and store. No duplicate tab or cart action was created.";
+    updateTrackalackerSignalAction(signal.id, {
+      missionDecision: "corroborated",
+      actionState: "none",
+      reason: note,
+      timing: { acknowledgedAt: new Date().toISOString() }
+    });
+    updateSignalRecord(signal.id, { autoOpenState: "opened", note });
+    return {
+      statusCode: 200,
+      payload: { ...outcome.response, action: "corroborated", reason: note }
     };
   }
 
@@ -2138,6 +2267,7 @@ function handleTrackalackerSignalRequest(envelope, idempotencyKey, options = {})
       });
       return;
     }
+    if (!signalActivationIsCurrent(route.product.id, signal.id)) return;
     const acknowledgedAt = new Date().toISOString();
     updateTrackalackerSignalAction(signal.id, {
       actionState: "opened",
@@ -2154,6 +2284,8 @@ function handleTrackalackerSignalRequest(envelope, idempotencyKey, options = {})
         : `${route.note} Opened via ${result.via}.`
     });
   }).catch((error) => {
+    const currentRecord = signalJournal.records.find((record) => record.signalId === signal.id || record.id === signal.id);
+    if (currentRecord?.missionDecision === "offer_mismatch") return;
     const message = String(error?.message || "The browser entry failed.").slice(0, 180);
     updateTrackalackerSignalAction(signal.id, {
       missionDecision: "failed",
@@ -2314,8 +2446,13 @@ function handleCompanionEvent(rawEvent) {
   if (result.error) return { accepted: false, reason: result.error };
 
   const { event, product } = result;
-  const browserSignalDecision = handleBrowserSignalEvent(event, product);
-  const signalActivation = browserSignalDecision?.activation || null;
+  const cancelledSignalActivation = result.signalOfferMismatch
+    ? cancelMatchedSignalActivation(product, result.signalOfferMismatch)
+    : null;
+  const browserSignalDecision = !result.signalActivation && !cancelledSignalActivation
+    ? handleBrowserSignalEvent(event, product)
+    : null;
+  const signalActivation = result.signalActivation || browserSignalDecision?.activation || null;
   if (product && event.imageUrl && event.imageUrl !== product.imageUrl) {
     settings = {
       ...settings,
@@ -2370,12 +2507,15 @@ function handleCompanionEvent(rawEvent) {
     ? triggerQueueFanout(event)
     : null;
   sendEventNotification(event, product, queueFanout, {
-    suppressEligibleOffer: browserSignalDecision?.route?.reason === "no-strategy"
+    suppressEligibleOffer: settings.signalsEnabled
+      && !["pending", "notified"].includes(browserSignalDecision?.route?.state)
   });
   broadcast();
   return {
     accepted: true,
-    signalActivated: Boolean(signalActivation),
+    signalActivated: Boolean(signalActivation) && !cancelledSignalActivation,
+    signalCancelled: Boolean(cancelledSignalActivation),
+    signalCancelReason: cancelledSignalActivation ? result.signalOfferMismatch : "",
     openRequestDrainMs: queueFanout?.openRequestDrainMs || 0,
     queueCapture
   };
@@ -2562,6 +2702,7 @@ function extensionConfig() {
         enabled: product.enabled && (!settings.signalsEnabled || Boolean(signalActivation)),
         signalActivated: Boolean(signalActivation),
         signalActivationExpiresAt: signalActivation?.expiresAt || 0,
+        signalOffer: signalActivation?.offerBinding || null,
         // Affiliate-first navigation target: affiliate open link, then the
         // admin campaign link, then the canonical product link. All three are
         // validated against this mission's exact store and item ID.

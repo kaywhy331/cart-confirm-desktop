@@ -40,14 +40,18 @@ test("fresh desired Amazon signals can use a sanitized direct entry", () => {
   assert.equal(route.entry, "amazon-buy-now");
 });
 
-test("Signals mode permits a direct route without enabling broad Autopilot", () => {
+test("Signals mode opens the product page for live validation without enabling broad Autopilot", () => {
   const route = planSignalRoute({
     signal,
     settings: settings({ automationEnabled: false, signalsEnabled: true }),
     now: NOW
   });
   assert.equal(route.state, "pending");
-  assert.equal(route.entry, "amazon-buy-now");
+  assert.equal(route.entry, "product", "Signals validates the live product offer before any direct cart mutation");
+  assert.equal(route.offerBinding.maximumPrice, 179.99);
+  assert.equal(route.offerBinding.seller, "Amazon.com");
+  assert.equal(route.offerBinding.firstParty, true);
+  assert.equal(route.offerBinding.allowThirdPartySeller, false);
 });
 
 test("Signals mode rejects explicit over-cap and non-first-party hints before activation", () => {
@@ -66,6 +70,42 @@ test("Signals mode rejects explicit over-cap and non-first-party hints before ac
   });
   assert.equal(marketplace.state, "disabled");
   assert.equal(marketplace.reason, "seller-unverified");
+  const missingPrice = planSignalRoute({
+    signal: { ...signal, price: null },
+    settings: signalSettings,
+    now: NOW
+  });
+  assert.equal(missingPrice.state, "disabled");
+  assert.equal(missingPrice.reason, "price-unavailable");
+});
+
+test("a strategy may explicitly bind a third-party seller without weakening the mission cap", () => {
+  const route = planSignalRoute({
+    signal: { ...signal, seller: "Acme Collectibles", firstParty: false, price: 149.99 },
+    settings: settings({
+      automationEnabled: false,
+      signalsEnabled: true,
+      signalStrategies: [{
+        id: "signal-strategy:marketplace",
+        name: "Marketplace allowed",
+        enabled: true,
+        priceBand: "any",
+        stores: ["amazon"],
+        action: "submit_order",
+        quantity: 1,
+        allowThirdPartySeller: true,
+        includeKeywords: "",
+        excludeKeywords: ""
+      }]
+    }),
+    now: NOW
+  });
+  assert.equal(route.state, "pending");
+  assert.equal(route.entry, "product");
+  assert.equal(route.offerBinding.maximumPrice, 149.99);
+  assert.equal(route.offerBinding.seller, "Acme Collectibles");
+  assert.equal(route.offerBinding.firstParty, false);
+  assert.equal(route.offerBinding.allowThirdPartySeller, true);
 });
 
 test("direct Amazon entry fails back to the product page without every proof", () => {

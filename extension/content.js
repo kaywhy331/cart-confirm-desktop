@@ -4,11 +4,12 @@
   const Retailers = globalThis.CartConfirmRetailers;
   const QuickAdd = globalThis.CartConfirmQuickAdd;
   const CatalogSearch = globalThis.CartConfirmCatalogSearch;
+  const OfferPolicy = globalThis.CartConfirmOfferPolicy;
   const Safety = globalThis.CartConfirmSafety;
   const Evidence = globalThis.CartConfirmEvidence;
   const ScheduleGate = globalThis.CartConfirmScheduleGate;
   const QueueCapture = globalThis.CartConfirmQueueCapture;
-  if (!Retailers || !QuickAdd || !CatalogSearch || !Evidence || !Safety || !ScheduleGate || !QueueCapture) return;
+  if (!Retailers || !QuickAdd || !CatalogSearch || !Evidence || !OfferPolicy || !Safety || !ScheduleGate || !QueueCapture) return;
 
   const ACTIVE_PRODUCT_KEY = "cartConfirmActiveProductId";
   const CHECKOUT_HMAC_SECRET_KEY = "cartConfirmCheckoutHmacSecretV1";
@@ -17,6 +18,7 @@
   const OBSERVATION_DEDUPE_MS = Number.MAX_SAFE_INTEGER;
   const PROOF_MAX_AGE_MS = Safety.CART_PROOF_MAX_AGE_MS;
   const seen = new Map();
+  const signalObservationGenerations = new Map();
   const attemptCache = new Map();
   const quantityRechecks = new Map();
   // Checkout summaries recompute totals, shipping, and fulfillment for a few
@@ -25,6 +27,15 @@
   // rechecks before a manual-review block is posted. Genuine mismatches
   // (trust, preflight evidence, unsafe choices) always block immediately.
   const REVIEW_SETTLE_REASONS = Object.freeze(["total-unavailable", "over-total", "checkout-evidence-unverified", "fulfillment-unverified"]);
+  const SIGNAL_OFFER_MISMATCH_REASONS = Object.freeze([
+    "out-of-stock",
+    "signal-price-mismatch",
+    "signal-seller-mismatch",
+    "third-party",
+    "seller-unverified",
+    "over-price",
+    "price-unavailable"
+  ]);
   const REVIEW_SETTLE_RECHECK_LIMIT = 10;
   const reviewSettleRechecks = new Map();
   // A cart-to-checkout SPA transition can flash a sign-in, code, or store
@@ -184,6 +195,14 @@
     if (seen.size >= 500) {
       for (const key of [...seen.keys()].slice(0, seen.size - 350)) seen.delete(key);
     }
+  }
+
+  function signalObservationGeneration(product) {
+    return signalObservationGenerations.get(product?.id) || 0;
+  }
+
+  function advanceSignalObservationGeneration(product) {
+    signalObservationGenerations.set(product.id, signalObservationGeneration(product) + 1);
   }
 
   async function send(eventType, product, details = {}, dedupeKey = "", dedupeMs = 1_500) {
@@ -357,6 +376,7 @@
 
   function proofInput(offer, source = "product", quantityConfirmed = false, inventory = null) {
     return {
+      available: offer?.available === true,
       price: Number.isFinite(offer?.price) ? offer.price : null,
       seller: offer?.seller || "",
       firstParty: offer?.firstParty === true,
@@ -453,10 +473,11 @@
     return null;
   }
 
-  async function authorizeAddClick(product) {
+  async function authorizeAddClick(product, offer) {
     const result = await runtimeMessage({
       type: "CART_CONFIRM_AUTHORIZE_ADD_CLICK",
-      productId: product.id
+      productId: product.id,
+      proof: proofInput(offer)
     });
     if (result.ok) attemptCache.set(product.id, result.attempt);
     return result;
@@ -617,13 +638,8 @@
   }
 
   function eligibility(product, offer) {
-    if (!offer.available) return { eligible: false, reason: "out-of-stock" };
-    if (offer.price === null || offer.price === undefined) return { eligible: false, reason: "price-unavailable" };
-    if (offer.firstParty !== true) {
-      return { eligible: false, reason: offer.seller ? "third-party" : "seller-unverified" };
-    }
-    if (offer.price > product.maxPrice) return { eligible: false, reason: "over-price" };
-    return { eligible: true, reason: "eligible" };
+    const result = OfferPolicy.validateOffer(product, offer);
+    return { ...result, eligible: result.ok === true };
   }
 
   async function scheduleClaimRetry(product, message) {
@@ -1312,11 +1328,11 @@
     const eligibleMessage = result.eligible
       ? !config.automationEnabled
         ? config.signalsEnabled
-          ? `${adapter.label} verified an eligible first-party offer at $${offer.price.toFixed(2)}. It was reported as a browser signal so the desktop can authorize only this exact mission.`
+          ? `${adapter.label} observed a capped offer at $${offer.price.toFixed(2)}. It was reported as a browser signal so the winning strategy can apply its seller policy to only this exact mission.`
           : `${adapter.label} verified an eligible first-party offer at $${offer.price.toFixed(2)}. Test mode is observation-only, so no purchase action was attempted.`
         : product.action === "watch"
-          ? `${adapter.label} verified an eligible first-party offer at $${offer.price.toFixed(2)}. This item is Watch & alert only, so no purchase action was attempted.`
-          : `${adapter.label} verified an eligible first-party offer at $${offer.price.toFixed(2)}. ${purchaseModeLabel()} is starting the ${product.action === "cart" ? "add-to-cart" : product.action === "review" ? "checkout-review" : "auto-buy"} workflow.`
+          ? `${adapter.label} verified an eligible offer at $${offer.price.toFixed(2)}. This item is Watch & alert only, so no purchase action was attempted.`
+          : `${adapter.label} verified an eligible offer at $${offer.price.toFixed(2)}. ${purchaseModeLabel()} is starting the ${product.action === "cart" ? "add-to-cart" : product.action === "review" ? "checkout-review" : "auto-buy"} workflow.`
       : "";
     const offerReport = send("offer-observed", product, {
       availability: offer.available ? "available" : "unavailable",
@@ -1327,13 +1343,31 @@
       reason: result.reason,
       attempt: currentAttempt(product),
       message: eligibleMessage
-    }, `offer:${product.id}:${offer.price}:${offer.seller}:${result.reason}:${eligibleMessage}`, OBSERVATION_DEDUPE_MS);
+    }, `offer:${product.id}:${signalObservationGeneration(product)}:${offer.price}:${offer.seller}:${result.reason}:${eligibleMessage}`, OBSERVATION_DEDUPE_MS);
+
+    // A signal activation is an immutable authorization for one observed
+    // offer. If the product page now shows different stock, price, or seller
+    // evidence, report it synchronously so the desktop can end only this
+    // activation. No watcher/reload is scheduled under the stale signal.
+    if (config.signalsEnabled && product.signalActivated && !result.eligible) {
+      clearRetry();
+      const mismatch = await offerReport;
+      if (mismatch.signalCancelled) advanceSignalObservationGeneration(product);
+      await refreshConfig(true);
+      return;
+    }
 
     // Signals starts fail-closed, so this page's projected mission is disabled
     // until the desktop accepts the exact observed offer. Complete that one
     // authorization round trip now and fetch the newly scoped config instead
     // of waiting for the normal five-second refresh interval.
-    if (config.signalsEnabled && !config.automationEnabled && result.eligible) {
+    if (
+      config.signalsEnabled
+      && !config.automationEnabled
+      && offer.available
+      && Number.isFinite(offer.price)
+      && offer.price > 0
+    ) {
       await offerReport;
       await refreshConfig(true);
       if (config.automationEnabled && activeProduct()?.enabled) scheduleScan(0);
@@ -1435,9 +1469,58 @@
     ) return;
     if (!await requireQuantityWithinLimits(product)) return;
 
-    const prepared = await prepareAddAction(product, offer);
+    // Fulfillment and quantity controls can re-render the buy box. Bind the
+    // durable add reservation to a fresh adapter read, not the offer object
+    // captured before those asynchronous actions.
+    const preparedOffer = adapter.offer(document, product);
+    const preparedOfferResult = eligibility(product, preparedOffer);
+    if (!preparedOfferResult.eligible) {
+      if (config.signalsEnabled && product.signalActivated) {
+        clearRetry();
+        const mismatch = await send("offer-observed", product, {
+          availability: preparedOffer.available ? "available" : "unavailable",
+          price: preparedOffer.price === null ? undefined : preparedOffer.price,
+          seller: preparedOffer.seller,
+          firstParty: preparedOffer.firstParty,
+          eligible: false,
+          reason: preparedOfferResult.reason,
+          message: "The live offer changed before the add reservation. This signal was cancelled without clicking Add to cart."
+        }, `signal-offer-changed:prepare:${product.id}:${product.signalOffer?.observedAt || "unknown"}`, Number.MAX_SAFE_INTEGER);
+        if (mismatch.signalCancelled) advanceSignalObservationGeneration(product);
+        await refreshConfig(true);
+      } else {
+        await send("automation-blocked", product, {
+          price: preparedOffer.price === null ? undefined : preparedOffer.price,
+          seller: preparedOffer.seller,
+          firstParty: preparedOffer.firstParty,
+          eligible: false,
+          reason: preparedOfferResult.reason,
+          message: "The live offer changed before the add reservation. No Add to cart click was made."
+        }, `offer-changed:prepare:${product.id}:${preparedOfferResult.reason}`, 30_000);
+      }
+      return;
+    }
+
+    const prepared = await prepareAddAction(product, preparedOffer);
     if (!prepared.ok) {
-      if (prepared.reason === "submission-uncertain") {
+      if (
+        config.signalsEnabled
+        && product.signalActivated
+        && SIGNAL_OFFER_MISMATCH_REASONS.includes(prepared.reason)
+      ) {
+        clearRetry();
+        const mismatch = await send("offer-observed", product, {
+          availability: preparedOffer.available ? "available" : "unavailable",
+          price: preparedOffer.price === null ? undefined : preparedOffer.price,
+          seller: preparedOffer.seller,
+          firstParty: preparedOffer.firstParty,
+          eligible: false,
+          reason: prepared.reason,
+          message: "The extension-owned reservation check rejected this live offer. This signal was cancelled without clicking Add to cart."
+        }, `signal-offer-rejected:prepare:${product.id}:${product.signalOffer?.observedAt || "unknown"}`, Number.MAX_SAFE_INTEGER);
+        if (mismatch.signalCancelled) advanceSignalObservationGeneration(product);
+        await refreshConfig(true);
+      } else if (prepared.reason === "submission-uncertain") {
         await send("automation-blocked", product, {
           reason: "manual-action-required",
           message: "A prior order submission is uncertain and remains locked for manual review."
@@ -1521,13 +1604,56 @@
       await markAddAction(product, "canceled");
       return;
     }
+    // Re-read once more directly beside the click. The extension service
+    // worker independently checks this proof against the signal binding
+    // before authorizing the DOM mutation.
+    const finalOffer = adapter.offer(document, product);
+    const finalOfferResult = eligibility(product, finalOffer);
+    if (!finalOfferResult.eligible) {
+      await markAddAction(product, "canceled");
+      if (config.signalsEnabled && product.signalActivated) {
+        clearRetry();
+        const mismatch = await send("offer-observed", product, {
+          availability: finalOffer.available ? "available" : "unavailable",
+          price: finalOffer.price === null ? undefined : finalOffer.price,
+          seller: finalOffer.seller,
+          firstParty: finalOffer.firstParty,
+          eligible: false,
+          reason: finalOfferResult.reason,
+          message: "The live offer changed at the final add boundary. This signal was cancelled without clicking Add to cart."
+        }, `signal-offer-changed:final:${product.id}:${product.signalOffer?.observedAt || "unknown"}`, Number.MAX_SAFE_INTEGER);
+        if (mismatch.signalCancelled) advanceSignalObservationGeneration(product);
+        await refreshConfig(true);
+      } else {
+        await send("automation-blocked", product, {
+          price: finalOffer.price === null ? undefined : finalOffer.price,
+          seller: finalOffer.seller,
+          firstParty: finalOffer.firstParty,
+          eligible: false,
+          reason: finalOfferResult.reason,
+          message: "The live offer changed at the final add boundary. No Add to cart click was made."
+        }, `offer-changed:final:${product.id}:${finalOfferResult.reason}`, 30_000);
+      }
+      return;
+    }
     const targetCartCountBeforeAdd = product.retailer === "target"
       ? adapter.cartItemCount?.(document)
       : null;
     let attempt = null;
     let addAuthorizationReason = "";
-    const clicked = await clickAction(offer.addButton, product, async () => {
-      const authorization = await authorizeAddClick(product);
+    let authorizationOffer = finalOffer;
+    const clicked = await clickAction(finalOffer.addButton, product, async () => {
+      // clickAction intentionally waits briefly for the focused control to
+      // settle. Re-read after that wait so the proof sent to the service
+      // worker reflects the last possible DOM state before authorization.
+      authorizationOffer = adapter.offer(document, product);
+      const authorizationOfferResult = eligibility(product, authorizationOffer);
+      if (!authorizationOfferResult.eligible) {
+        addAuthorizationReason = authorizationOfferResult.reason;
+        return false;
+      }
+      if (authorizationOffer.addButton !== finalOffer.addButton) return false;
+      const authorization = await authorizeAddClick(product, authorizationOffer);
       if (!authorization.ok) {
         addAuthorizationReason = String(authorization.reason || "add-authorization-failed");
         return false;
@@ -1547,6 +1673,25 @@
         return;
       }
       if (addAuthorizationReason) {
+        if (
+          config.signalsEnabled
+          && product.signalActivated
+          && SIGNAL_OFFER_MISMATCH_REASONS.includes(addAuthorizationReason)
+        ) {
+          clearRetry();
+          const mismatch = await send("offer-observed", product, {
+            availability: authorizationOffer.available ? "available" : "unavailable",
+            price: authorizationOffer.price === null ? undefined : authorizationOffer.price,
+            seller: authorizationOffer.seller,
+            firstParty: authorizationOffer.firstParty,
+            eligible: false,
+            reason: addAuthorizationReason,
+            message: "The final extension-owned offer check rejected this signal. No Add to cart click was made."
+          }, `signal-offer-rejected:authorize:${product.id}:${product.signalOffer?.observedAt || "unknown"}`, Number.MAX_SAFE_INTEGER);
+          if (mismatch.signalCancelled) advanceSignalObservationGeneration(product);
+          await refreshConfig(true);
+          return;
+        }
         await send("automation-blocked", product, {
           reason: "manual-action-required",
           message: `The final add-to-cart authorization failed (${addAuthorizationReason}). No Add click was made.`
@@ -1576,9 +1721,9 @@
     missingCartLineSince.delete(product.id);
     void send("add-clicked", product, {
       attempt,
-      price: offer.price,
-      seller: offer.seller,
-      firstParty: true,
+      price: authorizationOffer.price,
+      seller: authorizationOffer.seller,
+      firstParty: authorizationOffer.firstParty,
       eligible: true,
       reason: "eligible"
     }, `add-clicked:${product.id}:${attempt}`, 0);
@@ -1807,7 +1952,7 @@
         await send("automation-blocked", product, {
           price: safeLine.price,
           seller: safeLine.seller,
-          firstParty: true,
+          firstParty: safeLine.firstParty,
           eligible: false,
           reason: "quantity-limit",
           quantity: product.quantity,
@@ -1822,7 +1967,7 @@
       await send("automation-blocked", product, {
         price: safeLine.price,
         seller: safeLine.seller,
-        firstParty: true,
+        firstParty: safeLine.firstParty,
         eligible: false,
         reason: "quantity-unavailable",
         message: `The cart has not shown a readable quantity for this line, so quantity ${product.quantity} could not be verified. The item may already be in the cart — review it manually.`
@@ -1851,7 +1996,7 @@
       quantity: securedQuantity,
       price: safeLine.price,
       seller: safeLine.seller,
-      firstParty: true,
+      firstParty: safeLine.firstParty,
       eligible: true,
       reason: "eligible",
       ...(partialQuantity ? { message: `${adapter.label} allowed only ${securedQuantity} of the configured ${product.quantity}; partial quantity accepted.` } : {})
@@ -1860,7 +2005,7 @@
       quantity: securedQuantity,
       price: safeLine.price,
       seller: safeLine.seller,
-      firstParty: true,
+      firstParty: safeLine.firstParty,
       eligible: true,
       reason: "eligible",
       ...(partialQuantity ? { message: `The exact ${adapter.label} product is in the cart with ${securedQuantity} of ${product.quantity} (partial quantity accepted).` } : {})
@@ -2171,7 +2316,6 @@
         attempt,
         quantity: verified.batchProduct.quantity,
         orderTotal: verified.orderTotal,
-        firstParty: true,
         eligible: true,
         reason: "eligible",
         message: `Combined ${adapter.label} order submitted: ${verified.members.length} item line${verified.members.length === 1 ? "" : "s"}, ${verified.batchProduct.quantity} unit${verified.batchProduct.quantity === 1 ? "" : "s"}, total $${verified.orderTotal.toFixed(2)}.`
@@ -2503,7 +2647,7 @@
         price: review.price,
         orderTotal: review.orderTotal,
         seller: review.seller,
-        firstParty: true,
+        firstParty: review.firstParty,
         eligible: true,
         reason: "eligible"
       }, `review-ready:${product.id}:${review.orderTotal}`, Number.MAX_SAFE_INTEGER);
@@ -2571,7 +2715,7 @@
         price: review.price,
         orderTotal: review.orderTotal,
         seller: review.seller,
-        firstParty: true,
+        firstParty: review.firstParty,
         eligible: true,
         reason: "eligible"
       }, `order-submit:${product.id}:${attempt}`, 0);
