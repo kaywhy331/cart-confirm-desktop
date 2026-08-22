@@ -6,6 +6,11 @@ update dialog shows exactly these bullets. Keep every entry short, plain, and
 about what the user will notice — one bullet per change, no internals.
 Publishing fails if the version being released has no section here.
 
+## 3.8.10
+- Add and Edit remain available when Signals or Autopilot is running and explain that the active purchase mode must be turned off before authorization rules can change
+- Accepting the prompt safely disarms purchase actions and opens the editable CartSignals form; declining leaves the current run unchanged
+- The strategy card now shows the active editing lock directly instead of relying on disabled controls and hidden tooltips
+
 ## 3.8.9
 - TrackaLacker's normal browser connection now supplies the single Windows popup while the CartCollect companion receives its separate push silently
 - Generic “IN STOCK at Store” alerts can match exact mapped products through sanitized product slugs or retailer item IDs instead of appearing unsupported

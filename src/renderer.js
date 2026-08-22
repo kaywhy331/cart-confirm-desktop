@@ -190,6 +190,7 @@ const elements = {
   signalBridgeRecent: document.getElementById("signalBridgeRecent"),
   signalStrategyCount: document.getElementById("signalStrategyCount"),
   signalStrategyList: document.getElementById("signalStrategyList"),
+  signalStrategyEditHint: document.getElementById("signalStrategyEditHint"),
   addSignalStrategyButton: document.getElementById("addSignalStrategyButton"),
   addDefaultSignalStrategyButton: document.getElementById("addDefaultSignalStrategyButton"),
   signalStrategyDialog: document.getElementById("signalStrategyDialog"),
@@ -4485,7 +4486,7 @@ function buildSignalStrategyRow(strategy, index, strategies, armed) {
   controls.append(
     signalStrategyControl("↑", "Move strategy up", () => void moveSignalStrategy(strategy.id, -1), armed || index === 0),
     signalStrategyControl("↓", "Move strategy down", () => void moveSignalStrategy(strategy.id, 1), armed || index === strategies.length - 1),
-    signalStrategyControl("Edit", "Edit strategy", () => openSignalStrategyDialog(strategy), armed),
+    signalStrategyControl("Edit", "Edit strategy", () => void requestSignalStrategyDialog(strategy)),
     signalStrategyControl("Delete", "Delete strategy", () => deleteSignalStrategy(strategy), armed)
   );
   row.append(priority, content, controls);
@@ -4509,17 +4510,23 @@ function renderSignalStrategies(settings = {}) {
       buildSignalStrategyRow(strategy, index, strategies, armed)
     )));
   }
-  elements.addSignalStrategyButton.disabled = armed || strategies.length >= 25;
-  elements.addSignalStrategyButton.title = armed
-    ? "Turn off Signals or Autopilot before changing signal authorization rules."
-    : strategies.length >= 25
+  const activeMode = armed ? activePurchaseModeLabel() : "";
+  elements.addSignalStrategyButton.disabled = strategies.length >= 25;
+  elements.addSignalStrategyButton.title = strategies.length >= 25
       ? "The 25-strategy limit has been reached."
+      : armed
+        ? `Turn off ${activeMode} after confirmation, then add a signal rule.`
       : "Add another first-match signal rule.";
   elements.addDefaultSignalStrategyButton.hidden = strategies.length > 0;
-  elements.addDefaultSignalStrategyButton.disabled = armed;
+  elements.addDefaultSignalStrategyButton.disabled = false;
   elements.addDefaultSignalStrategyButton.title = armed
-    ? "Turn off Signals or Autopilot before adding a strategy."
+    ? `Turn off ${activeMode} after confirmation, then add the safe Notify catchall.`
     : "Create one bottom-priority catchall that only notifies and never opens a store page.";
+  const editSafety = "Store choices come from your current mission store options. Empty include keywords make a catchall rule. A strategy can narrow a mission, but never exceed that mission's action, quantity, price, fulfillment, or order-total authorization.";
+  elements.signalStrategyEditHint.textContent = armed
+    ? `${activeMode} is running. Choose Add or Edit to turn off purchase actions after confirmation before changing these rules. ${editSafety}`
+    : editSafety;
+  elements.signalStrategyEditHint.classList.toggle("attention", armed);
 }
 
 function newSignalStrategyId() {
@@ -4552,6 +4559,64 @@ function renderSignalStrategyStoreChoices(selectedStores = []) {
     label.append(input, text);
     return label;
   }));
+}
+
+async function prepareSignalStrategyEditing() {
+  if (!isArmed()) return true;
+  const activeMode = activePurchaseModeLabel();
+  const confirmed = window.confirm(
+    `${activeMode} is running. CartSignals authorization rules are locked during an active run. `
+    + `Turn off ${activeMode} and continue editing? Store pages may keep monitoring, but no purchase action will remain authorized.`
+  );
+  if (!confirmed) {
+    setMessage(`${activeMode} is still running. Stop it before changing signal strategies.`, "warn");
+    return false;
+  }
+  const next = await runAction(async () => {
+    if (!currentSnapshot) throw new Error("Settings have not loaded yet.");
+    const snapshot = await window.cartAssist.saveSettings({
+      ...currentSnapshot.settings,
+      automationEnabled: false,
+      signalsEnabled: false
+    });
+    render(snapshot);
+    return snapshot;
+  }, `${activeMode} is off and purchase actions are disarmed. Save your strategy, then start Signals again when ready.`);
+  return Boolean(next) && !isArmed();
+}
+
+function requestSignalStrategyDialog(strategy = null) {
+  if (!isArmed()) {
+    openSignalStrategyDialog(strategy);
+    return;
+  }
+  void (async () => {
+    if (!await prepareSignalStrategyEditing()) return;
+    openSignalStrategyDialog(strategy);
+  })();
+}
+
+async function addDefaultSignalStrategy() {
+  if (!await prepareSignalStrategyEditing()) return;
+  await runAction(async () => {
+    if (isArmed()) throw new Error("Turn off Signals or Autopilot before adding a signal strategy.");
+    const strategies = currentSnapshot?.settings?.signalStrategies || [];
+    if (strategies.length) throw new Error("A strategy already exists. Add or edit rules in the ordered list instead.");
+    const strategy = {
+      id: newSignalStrategyId(),
+      name: "Default notifications",
+      enabled: true,
+      priceBand: "any",
+      stores: [],
+      action: "notify",
+      quantity: "max",
+      allowThirdPartySeller: false,
+      includeKeywords: "",
+      excludeKeywords: ""
+    };
+    await saveSignalStrategies([strategy]);
+    return strategy;
+  }, "Safe Notify catchall added at the bottom. It can alert, but it cannot open a store page or exceed any mission authorization.");
 }
 
 function openSignalStrategyDialog(strategy = null) {
@@ -5456,26 +5521,8 @@ async function saveSignalBridgeSettings(changes) {
   return next;
 }
 
-elements.addSignalStrategyButton.addEventListener("click", () => openSignalStrategyDialog());
-elements.addDefaultSignalStrategyButton.addEventListener("click", () => void runAction(async () => {
-  if (isArmed()) throw new Error("Turn off Signals or Autopilot before adding a signal strategy.");
-  const strategies = currentSnapshot?.settings?.signalStrategies || [];
-  if (strategies.length) throw new Error("A strategy already exists. Add or edit rules in the ordered list instead.");
-  const strategy = {
-    id: newSignalStrategyId(),
-    name: "Default notifications",
-    enabled: true,
-    priceBand: "any",
-    stores: [],
-    action: "notify",
-    quantity: "max",
-    allowThirdPartySeller: false,
-    includeKeywords: "",
-    excludeKeywords: ""
-  };
-  await saveSignalStrategies([strategy]);
-  return strategy;
-}, "Safe Notify catchall added at the bottom. It can alert, but it cannot open a store page or exceed any mission authorization."));
+elements.addSignalStrategyButton.addEventListener("click", () => void requestSignalStrategyDialog());
+elements.addDefaultSignalStrategyButton.addEventListener("click", () => void addDefaultSignalStrategy());
 elements.signalStrategyCancelButton.addEventListener("click", closeSignalStrategyDialog);
 elements.signalStrategyDialog.addEventListener("close", () => {
   editingSignalStrategyId = "";

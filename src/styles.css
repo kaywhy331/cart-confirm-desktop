@@ -1293,6 +1293,7 @@ button:disabled:hover { transform: none; }
 .signal-strategy-row-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 5px; max-width: 185px; }
 .signal-strategy-row-actions .button { min-width: 32px; min-height: 28px; padding: 0 7px; font-size: 9px; }
 .signal-strategy-actions { margin-top: 10px; }
+.signal-strategy-edit-hint.attention { color: var(--warning); }
 .discord-launcher {
   display: flex;
   justify-content: flex-end;
