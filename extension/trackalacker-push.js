@@ -6,6 +6,7 @@
   if (root) root.CartConfirmTrackalackerPush = api;
 })(typeof globalThis !== "undefined" ? globalThis : this, () => {
   const DEVICE_REGISTRATION_URL = "https://www.trackalacker.com/api/v1/users/devices";
+  const DEVICE_TOKEN_UPDATE_URL = "https://www.trackalacker.com/api/v1/users/devices/update_token";
   // TrackaLacker publishes this non-secret application-server key in its own
   // service worker. Enrollment prefers the live page subscription's current
   // key; this is the compatible fallback when the page has no subscription.
@@ -97,6 +98,102 @@
         }
       }
     };
+  }
+
+  function deviceTokenUpdatePayload(oldEndpointValue, subscription, encoder = globalThis.btoa) {
+    const oldEndpoint = String(oldEndpointValue || "").trim();
+    const registration = deviceRegistrationPayload(subscription, "runtime migration", encoder);
+    if (!oldEndpoint || !registration.ok) {
+      return { ok: false, reason: !oldEndpoint ? "missing-old-endpoint" : registration.reason };
+    }
+    const { endpoint, p256dh, auth } = registration.payload.device;
+    return {
+      ok: true,
+      payload: {
+        device: {
+          platform: PLATFORM,
+          old_endpoint: oldEndpoint,
+          endpoint,
+          p256dh,
+          auth
+        }
+      }
+    };
+  }
+
+  async function ensureSilentPushSubscription(pushManager, applicationServerKey) {
+    if (!pushManager?.getSubscription || !pushManager?.subscribe) {
+      return { ok: false, reason: "push-api-unavailable", subscription: null };
+    }
+    let subscription;
+    try {
+      subscription = await pushManager.getSubscription();
+    } catch {
+      return { ok: false, reason: "push-subscription-read-failed", subscription: null };
+    }
+    if (subscription) {
+      try {
+        if (!applicationServerKeyMatches(subscription, applicationServerKey)) {
+          return { ok: false, reason: "subscription-key-mismatch", subscription: null };
+        }
+      } catch {
+        return { ok: false, reason: "push-api-unavailable", subscription: null };
+      }
+    }
+    if (subscription?.options?.userVisibleOnly === false) {
+      return { ok: true, reason: "", subscription, previousEndpoint: "", silent: true };
+    }
+
+    const previousEndpoint = String(subscription?.endpoint || "");
+    if (subscription) {
+      try {
+        if (typeof subscription.unsubscribe !== "function" || await subscription.unsubscribe() !== true) {
+          return { ok: false, reason: "push-silent-migration-failed", subscription: null };
+        }
+      } catch {
+        return { ok: false, reason: "push-silent-migration-failed", subscription: null };
+      }
+    }
+
+    try {
+      subscription = await pushManager.subscribe({
+        userVisibleOnly: false,
+        applicationServerKey
+      });
+      return subscription
+        ? { ok: true, reason: "", subscription, previousEndpoint, silent: true }
+        : { ok: false, reason: "missing-subscription", subscription: null };
+    } catch {
+      // Restore a standards-compatible visible subscription if this Chrome
+      // build unexpectedly refuses extension silent push. The caller still
+      // updates TrackaLacker's endpoint, but reports the duplicate-warning
+      // state instead of silently losing future alerts.
+      if (previousEndpoint) {
+        try {
+          subscription = await pushManager.subscribe({
+            userVisibleOnly: true,
+            applicationServerKey
+          });
+          if (subscription) {
+            return {
+              ok: true,
+              reason: "",
+              warning: "silent-push-unavailable",
+              subscription,
+              previousEndpoint,
+              silent: false
+            };
+          }
+        } catch {
+          // The normal error below leaves enrollment visibly incomplete.
+        }
+      }
+      return { ok: false, reason: "push-subscribe-failed", subscription: null };
+    }
+  }
+
+  function pushRequiresVisibleNotification(subscription) {
+    return subscription?.options?.userVisibleOnly !== false;
   }
 
   function collectResponseStrings(value, output = [], depth = 0) {
@@ -241,6 +338,54 @@
     }
   }
 
+  // TrackaLacker's own service worker uses this same endpoint and body when a
+  // browser subscription rotates. This MAIN-world bridge keeps both the old
+  // and replacement endpoints confined to the signed-in page request and
+  // returns only a bounded result classification.
+  async function updateDeviceTokenInPage(payload, runtime) {
+    const pageDocument = runtime?.document || document;
+    const pageFetch = runtime?.fetch || fetch;
+    const pageNavigator = runtime?.navigator || (typeof navigator !== "undefined" ? navigator : null);
+    const headers = {
+      Accept: "application/json",
+      "Content-Type": "application/json"
+    };
+    const csrf = pageDocument?.querySelector?.('meta[name="csrf-token"]')?.getAttribute?.("content") || "";
+    if (csrf) headers["X-CSRF-Token"] = csrf;
+    let pageSubscriptionPresent = false;
+    try {
+      const pageRegistration = await pageNavigator?.serviceWorker?.getRegistration?.();
+      pageSubscriptionPresent = Boolean(await pageRegistration?.pushManager?.getSubscription?.());
+    } catch {
+      // The page subscription remains separate and unchanged.
+    }
+    try {
+      const response = await pageFetch("https://www.trackalacker.com/api/v1/users/devices/update_token", {
+        method: "PATCH",
+        credentials: "include",
+        cache: "no-store",
+        redirect: "follow",
+        headers,
+        body: JSON.stringify(payload)
+      });
+      if (response.redirected === true) {
+        return { ok: false, duplicate: false, status: 0, code: "network-error", pageSubscriptionPresent };
+      }
+      const status = Number.isInteger(Number(response.status))
+        ? Math.max(0, Math.min(599, Number(response.status)))
+        : 0;
+      return {
+        ok: response.ok === true,
+        duplicate: false,
+        status,
+        code: response.ok === true ? "updated" : status ? "http-error" : "network-error",
+        pageSubscriptionPresent
+      };
+    } catch {
+      return { ok: false, duplicate: false, status: 0, code: "network-error", pageSubscriptionPresent };
+    }
+  }
+
   async function subscriptionFingerprint(subscription, subtle = globalThis.crypto?.subtle) {
     const endpoint = String(subscription?.endpoint || "");
     if (!endpoint || !subtle?.digest) return "";
@@ -278,6 +423,16 @@
     return /^\d{1,20}$/.test(text) ? text : "";
   }
 
+  function productSlug(value) {
+    let text;
+    try {
+      text = decodeURIComponent(String(value || "")).trim().toLowerCase();
+    } catch {
+      return "";
+    }
+    return /^[a-z0-9](?:[a-z0-9-]{0,198}[a-z0-9])?$/.test(text) ? text : "";
+  }
+
   function trackalackerSignalIdentity(value) {
     try {
       const url = new URL(String(value || ""), TRACKALACKER_ROOT_URL);
@@ -286,22 +441,59 @@
         url.protocol !== "https:"
         || url.username
         || url.password
+        || url.port && url.port !== "443"
         || !["trackalacker.com", "www.trackalacker.com"].includes(host)
-      ) return Object.freeze({ sourceProductId: "", listingId: "" });
+      ) return Object.freeze({ sourceProductId: "", listingId: "", productSlug: "" });
       const listingId = numericIdentifier(
         url.pathname.match(/\/listings\/(\d{1,20})(?:\/|$)/i)?.[1]
       );
-      const pathProductId = numericIdentifier(
-        url.pathname.match(/\/products\/showcase\/(\d{1,20})(?:\/|$)/i)?.[1]
-      );
+      const productSegment = url.pathname.match(/\/products\/showcase\/([^/]{1,240})(?:\/|$)/i)?.[1] || "";
+      const pathProductId = numericIdentifier(productSegment);
+      const sourceProductSlug = productSlug(productSegment);
       // TrackaLacker's live notification links identify the followed product
       // with a numeric utm_term. Extract only that bounded identifier. The
       // signed notification_id and every other URL/query value are discarded
       // here and never enter the extension queue or desktop envelope.
       const sourceProductId = numericIdentifier(url.searchParams.get("utm_term")) || pathProductId;
-      return Object.freeze({ sourceProductId, listingId });
+      return Object.freeze({ sourceProductId, listingId, productSlug: sourceProductSlug });
     } catch {
-      return Object.freeze({ sourceProductId: "", listingId: "" });
+      return Object.freeze({ sourceProductId: "", listingId: "", productSlug: "" });
+    }
+  }
+
+  function retailerSignalIdentity(value) {
+    try {
+      const url = new URL(String(value || ""));
+      const host = url.hostname.toLowerCase();
+      if (url.protocol !== "https:" || url.username || url.password || url.port && url.port !== "443") {
+        return Object.freeze({ retailer: "", sku: "" });
+      }
+      let retailer = "";
+      let match = null;
+      if (["target.com", "www.target.com"].includes(host)) {
+        retailer = "target";
+        match = url.pathname.match(/(?:\/|-)A-(\d{6,12})(?:\/|$)/i);
+      } else if (["walmart.com", "www.walmart.com"].includes(host)) {
+        retailer = "walmart";
+        match = url.pathname.match(/\/ip\/(?:[^/]+\/)?(\d{5,20})(?:\/|$)/i);
+        if (!match) {
+          const item = numericIdentifier(url.searchParams.get("items") || url.searchParams.get("itemId"));
+          return Object.freeze({ retailer, sku: item });
+        }
+      } else if (["amazon.com", "www.amazon.com"].includes(host)) {
+        retailer = "amazon";
+        match = url.pathname.match(/\/(?:dp|gp\/product|gp\/aw\/d)\/([A-Z0-9]{10})(?:\/|$)/i);
+        if (!match) {
+          const asin = String(url.searchParams.get("asin") || url.searchParams.get("ASIN") || "").toUpperCase();
+          return Object.freeze({ retailer, sku: /^[A-Z0-9]{10}$/.test(asin) ? asin : "" });
+        }
+      }
+      const sku = retailer === "amazon"
+        ? String(match?.[1] || "").toUpperCase()
+        : numericIdentifier(match?.[1]);
+      return Object.freeze({ retailer: sku ? retailer : "", sku });
+    } catch {
+      return Object.freeze({ retailer: "", sku: "" });
     }
   }
 
@@ -344,10 +536,21 @@
     const timestamp = new Date(receivedAt || "");
     if (!notification || !/^[A-Za-z0-9:._-]{8,180}$/.test(id) || Number.isNaN(timestamp.getTime())) return null;
     const urlIdentity = trackalackerSignalIdentity(notification.url);
+    const retailerIdentity = retailerSignalIdentity(notification.url);
     const sourceProductId = urlIdentity.sourceProductId
       || numericIdentifier(preservedIdentity.sourceProductId);
     const sourceListingId = urlIdentity.listingId
       || numericIdentifier(preservedIdentity.listingId);
+    const sourceProductSlug = urlIdentity.productSlug
+      || productSlug(preservedIdentity.productSlug);
+    const sourceRetailer = retailerIdentity.retailer
+      || (["target", "walmart", "amazon"].includes(String(preservedIdentity.retailer || "").toLowerCase())
+        ? String(preservedIdentity.retailer).toLowerCase()
+        : "");
+    const sourceRetailerSku = retailerIdentity.sku
+      || (sourceRetailer === "amazon"
+        ? String(preservedIdentity.sku || "").trim().toUpperCase()
+        : numericIdentifier(preservedIdentity.sku));
     return {
       schemaVersion: 1,
       signalId: id,
@@ -367,7 +570,10 @@
         body: notification.body,
         textElements: [],
         sourceProductId,
-        sourceListingId
+        sourceListingId,
+        sourceProductSlug,
+        sourceRetailer,
+        sourceRetailerSku
       }
     };
   }
@@ -383,23 +589,29 @@
 
   return Object.freeze({
     DEVICE_REGISTRATION_URL,
+    DEVICE_TOKEN_UPDATE_URL,
     PLATFORM,
     VAPID_PUBLIC_KEY,
     applicationServerKeyFromBase64Url,
     applicationServerKeyMatches,
     base64Encode,
     deviceRegistrationPayload,
+    deviceTokenUpdatePayload,
+    ensureSilentPushSubscription,
     inspectPagePushSubscription,
     notificationPresentation,
     notificationUrl,
     pushNotificationData,
+    pushRequiresVisibleNotification,
     registerDeviceInPage,
     registrationOutcome,
+    retailerSignalIdentity,
     safeRegistrationDiagnostic,
     signalEnvelopeFromPush,
     subscriptionFingerprint,
     trackalackerSignalIdentity,
     trackalackerUrl,
+    updateDeviceTokenInPage,
     vapidApplicationServerKey
   });
 });

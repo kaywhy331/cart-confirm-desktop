@@ -100,6 +100,8 @@ function normalizeTrackalackerPushState(value = {}) {
     "push-subscription-read-failed",
     "subscription-key-mismatch",
     "push-subscribe-failed",
+    "push-silent-migration-failed",
+    "silent-push-unavailable",
     "push-enrollment-failed",
     "missing-subscription",
     "incomplete-subscription",
@@ -164,7 +166,10 @@ function normalizeTrackalackerPushQueue(value) {
       body: entry.notification?.body
     }, entry.signalId, entry.source?.receivedAt, chrome.runtime.id, {
       sourceProductId: entry.notification?.sourceProductId,
-      listingId: entry.notification?.sourceListingId
+      listingId: entry.notification?.sourceListingId,
+      productSlug: entry.notification?.sourceProductSlug,
+      retailer: entry.notification?.sourceRetailer,
+      sku: entry.notification?.sourceRetailerSku
     });
     if (sanitized) output.push(sanitized);
   }
@@ -1428,38 +1433,10 @@ async function drainTrackalackerPushQueue(initialConfig = null) {
 }
 
 async function extensionPushSubscription(applicationServerKey) {
-  const pushManager = globalThis.registration?.pushManager;
-  if (!pushManager?.getSubscription || !pushManager?.subscribe) {
-    return { ok: false, reason: "push-api-unavailable", subscription: null };
-  }
-  let subscription;
-  try {
-    subscription = await pushManager.getSubscription();
-  } catch {
-    return { ok: false, reason: "push-subscription-read-failed", subscription: null };
-  }
-  if (subscription) {
-    try {
-      if (!TrackalackerPush.applicationServerKeyMatches(subscription, applicationServerKey)) {
-        return { ok: false, reason: "subscription-key-mismatch", subscription: null };
-      }
-    } catch {
-      return { ok: false, reason: "push-api-unavailable", subscription: null };
-    }
-  }
-  if (!subscription) {
-    try {
-      subscription = await pushManager.subscribe({
-        userVisibleOnly: true,
-        applicationServerKey
-      });
-    } catch {
-      return { ok: false, reason: "push-subscribe-failed", subscription: null };
-    }
-  }
-  return subscription
-    ? { ok: true, reason: "", subscription }
-    : { ok: false, reason: "missing-subscription", subscription: null };
+  return TrackalackerPush.ensureSilentPushSubscription(
+    globalThis.registration?.pushManager,
+    applicationServerKey
+  );
 }
 
 async function inspectTrackalackerPagePush(tabId) {
@@ -1485,7 +1462,7 @@ async function inspectTrackalackerPagePush(tabId) {
 
 function safeEnrollmentResult(value = {}) {
   const status = Math.max(0, Math.min(599, Number(value.status) || 0));
-  const allowedCodes = new Set(["enrolled", "already-registered", "http-error", "network-error"]);
+  const allowedCodes = new Set(["enrolled", "updated", "already-registered", "http-error", "network-error"]);
   return {
     ok: value.ok === true,
     duplicate: value.duplicate === true,
@@ -1538,7 +1515,7 @@ async function performTrackalackerPushEnrollment(tabId) {
   const fingerprint = await TrackalackerPush.subscriptionFingerprint(subscription).catch(() => "");
   const current = await readTrackalackerPushState();
   const explicitEnrollment = Boolean(config.trackalackerPush.enrollmentNonce);
-  if (!explicitEnrollment && fingerprint && current.registeredFingerprint === fingerprint) {
+  if (!explicitEnrollment && !found.previousEndpoint && fingerprint && current.registeredFingerprint === fingerprint) {
     state = await updateTrackalackerPushState({
       state: "ready",
       ready: true,
@@ -1556,15 +1533,20 @@ async function performTrackalackerPushEnrollment(tabId) {
   }
 
   let registration;
+  let migration;
   try {
     registration = TrackalackerPush.deviceRegistrationPayload(
       subscription,
       TRACKALACKER_DEVICE_NICKNAME
     );
+    migration = found.previousEndpoint
+      ? TrackalackerPush.deviceTokenUpdatePayload(found.previousEndpoint, subscription)
+      : null;
   } catch {
     registration = { ok: false, reason: "incomplete-subscription" };
+    migration = null;
   }
-  if (!registration.ok || !fingerprint) {
+  if (!registration.ok || found.previousEndpoint && !migration?.ok || !fingerprint) {
     state = await updateTrackalackerPushState({
       state: "error",
       ready: false,
@@ -1587,13 +1569,27 @@ async function performTrackalackerPushEnrollment(tabId) {
 
   let result;
   try {
-    const executions = await chrome.scripting.executeScript({
-      target: { tabId },
-      world: "MAIN",
-      func: TrackalackerPush.registerDeviceInPage,
-      args: [registration.payload]
-    });
-    result = safeEnrollmentResult(executions?.[0]?.result);
+    if (migration?.ok) {
+      const updateExecutions = await chrome.scripting.executeScript({
+        target: { tabId },
+        world: "MAIN",
+        func: TrackalackerPush.updateDeviceTokenInPage,
+        args: [migration.payload]
+      });
+      result = safeEnrollmentResult(updateExecutions?.[0]?.result);
+    }
+    // If TrackaLacker no longer has the old endpoint, reuse the confirmed
+    // enrollment contract for the replacement. The old browser endpoint was
+    // already invalidated locally, so this cannot produce a second delivery.
+    if (!result?.ok) {
+      const registrationExecutions = await chrome.scripting.executeScript({
+        target: { tabId },
+        world: "MAIN",
+        func: TrackalackerPush.registerDeviceInPage,
+        args: [registration.payload]
+      });
+      result = safeEnrollmentResult(registrationExecutions?.[0]?.result);
+    }
   } catch {
     result = { ok: false, duplicate: false, status: 0, code: "page-bridge-failed" };
   }
@@ -1604,7 +1600,7 @@ async function performTrackalackerPushEnrollment(tabId) {
       ready: true,
       subscriptionPresent: true,
       registeredFingerprint: fingerprint,
-      errorCode: "",
+      errorCode: found.warning || "",
       lastHttpStatus: result.status || 200,
       lastRegistrationAt: new Date().toISOString()
     });
@@ -1660,12 +1656,21 @@ async function handleTrackalackerPushEvent(event) {
   }
   const receivedAt = new Date().toISOString();
   const signalId = `push:trackalacker:${crypto.randomUUID()}`;
-  const presentation = TrackalackerPush.notificationPresentation(payload, signalId);
-  let notificationDisplayed = true;
+  let visibleNotificationRequired = true;
   try {
-    await showTrackalackerPushNotification(presentation);
+    const subscription = await globalThis.registration?.pushManager?.getSubscription?.();
+    visibleNotificationRequired = TrackalackerPush.pushRequiresVisibleNotification(subscription);
   } catch {
-    notificationDisplayed = false;
+    // A legacy visible-only subscription must continue displaying its push.
+  }
+  let notificationDisplayFailed = false;
+  if (visibleNotificationRequired) {
+    const presentation = TrackalackerPush.notificationPresentation(payload, signalId);
+    try {
+      await showTrackalackerPushNotification(presentation);
+    } catch {
+      notificationDisplayFailed = true;
+    }
   }
   const envelope = TrackalackerPush.signalEnvelopeFromPush(
     payload,
@@ -1685,7 +1690,7 @@ async function handleTrackalackerPushEvent(event) {
   const queue = await enqueueTrackalackerPush(envelope);
   const next = await updateTrackalackerPushState({
     lastNotificationAt: receivedAt,
-    errorCode: notificationDisplayed ? "" : "notification-display-failed"
+    errorCode: notificationDisplayFailed ? "notification-display-failed" : ""
   });
   const config = cached || await discoverConfig(false);
   if (config) await postTrackalackerPushStatus(config, next, { force: true });
@@ -2547,11 +2552,12 @@ async function refreshTrackalackerPushSubscriptionState() {
   const fingerprint = subscription
     ? await TrackalackerPush.subscriptionFingerprint(subscription).catch(() => "")
     : "";
+  const silent = subscription?.options?.userVisibleOnly === false;
   return updateTrackalackerPushState({
     subscriptionPresent: Boolean(subscription),
-    ready: Boolean(subscription && fingerprint && current.registeredFingerprint === fingerprint),
+    ready: Boolean(silent && fingerprint && current.registeredFingerprint === fingerprint),
     state: current.enabled
-      ? subscription && fingerprint && current.registeredFingerprint === fingerprint ? "ready" : "awaiting-page"
+      ? silent && fingerprint && current.registeredFingerprint === fingerprint ? "ready" : "awaiting-page"
       : "disabled"
   });
 }

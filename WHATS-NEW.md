@@ -6,6 +6,11 @@ update dialog shows exactly these bullets. Keep every entry short, plain, and
 about what the user will notice — one bullet per change, no internals.
 Publishing fails if the version being released has no section here.
 
+## 3.8.9
+- TrackaLacker's normal browser connection now supplies the single Windows popup while the CartCollect companion receives its separate push silently
+- Generic “IN STOCK at Store” alerts can match exact mapped products through sanitized product slugs or retailer item IDs instead of appearing unsupported
+- Alerts without a safe product identity are clearly marked unresolved and remain non-actionable; existing price, seller, strategy, duplicate, and dry-run safeguards still apply
+
 ## 3.8.8
 - Live TrackaLacker alerts such as “Product is in stock at Store” now resolve the exact product and retailer instead of appearing as unsupported events
 - Generic live alerts can use sanitized numeric product or listing hints while full notification URLs and tracking details stay out of CartCollect

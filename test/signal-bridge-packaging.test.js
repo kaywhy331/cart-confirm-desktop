@@ -33,8 +33,10 @@ test("the Chrome extension declares and installs the Web Push runtime", () => {
   assert.match(background, /importScripts\([\s\S]*?"trackalacker-push\.js"/);
   assert.match(background, /self\.addEventListener\("push"/);
   assert.match(background, /self\.addEventListener\("pushsubscriptionchange"/);
-  assert.match(background, /userVisibleOnly: true/);
+  assert.match(pushHelper, /userVisibleOnly: false/);
   assert.match(background, /registration\.showNotification/);
+  assert.match(background, /if \(visibleNotificationRequired\)/);
+  assert.match(background, /pushRequiresVisibleNotification\(subscription\)/);
   assert.match(background, /self\.addEventListener\("notificationclick"/);
   assert.match(background, /TRACKALACKER_DEVICE_NICKNAME = "Desktop - Windows - Chrome"/);
   assert.match(pushHelper, /requireInteraction: true/);
@@ -42,7 +44,9 @@ test("the Chrome extension declares and installs the Web Push runtime", () => {
   assert.match(main, /notification-display-failed[\s\S]*?Check Chrome and Windows notification settings/);
   assert.doesNotMatch(background, /CartCollect Chrome extension v\$\{/);
   assert.doesNotMatch(background, /Cart Confirm ·/);
-  assert.doesNotMatch(`${background}\n${pushHelper}`, /\.unsubscribe\s*\(/);
+  assert.match(pushHelper, /subscription\.unsubscribe\(\)/);
+  assert.match(pushHelper, /api\/v1\/users\/devices\/update_token/);
+  assert.match(pushHelper, /method: "PATCH"/);
 });
 
 test("device enrollment uses only the confirmed same-origin contract and runtime subscription keys", () => {
@@ -65,11 +69,14 @@ test("extension push delivery is pinned to the extension-authenticated local rou
   assert.match(main, /req\.headers\["x-cart-assist-token"\] !== settings\.companionToken/);
 });
 
-test("live push identity discards notification URLs and forwards only bounded numeric hints", () => {
+test("live push identity discards notification URLs and forwards only bounded exact hints", () => {
   assert.match(pushHelper, /url\.searchParams\.get\("utm_term"\)/);
   assert.match(pushHelper, /sourceProductId,[\s\S]*?sourceListingId/);
   assert.match(background, /sourceProductId: entry\.notification\?\.sourceProductId/);
   assert.match(background, /listingId: entry\.notification\?\.sourceListingId/);
+  assert.match(background, /productSlug: entry\.notification\?\.sourceProductSlug/);
+  assert.match(background, /retailer: entry\.notification\?\.sourceRetailer/);
+  assert.match(background, /sku: entry\.notification\?\.sourceRetailerSku/);
   assert.doesNotMatch(pushHelper, /notification:\s*\{[\s\S]{0,300}?url:\s*notification\.url/);
 });
 
@@ -91,7 +98,7 @@ test("manual enrollment is opened by the owning extension profile and waits for 
   assert.match(background, /chrome\.tabs\.create\(\{ url: TRACKALACKER_FOLLOWED_URL, active: true \}\)/);
   assert.match(background, /enrollmentNonce: String\(enrollmentNonce/);
   assert.match(background, /const explicitEnrollment = Boolean\(config\.trackalackerPush\.enrollmentNonce\)/);
-  assert.match(background, /if \(!explicitEnrollment && fingerprint && current\.registeredFingerprint === fingerprint\)/);
+  assert.match(background, /if \(!explicitEnrollment && !found\.previousEndpoint && fingerprint && current\.registeredFingerprint === fingerprint\)/);
   assert.match(main, /waitForSignalBridgeEnrollment\(nonce\)/);
   assert.match(main, /enrollmentNonce === trackalackerPushEnrollmentNonce/);
   assert.match(main, /via: "extension-profile"/);

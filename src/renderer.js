@@ -4629,9 +4629,9 @@ function renderSignalBridge(bridge = {}, settings = {}) {
         : bridgeState === "awaiting-page"
           ? "Choose Connect TrackaLacker push. Keep the opened TrackaLacker page signed in while Chrome enrolls this extension device."
           : connecting
-            ? "Chrome is creating and enrolling the extension's Web Push subscription using the signed-in TrackaLacker page."
+            ? "Chrome is creating or migrating the companion's silent Web Push subscription using the signed-in TrackaLacker page."
             : ready
-              ? "TrackaLacker Web Push events appear below immediately, then exact mapped alerts are evaluated against active missions without server polling."
+              ? "The companion receives TrackaLacker push silently to avoid a duplicate popup; TrackaLacker's normal browser location supplies the single Windows alert. Exact mapped events are evaluated without server polling."
               : "Open a signed-in TrackaLacker tab and retry the push connection.");
   const latency = bridge.latency || {};
   const metrics = [
@@ -5527,7 +5527,7 @@ elements.signalBridgeDedupeSeconds.addEventListener("change", () => void runActi
 elements.signalBridgePermissionButton.addEventListener("click", () => void runAction(
   () => window.cartAssist.requestSignalBridgePermission(),
   (result) => result?.ready
-    ? `TrackaLacker push enrollment confirmed${result.status ? `: HTTP ${result.status}` : ""}. Use Verify browser test for an end-to-end delivery check.`
+    ? `TrackaLacker silent push enrollment confirmed${result.status ? `: HTTP ${result.status}` : ""}. The normal TrackaLacker browser location will supply one popup. Use Verify browser test for an end-to-end delivery check.`
     : "TrackaLacker push enrollment was requested in the Chrome profile that owns the companion extension."
 ));
 
