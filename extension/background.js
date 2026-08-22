@@ -39,6 +39,7 @@ const TRACKALACKER_PUSH_QUEUE_KEY = "cartConfirmTrackalackerPushQueueV1";
 const TRACKALACKER_PUSH_QUEUE_LIMIT = 50;
 const TRACKALACKER_FOLLOWED_URL = "https://www.trackalacker.com/products/followed";
 const TRACKALACKER_NOTIFICATION_SETTINGS_URL = "https://www.trackalacker.com/users/settings/notifications/edit";
+const TRACKALACKER_DEVICE_NICKNAME = "Desktop - Windows - Chrome";
 const TRACKALACKER_TAB_PATTERNS = Object.freeze([
   "https://trackalacker.com/*",
   "https://www.trackalacker.com/*"
@@ -106,6 +107,7 @@ function normalizeTrackalackerPushState(value = {}) {
     "page-bridge-failed",
     "network-error",
     "http-error",
+    "notification-display-failed",
     "push-payload-unreadable",
     "signal-delivery-rejected",
     "signal-delivery-http",
@@ -1388,9 +1390,12 @@ async function drainTrackalackerPushQueue(initialConfig = null) {
       if (result.delivered) {
         await removeQueuedTrackalackerPush(envelope.signalId);
         delivered += 1;
+        const deliveryState = await readTrackalackerPushState();
         await updateTrackalackerPushState({
           lastDeliveryAt: new Date().toISOString(),
-          errorCode: ""
+          errorCode: deliveryState.errorCode === "notification-display-failed"
+            ? "notification-display-failed"
+            : ""
         });
         continue;
       }
@@ -1551,7 +1556,7 @@ async function performTrackalackerPushEnrollment(tabId) {
   try {
     registration = TrackalackerPush.deviceRegistrationPayload(
       subscription,
-      `CartCollect Chrome extension v${chrome.runtime.getManifest().version}`
+      TRACKALACKER_DEVICE_NICKNAME
     );
   } catch {
     registration = { ok: false, reason: "incomplete-subscription" };
@@ -1651,23 +1656,33 @@ async function handleTrackalackerPushEvent(event) {
     payload = null;
   }
   const receivedAt = new Date().toISOString();
+  const signalId = `push:trackalacker:${crypto.randomUUID()}`;
+  const presentation = TrackalackerPush.notificationPresentation(payload, signalId);
+  let notificationDisplayed = true;
+  try {
+    await showTrackalackerPushNotification(presentation);
+  } catch {
+    notificationDisplayed = false;
+  }
   const envelope = TrackalackerPush.signalEnvelopeFromPush(
     payload,
-    `push:trackalacker:${crypto.randomUUID()}`,
+    signalId,
     receivedAt,
     chrome.runtime.id
   );
   if (!envelope) {
-    const failed = await updateTrackalackerPushState({ errorCode: "push-payload-unreadable" });
+    const failed = await updateTrackalackerPushState({
+      lastNotificationAt: receivedAt,
+      errorCode: "push-payload-unreadable"
+    });
     const config = cached || await discoverConfig(false);
     if (config) await postTrackalackerPushStatus(config, failed, { force: true });
     return;
   }
-  await showTrackalackerPushReceipt(envelope).catch(() => {});
   const queue = await enqueueTrackalackerPush(envelope);
   const next = await updateTrackalackerPushState({
     lastNotificationAt: receivedAt,
-    errorCode: ""
+    errorCode: notificationDisplayed ? "" : "notification-display-failed"
   });
   const config = cached || await discoverConfig(false);
   if (config) await postTrackalackerPushStatus(config, next, { force: true });
@@ -1675,25 +1690,8 @@ async function handleTrackalackerPushEvent(event) {
   return { queued: queue.length };
 }
 
-function showTrackalackerPushReceipt(envelope) {
-  const title = String(envelope?.notification?.title || "TrackaLacker alert").slice(0, 180);
-  const body = String(envelope?.notification?.body || "").slice(0, 500);
-  const isTest = /\btest notification\b|\bthis is a test\b/i.test(`${title}\n${body}`);
-  return globalThis.registration.showNotification(
-    isTest ? "Cart Confirm received the TrackaLacker test" : `Cart Confirm · ${title}`,
-    {
-      body: isTest
-        ? "End-to-end Web Push delivery is working. This test can never trigger a purchase."
-        : body,
-      tag: "cart-confirm-trackalacker-push",
-      renotify: false,
-      silent: true,
-      data: {
-        cartConfirmTrackalacker: true,
-        url: TRACKALACKER_NOTIFICATION_SETTINGS_URL
-      }
-    }
-  );
+function showTrackalackerPushNotification(presentation) {
+  return globalThis.registration.showNotification(presentation.title, presentation.options);
 }
 
 async function handleTrackalackerPushSubscriptionChange() {
@@ -2492,7 +2490,9 @@ self.addEventListener("pushsubscriptionchange", (event) => {
 self.addEventListener("notificationclick", (event) => {
   if (event.notification?.data?.cartConfirmTrackalacker !== true) return;
   event.notification.close();
-  event.waitUntil(chrome.tabs.create({ url: TRACKALACKER_NOTIFICATION_SETTINGS_URL, active: true }));
+  const url = TrackalackerPush.notificationUrl(event.notification?.data?.url)
+    || "https://www.trackalacker.com/";
+  event.waitUntil(chrome.tabs.create({ url, active: true }));
 });
 
 chrome.tabs.onRemoved.addListener((tabId) => {

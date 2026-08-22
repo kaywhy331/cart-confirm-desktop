@@ -581,10 +581,11 @@
                 <button class="button ghost compact" id="signalBridgeScanButton" type="button">Scan followed products</button>
                 <button class="button ghost compact" id="signalBridgeReplayButton" type="button">Run dry-run replay</button>
               </div>
-              <small class="row-help">Connect opens TrackaLacker's notification settings in Chrome, then uses that page's existing signed-in session to enroll the companion's real PushSubscription. Once Ready, choose Verify browser test and click TrackaLacker's browser notification test button on the opened page. Cart Confirm waits for that real push and always treats it as non-purchasing. No account credentials or push keys are stored. Synthetic replays can never open a store or place an order.</small>
-              <details class="signal-audit-details">
-                <summary>Recent TrackaLacker signal audit</summary>
-                <div class="signal-audit-list" id="signalBridgeRecent"><div class="empty-state">No TrackaLacker alerts recorded yet.</div></div>
+              <small class="row-help">Connect opens TrackaLacker's notification settings in Chrome, then uses that page's existing signed-in session to enroll the companion's real PushSubscription as <strong>Desktop - Windows - Chrome</strong>. If an older companion name remains for the same browser endpoint, remove that old entry in TrackaLacker and choose Recheck; Cart Confirm never deletes registered devices automatically. Once Ready, choose Verify browser test and click TrackaLacker's browser notification test button on the opened page. Cart Confirm waits for that real push and always treats it as non-purchasing. No account credentials or push keys are stored. Synthetic replays can never open a store or place an order.</small>
+              <small class="row-help">Every received Web Push appears below, including tests, unsupported formats, and alerts that do not match a scanned item. Only an exact mapped store and item can continue into the actionable inbox or a mission.</small>
+              <details class="signal-audit-details" open>
+                <summary>Recent TrackaLacker alerts</summary>
+                <div class="signal-audit-list" id="signalBridgeRecent" aria-live="polite"><div class="empty-state">No TrackaLacker Web Push received yet.</div></div>
               </details>
             </section>
             <div class="catalog-section-divider" role="separator"></div>
@@ -630,7 +631,7 @@
 
             <div class="signal-inbox-heading">
               <div>
-                <strong>Signal inbox</strong>
+                <strong>Actionable signal inbox</strong>
                 <span id="signalCount">0 signals</span>
               </div>
               <button class="button ghost compact" id="clearSignalsButton" type="button">Clear</button>

@@ -13,6 +13,8 @@
   const PLATFORM = "web";
   const MAX_PUSH_TITLE_LENGTH = 500;
   const MAX_PUSH_BODY_LENGTH = 4_000;
+  const TRACKALACKER_ROOT_URL = "https://www.trackalacker.com/";
+  const TRACKALACKER_NOTIFICATION_ICON_URL = "https://www.trackalacker.com/images/logo.webp";
 
   function cleanText(value, maximum) {
     return String(value || "")
@@ -260,14 +262,48 @@
     }
   }
 
+  function notificationUrl(value) {
+    try {
+      const url = new URL(String(value || ""), TRACKALACKER_ROOT_URL);
+      if (url.protocol !== "https:" || url.username || url.password) return "";
+      url.hash = "";
+      return url.href.slice(0, 2_000);
+    } catch {
+      return "";
+    }
+  }
+
   function pushNotificationData(value) {
     if (!value || typeof value !== "object" || Array.isArray(value)) return null;
     const nested = value.data && typeof value.data === "object" && !Array.isArray(value.data) ? value.data : {};
     const title = cleanText(value.title || nested.title, MAX_PUSH_TITLE_LENGTH);
     const body = cleanBody(value.body || nested.body || value.message || nested.message);
-    const url = trackalackerUrl(value.url || nested.url);
+    const url = notificationUrl(value.url || nested.url);
     if (!title && !body) return null;
     return Object.freeze({ title, body, url });
+  }
+
+  function notificationPresentation(value, signalId) {
+    const notification = pushNotificationData(value) || {
+      title: "TrackaLacker Notification",
+      body: "You have a notification from TrackaLacker",
+      url: ""
+    };
+    const id = cleanText(signalId, 180);
+    return Object.freeze({
+      title: notification.title || "TrackaLacker Notification",
+      options: Object.freeze({
+        body: notification.body || "You have a notification from TrackaLacker",
+        icon: TRACKALACKER_NOTIFICATION_ICON_URL,
+        tag: `tl-${id || "notification"}`,
+        requireInteraction: true,
+        silent: false,
+        data: Object.freeze({
+          cartConfirmTrackalacker: true,
+          url: notification.url || TRACKALACKER_ROOT_URL
+        })
+      })
+    });
   }
 
   function signalEnvelopeFromPush(value, signalId, receivedAt, extensionId) {
@@ -315,6 +351,8 @@
     base64Encode,
     deviceRegistrationPayload,
     inspectPagePushSubscription,
+    notificationPresentation,
+    notificationUrl,
     pushNotificationData,
     registerDeviceInPage,
     registrationOutcome,

@@ -4631,7 +4631,7 @@ function renderSignalBridge(bridge = {}, settings = {}) {
           : connecting
             ? "Chrome is creating and enrolling the extension's Web Push subscription using the signed-in TrackaLacker page."
             : ready
-              ? "TrackaLacker Web Push events are sent into CartSignals and evaluated against active missions without server polling."
+              ? "TrackaLacker Web Push events appear below immediately, then exact mapped alerts are evaluated against active missions without server polling."
               : "Open a signed-in TrackaLacker tab and retry the push connection.");
   const latency = bridge.latency || {};
   const metrics = [
@@ -4641,7 +4641,8 @@ function renderSignalBridge(bridge = {}, settings = {}) {
     bridge.subscriptionPresent ? "push subscribed" : "push not subscribed",
     latency.medianMs === null || latency.medianMs === undefined ? "latency —" : `median ${latency.medianMs} ms`,
     latency.p95Ms === null || latency.p95Ms === undefined ? "p95 —" : `p95 ${latency.p95Ms} ms`,
-    bridge.lastNotificationAt ? `last alert ${relativeTime(bridge.lastNotificationAt)}` : "no alerts yet"
+    bridge.lastNotificationAt ? `last alert ${relativeTime(bridge.lastNotificationAt)}` : "no alerts yet",
+    bridge.lastDeliveryAt ? `app delivery ${relativeTime(bridge.lastDeliveryAt)}` : "no app deliveries yet"
   ];
   elements.signalBridgeMetrics.replaceChildren(...metrics.map((label) => {
     const metric = document.createElement("span");
@@ -4676,7 +4677,7 @@ function renderSignalBridge(bridge = {}, settings = {}) {
   if (!recent.length) {
     const empty = document.createElement("div");
     empty.className = "empty-state";
-    empty.textContent = "No TrackaLacker alerts recorded yet.";
+    empty.textContent = "No TrackaLacker Web Push received yet.";
     elements.signalBridgeRecent.replaceChildren(empty);
   } else {
     elements.signalBridgeRecent.replaceChildren(...recent.map(buildSignalAuditRow));
@@ -4733,7 +4734,7 @@ function renderSignals(signals = []) {
   if (!signals.length) {
     const empty = document.createElement("div");
     empty.className = "empty-state";
-    empty.textContent = "No restock signals yet.";
+    empty.textContent = "No actionable restock signals yet.";
     elements.signalList.replaceChildren(empty);
     return;
   }

@@ -6,6 +6,11 @@ update dialog shows exactly these bullets. Keep every entry short, plain, and
 about what the user will notice — one bullet per change, no internals.
 Publishing fails if the version being released has no section here.
 
+## 3.8.7
+- TrackaLacker registers the companion with the discreet Desktop - Windows - Chrome device name
+- TrackaLacker alerts keep their original notification title, sound, visibility, and safe click destination while also reaching CartSignals
+- Every received TrackaLacker alert is visible with separate browser-receipt and app-delivery status, and the Before you run card no longer covers other cards
+
 ## 3.8.6
 - Connect TrackaLacker push now opens the correct signed-in notification settings page immediately instead of waiting silently for an idle extension
 - Verify browser test guides you through TrackaLacker's real test button and confirms the full TrackaLacker-to-Chrome-to-Cart Confirm delivery path

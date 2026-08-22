@@ -36,6 +36,12 @@ test("the Chrome extension declares and installs the Web Push runtime", () => {
   assert.match(background, /userVisibleOnly: true/);
   assert.match(background, /registration\.showNotification/);
   assert.match(background, /self\.addEventListener\("notificationclick"/);
+  assert.match(background, /TRACKALACKER_DEVICE_NICKNAME = "Desktop - Windows - Chrome"/);
+  assert.match(pushHelper, /requireInteraction: true/);
+  assert.match(pushHelper, /silent: false/);
+  assert.match(main, /notification-display-failed[\s\S]*?Check Chrome and Windows notification settings/);
+  assert.doesNotMatch(background, /CartCollect Chrome extension v\$\{/);
+  assert.doesNotMatch(background, /Cart Confirm ·/);
   assert.doesNotMatch(`${background}\n${pushHelper}`, /\.unsubscribe\s*\(/);
 });
 

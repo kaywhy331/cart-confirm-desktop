@@ -8,6 +8,8 @@ const {
   applicationServerKeyMatches,
   deviceRegistrationPayload,
   inspectPagePushSubscription,
+  notificationPresentation,
+  notificationUrl,
   registerDeviceInPage,
   registrationOutcome,
   safeRegistrationDiagnostic,
@@ -29,7 +31,7 @@ function fakeSubscription(overrides = {}) {
 }
 
 test("a real PushSubscription maps to the confirmed nested TrackaLacker device payload", () => {
-  const result = deviceRegistrationPayload(fakeSubscription(), "CartCollect Chrome extension v3.8.2");
+  const result = deviceRegistrationPayload(fakeSubscription(), "Desktop - Windows - Chrome");
   assert.equal(result.ok, true);
   assert.deepEqual(result.payload, {
     device: {
@@ -37,9 +39,28 @@ test("a real PushSubscription maps to the confirmed nested TrackaLacker device p
       endpoint: "https://push.example.invalid/subscriptions/fake-device",
       p256dh: "AQIDBA==",
       auth: "BQYHCA==",
-      nickname: "CartCollect Chrome extension v3.8.2"
+      nickname: "Desktop - Windows - Chrome"
     }
   });
+});
+
+test("extension Web Push preserves TrackaLacker's visible browser notification", () => {
+  const presentation = notificationPresentation({
+    title: "IN STOCK at Walmart!",
+    body: "Example product\nin stock for $19.99 (~ MSRP)",
+    url: "https://www.walmart.com/ip/12345#offer"
+  }, "push:trackalacker:12345678");
+
+  assert.equal(presentation.title, "IN STOCK at Walmart!");
+  assert.equal(presentation.options.body.includes("Example product"), true);
+  assert.equal(presentation.options.icon, "https://www.trackalacker.com/images/logo.webp");
+  assert.equal(presentation.options.tag, "tl-push:trackalacker:12345678");
+  assert.equal(presentation.options.requireInteraction, true);
+  assert.equal(presentation.options.silent, false);
+  assert.equal(presentation.options.data.cartConfirmTrackalacker, true);
+  assert.equal(presentation.options.data.url, "https://www.walmart.com/ip/12345");
+  assert.equal(notificationUrl("javascript:alert(1)"), "");
+  assert.equal(notificationUrl("http://www.trackalacker.com/unsafe"), "");
 });
 
 test("missing and incomplete subscriptions fail before registration", () => {

@@ -720,6 +720,8 @@ function trackalackerPushErrorMessage(code, httpStatus) {
       return "Device registration failed in the signed-in TrackaLacker page. Confirm the page is online, then retry.";
     case "http-error":
       return status ? `Device registration failed: HTTP ${status}` : "Device registration failed.";
+    case "notification-display-failed":
+      return "Chrome received the TrackaLacker push, but Windows could not display its notification. Check Chrome and Windows notification settings.";
     case "push-payload-unreadable":
       return "Chrome received a TrackaLacker push payload that did not contain usable notification text.";
     case "signal-delivery-rejected":
