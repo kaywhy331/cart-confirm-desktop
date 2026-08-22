@@ -176,6 +176,52 @@ test("an authenticated extension Web Push signal enters the same mission pipelin
   assert.equal(result.response.action, "queued");
 });
 
+test("a live sentence-style push strips the event suffix before exact matching", () => {
+  const input = envelope({
+    signalId: "push:trackalacker:live-sentence",
+    source: {
+      transport: "chrome_extension_web_push",
+      notificationId: "push:trackalacker:live-sentence",
+      applicationName: "CartCollect Chrome extension",
+      applicationId: "kmpoonjaidgnldeobaaopfhfhlalclhd"
+    },
+    notification: {
+      body: "Pokemon Perfect Order Booster Display Box is in stock at Walmart\nin stock for $169.99 (~ MSRP)"
+    }
+  });
+  const result = process(input, {
+    validation: { allowedTransports: ["chrome_extension_web_push"] }
+  });
+  assert.equal(result.parsed.productNameRaw, "Pokemon Perfect Order Booster Display Box");
+  assert.equal(result.resolution.matchMethod, "exact-title-retailer");
+  assert.equal(result.shouldOpen, true);
+});
+
+test("a sanitized product ID routes a generic live push without retaining its URL", () => {
+  const input = envelope({
+    signalId: "push:trackalacker:live-identity",
+    source: {
+      transport: "chrome_extension_web_push",
+      notificationId: "push:trackalacker:live-identity",
+      applicationName: "CartCollect Chrome extension",
+      applicationId: "kmpoonjaidgnldeobaaopfhfhlalclhd"
+    },
+    notification: {
+      body: "in stock for $169.99 (~ MSRP)",
+      sourceProductId: "12345"
+    }
+  });
+  const result = process(input, {
+    validation: { allowedTransports: ["chrome_extension_web_push"] }
+  });
+  assert.equal(result.parsed.productNameRaw, "");
+  assert.equal(result.resolution.matchMethod, "source-product-retailer");
+  assert.equal(result.record.sourceProductId, "12345");
+  assert.equal(result.record.productNameRaw, "Pokemon Perfect Order Booster Display Box");
+  assert.match(result.resolution.canonicalSignal.keywordText, /Pokemon Perfect Order Booster Display Box/);
+  assert.equal(result.shouldOpen, true);
+});
+
 test("mission rejection is an acknowledged bridge delivery, not an infrastructure error", () => {
   const result = process(envelope({
     notification: { body: "Pokemon Perfect Order Booster Display Box\nin stock for $199.99 (Above MSRP)\nwww.trackalacker.com" }

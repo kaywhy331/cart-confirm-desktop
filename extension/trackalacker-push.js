@@ -273,6 +273,38 @@
     }
   }
 
+  function numericIdentifier(value) {
+    const text = String(value || "").trim();
+    return /^\d{1,20}$/.test(text) ? text : "";
+  }
+
+  function trackalackerSignalIdentity(value) {
+    try {
+      const url = new URL(String(value || ""), TRACKALACKER_ROOT_URL);
+      const host = url.hostname.toLowerCase();
+      if (
+        url.protocol !== "https:"
+        || url.username
+        || url.password
+        || !["trackalacker.com", "www.trackalacker.com"].includes(host)
+      ) return Object.freeze({ sourceProductId: "", listingId: "" });
+      const listingId = numericIdentifier(
+        url.pathname.match(/\/listings\/(\d{1,20})(?:\/|$)/i)?.[1]
+      );
+      const pathProductId = numericIdentifier(
+        url.pathname.match(/\/products\/showcase\/(\d{1,20})(?:\/|$)/i)?.[1]
+      );
+      // TrackaLacker's live notification links identify the followed product
+      // with a numeric utm_term. Extract only that bounded identifier. The
+      // signed notification_id and every other URL/query value are discarded
+      // here and never enter the extension queue or desktop envelope.
+      const sourceProductId = numericIdentifier(url.searchParams.get("utm_term")) || pathProductId;
+      return Object.freeze({ sourceProductId, listingId });
+    } catch {
+      return Object.freeze({ sourceProductId: "", listingId: "" });
+    }
+  }
+
   function pushNotificationData(value) {
     if (!value || typeof value !== "object" || Array.isArray(value)) return null;
     const nested = value.data && typeof value.data === "object" && !Array.isArray(value.data) ? value.data : {};
@@ -306,11 +338,16 @@
     });
   }
 
-  function signalEnvelopeFromPush(value, signalId, receivedAt, extensionId) {
+  function signalEnvelopeFromPush(value, signalId, receivedAt, extensionId, preservedIdentity = {}) {
     const notification = pushNotificationData(value);
     const id = cleanText(signalId, 180);
     const timestamp = new Date(receivedAt || "");
     if (!notification || !/^[A-Za-z0-9:._-]{8,180}$/.test(id) || Number.isNaN(timestamp.getTime())) return null;
+    const urlIdentity = trackalackerSignalIdentity(notification.url);
+    const sourceProductId = urlIdentity.sourceProductId
+      || numericIdentifier(preservedIdentity.sourceProductId);
+    const sourceListingId = urlIdentity.listingId
+      || numericIdentifier(preservedIdentity.listingId);
     return {
       schemaVersion: 1,
       signalId: id,
@@ -328,7 +365,9 @@
       notification: {
         title: notification.title,
         body: notification.body,
-        textElements: []
+        textElements: [],
+        sourceProductId,
+        sourceListingId
       }
     };
   }
@@ -359,6 +398,7 @@
     safeRegistrationDiagnostic,
     signalEnvelopeFromPush,
     subscriptionFingerprint,
+    trackalackerSignalIdentity,
     trackalackerUrl,
     vapidApplicationServerKey
   });

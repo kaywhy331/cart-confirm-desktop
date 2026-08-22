@@ -90,6 +90,55 @@ test("TrackaLacker Walmart, Amazon, and Target notification formats parse determ
   assert.equal(target.msrpStatus, "at_msrp");
 });
 
+test("live sentence-style alerts extract the exact product name and retailer", () => {
+  const productName = "Riftbound League of Legends Rumble Champion Deck";
+  const bodySentence = parseTrackalackerNotification(envelope({
+    notification: {
+      title: "IN STOCK at Amazon!",
+      body: `${productName} is in stock at Amazon\nin stock for $21.86 (Above MSRP)`,
+      textElements: []
+    }
+  }));
+  assert.equal(bodySentence.parseState, "parsed");
+  assert.equal(bodySentence.eventType, "in_stock");
+  assert.equal(bodySentence.retailer, "amazon");
+  assert.equal(bodySentence.productNameRaw, productName);
+  assert.equal(bodySentence.price, 21.86);
+
+  const titleSentence = parseTrackalackerNotification(envelope({
+    notification: {
+      title: `${productName} is in stock at Amazon`,
+      body: "in stock for $21.86 (Above MSRP)",
+      textElements: []
+    }
+  }));
+  assert.equal(titleSentence.parseState, "parsed");
+  assert.equal(titleSentence.retailer, "amazon");
+  assert.equal(titleSentence.productNameRaw, productName);
+});
+
+test("a sanitized TrackaLacker identity can resolve an offer-only notification", () => {
+  const parsed = parseTrackalackerNotification(envelope({
+    notification: {
+      title: "IN STOCK at Walmart!",
+      body: "in stock for $169.99 (~ MSRP)",
+      textElements: [],
+      sourceProductId: "12345",
+      sourceListingId: "287632"
+    }
+  }));
+  assert.equal(parsed.parseState, "parsed");
+  assert.equal(parsed.productNameRaw, "");
+  assert.equal(parsed.sourceProductId, "12345");
+  assert.equal(parsed.sourceListingId, "287632");
+  const resolved = resolveTrackalackerSignal(parsed, buildTrackalackerSignalIndex(mappingState()), [], {
+    sourceProductId: parsed.sourceProductId,
+    listingId: parsed.sourceListingId
+  });
+  assert.equal(resolved.state, "matched");
+  assert.equal(resolved.matchMethod, "source-product-retailer");
+});
+
 test("the bridge rejects unrelated applications, domains, transports, and malformed envelopes", () => {
   assert.throws(() => validateTrackalackerSignalEnvelope(envelope({
     source: { ...envelope().source, applicationName: "Microsoft Teams", applicationId: "Teams" }

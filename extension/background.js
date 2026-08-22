@@ -162,7 +162,10 @@ function normalizeTrackalackerPushQueue(value) {
     const sanitized = TrackalackerPush.signalEnvelopeFromPush({
       title: entry.notification?.title,
       body: entry.notification?.body
-    }, entry.signalId, entry.source?.receivedAt, chrome.runtime.id);
+    }, entry.signalId, entry.source?.receivedAt, chrome.runtime.id, {
+      sourceProductId: entry.notification?.sourceProductId,
+      listingId: entry.notification?.sourceListingId
+    });
     if (sanitized) output.push(sanitized);
   }
   return output;
