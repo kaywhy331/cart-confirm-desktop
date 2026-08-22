@@ -475,6 +475,14 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   assert.equal(doc.getElementById("readinessEnabled").textContent, "1 / 1");
   assert.equal(doc.getElementById("readinessExposure").textContent, "$40");
   assert.match(doc.getElementById("readinessSummary").textContent, /1 add-only/);
+  assert.equal(doc.querySelector(".signal-audit-details").open, true, "received TrackaLacker alerts are visible by default");
+  assert.match(doc.getElementById("signalBridgeRecent").textContent, /No TrackaLacker Web Push received yet/);
+  assert.match(doc.getElementById("signalList").textContent, /No actionable restock signals yet/);
+  assert.equal(
+    window.getComputedStyle(doc.getElementById("readinessPanel")).position,
+    "static",
+    "run readiness must scroll in normal document flow instead of covering later monitor cards"
+  );
   assert.equal(doc.getElementById("catalogPanelBody").hidden, true, "secondary catalog setup starts collapsed");
   assert.equal(doc.getElementById("itemDefaultsPanelBody").hidden, true, "secondary defaults start collapsed");
   doc.getElementById("catalogLauncherButton").click();
@@ -1037,6 +1045,19 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
     subscriptionPresent: false,
     mappingCount: 0,
     pendingSignals: 0,
+    lastNotificationAt: "2026-08-22T01:00:00.000Z",
+    lastDeliveryAt: "2026-08-22T01:00:01.000Z",
+    recentSignals: [{
+      productNameRaw: "TrackaLacker browser test",
+      missionDecision: "test_signal",
+      retailer: "",
+      price: null,
+      strategyName: "",
+      matchMethod: "none",
+      occurrenceCount: 1,
+      receivedAt: "2026-08-22T01:00:00.000Z",
+      reason: "TrackaLacker test notifications are dry-run only."
+    }],
     latency: {}
   };
   pushUpdate(awaitingBridge);
@@ -1045,6 +1066,8 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   assert.equal(doc.getElementById("signalBridgePermissionButton").textContent, "Connect TrackaLacker push");
   assert.equal(doc.getElementById("signalBridgePermissionButton").disabled, false);
   assert.equal(doc.getElementById("signalBridgeDeliveryTestButton").disabled, true);
+  assert.match(doc.getElementById("signalBridgeRecent").textContent, /TrackaLacker browser test/);
+  assert.match(doc.getElementById("signalBridgeMetrics").textContent, /app delivery/);
   doc.getElementById("signalBridgePermissionButton").click();
   await new Promise((resolve) => setTimeout(resolve, 10));
   assert.equal(signalBridgePermissionCalls, 1);

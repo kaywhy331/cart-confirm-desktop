@@ -1669,9 +1669,7 @@ button:disabled:hover { transform: none; }
 
 /* Monitor column */
 .readiness-panel {
-  position: sticky;
-  top: 12px;
-  z-index: 4;
+  position: static;
   border-color: rgba(125, 211, 252, 0.28);
 }
 .readiness-heading { align-items: center; margin-bottom: 9px; }
@@ -1812,7 +1810,6 @@ footer {
 
 @media (max-width: 1060px) {
   .layout { grid-template-columns: 1fr; }
-  .readiness-panel { position: static; }
   .event-list { max-height: 300px; }
   .mission-toolbar { grid-template-columns: minmax(170px, 1fr) repeat(3, minmax(110px, auto)) auto; }
   .mission-filter-count { grid-column: 1 / -1; }
