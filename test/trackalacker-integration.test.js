@@ -52,11 +52,11 @@ test("followed-product scans are opened and confirmed by the extension's own Chr
   assert.match(background, /ensureTrackalackerImportPage\(cached\)/);
 });
 
-test("the crawler is sequential, bounded, retryable, and reports progress before mutating missions", () => {
+test("the crawler supports large libraries while remaining sequential, bounded, and retryable", () => {
   const content = fs.readFileSync(path.join(root, "extension", "trackalacker-ingest.js"), "utf8");
   const background = fs.readFileSync(path.join(root, "extension", "background.js"), "utf8");
-  assert.match(content, /MAX_PRODUCTS = 500/);
-  assert.match(content, /MAX_PAGES = 50/);
+  assert.match(content, /MAX_PRODUCTS = 10_000/);
+  assert.match(content, /MAX_PAGES = 500/);
   assert.match(content, /MAX_HISTORY_ENTRIES = 50/);
   assert.match(content, /for \(const summary of inventory\.items\)/);
   assert.match(content, /for \(const listing of product\.listings\)/);

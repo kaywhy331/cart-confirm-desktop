@@ -3,6 +3,9 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const {
+  MAX_TRACKALACKER_ITEMS,
+  MAX_TRACKALACKER_PAGES,
+  TRACKALACKER_IMPORT_TTL_MS,
   acceptTrackalackerCapture,
   acceptTrackalackerCaptureFromNormalizedState,
   beginTrackalackerImport,
@@ -152,6 +155,34 @@ test("TrackaLacker captures are session-bound, bounded, normalized, and persiste
   const mismatched = capturedItem();
   mismatched.stores[0].historyUrl = "https://www.trackalacker.com/products/showcase/other-product/listings/301/other-product";
   assert.equal(normalizeTrackalackerItem(mismatched).stores.some((store) => store.retailer === "target"), false);
+});
+
+test("a 736-product followed library survives normalization and scan progress intact", () => {
+  const items = Array.from({ length: 736 }, (_, index) => ({
+    sourceProductId: String(900_000 + index),
+    sourceUrl: `https://www.trackalacker.com/products/showcase/followed-item-${index + 1}`,
+    title: `Followed item ${index + 1}`,
+    stores: [],
+    capturedAt: "2026-08-20T20:01:00Z"
+  }));
+  const normalized = normalizeTrackalackerState({ version: 3, items, stagingItems: [] }, NOW);
+  assert.equal(normalized.items.length, items.length);
+  assert.ok(MAX_TRACKALACKER_ITEMS > items.length);
+  assert.ok(MAX_TRACKALACKER_PAGES >= 37);
+  assert.ok(TRACKALACKER_IMPORT_TTL_MS >= 24 * 60 * 60_000);
+
+  let scanning = beginTrackalackerImport(normalized, { id: "import-large", now: NOW });
+  scanning = acceptTrackalackerCapture(scanning, {
+    importId: "import-large",
+    phase: "inventory",
+    page: 37,
+    pages: 37,
+    discovered: items.length,
+    message: "Found 736 followed products."
+  }, NOW + 1_000).state;
+  assert.equal(scanning.activeImport.discovered, items.length);
+  assert.equal(scanning.activeImport.page, 37);
+  assert.equal(scanning.activeImport.pages, 37);
 });
 
 test("mission planning groups retailer toggles under the product and enables only store-specific trusted history", () => {

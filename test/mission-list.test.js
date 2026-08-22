@@ -51,8 +51,8 @@ test("selection is deduplicated, ignores unknown IDs, and follows mission order"
   assert.throws(() => formatMissionList([]), /Select at least one mission/);
 });
 
-test("copy and export retain all 100 missions without accepting a 101st", () => {
-  const missions = Array.from({ length: MAX_LIST_ITEMS + 1 }, (_, index) => ({
+test("copy and export retain every selected mission without a fixed list limit", () => {
+  const missions = Array.from({ length: 2_208 }, (_, index) => ({
     id: `target:${1011209000 + index}`,
     retailer: "target",
     sku: String(1011209000 + index),
@@ -61,8 +61,8 @@ test("copy and export retain all 100 missions without accepting a 101st", () => 
     productUrl: `https://www.target.com/p/item-${index}/-/A-${1011209000 + index}`
   }));
   const selected = selectedMissionProducts(missions, missions.map((mission) => mission.id));
-  assert.equal(MAX_LIST_ITEMS, 100);
-  assert.equal(selected.length, 100);
-  assert.equal(selected.at(-1).id, missions[99].id);
-  assert.equal(formatMissionList(missions).split("\n\n").length, 100);
+  assert.equal(Number.isFinite(MAX_LIST_ITEMS), false);
+  assert.equal(selected.length, missions.length);
+  assert.equal(selected.at(-1).id, missions.at(-1).id);
+  assert.equal(formatMissionList(missions).split("\n\n").length, missions.length);
 });

@@ -4,7 +4,6 @@ const ConfigProfiles = globalThis.CartConfirmConfigProfiles;
 const ItemDefaults = globalThis.CartConfirmItemDefaults;
 const ItemMissions = globalThis.ItemMissions;
 const SignalsReadiness = globalThis.CartConfirmSignalsReadiness;
-const MAX_MISSIONS = 100;
 const elements = {
   autopilotToggle: document.getElementById("autopilotToggle"),
   autopilotState: document.getElementById("autopilotState"),
@@ -2171,7 +2170,7 @@ function bulkImportSummaryText(summary = {}) {
   if (summary.needsPrice) parts.push(`${summary.needsPrice} left Off pending price approval`);
   if (summary.duplicates) parts.push(`${summary.duplicates} duplicate${summary.duplicates === 1 ? "" : "s"} skipped`);
   if (summary.invalid) parts.push(`${summary.invalid} invalid line${summary.invalid === 1 ? "" : "s"}`);
-  if (summary.overCapacity) parts.push(`${summary.overCapacity} over the ${MAX_MISSIONS}-store-option safety limit`);
+  if (summary.overCapacity) parts.push(`${summary.overCapacity} could not be added in this import batch`);
   return parts.join(" · ") || "No product URLs were found.";
 }
 
@@ -3234,7 +3233,7 @@ async function addSelectedTrackalackerMissions() {
     if (summary.ready) notes.push(`${summary.ready} store option${summary.ready === 1 ? "" : "s"} ready from normal price history`);
     if (summary.needsReview) notes.push(`${summary.needsReview} left Off for cap review`);
     if (summary.duplicates) notes.push(`${summary.duplicates} already in Items`);
-    if (summary.overCapacity) notes.push(`${summary.overCapacity} over the ${MAX_MISSIONS}-store-option limit`);
+    if (summary.overCapacity) notes.push(`${summary.overCapacity} could not be added in this import batch`);
     if (summary.missing) notes.push(`${summary.missing} unavailable`);
     setMessage(
       summary.importedStores
@@ -3310,7 +3309,7 @@ async function addSelectedCatalogMissions() {
     const summary = result.summary || {};
     const extras = [];
     if (summary.duplicates) extras.push(`${summary.duplicates} duplicate${summary.duplicates === 1 ? "" : "s"} skipped`);
-    if (summary.overCapacity) extras.push(`${summary.overCapacity} over the ${MAX_MISSIONS}-store-option safety limit`);
+    if (summary.overCapacity) extras.push(`${summary.overCapacity} could not be added in this import batch`);
     if (summary.missing) extras.push(`${summary.missing} no longer available`);
     if (summary.ready) extras.push(`${summary.ready} ready with approved MSRP`);
     if (summary.needsPrice) extras.push(`${summary.needsPrice} left Off pending price approval`);

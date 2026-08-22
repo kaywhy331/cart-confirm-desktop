@@ -2,7 +2,6 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { MAX_PRODUCTS } = require("../lib/core");
 const {
   MAX_OPEN_REQUESTS,
   chooseReusableTab,
@@ -35,12 +34,12 @@ test("only explicit background requests keep their claimed tab inactive", () => 
 });
 
 test("the browser drains the full 100-mission request batch", () => {
-  const requests = Array.from({ length: MAX_PRODUCTS + 1 }, (_, index) => ({
+  const requests = Array.from({ length: MAX_OPEN_REQUESTS + 1 }, (_, index) => ({
     id: index,
     dedicatedTab: index % 2 === 0
   }));
   const { dedicated, ordinary } = partitionOpenRequests(requests);
-  assert.equal(MAX_OPEN_REQUESTS, MAX_PRODUCTS);
+  assert.equal(MAX_OPEN_REQUESTS, 100, "the browser processes a large plan in bounded polling batches");
   assert.equal(dedicated.length + ordinary.length, 100);
   assert.equal([...dedicated, ...ordinary].some((request) => request.id === 100), false);
 });

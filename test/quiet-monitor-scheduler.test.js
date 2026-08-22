@@ -2,7 +2,6 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { MAX_PRODUCTS } = require("../lib/core");
 const {
   QUIET_GLOBAL_START_GAP_MS,
   QUIET_INTERVAL_MAX_MS,
@@ -18,6 +17,8 @@ const {
   reconcileQuietMonitorSchedule,
   resetQuietMonitorSchedule
 } = require("../lib/quiet-monitor-scheduler");
+
+const MISSION_COUNT = 100;
 
 function seededRandom(seed = 1) {
   let state = seed >>> 0;
@@ -38,9 +39,9 @@ function runImmediateRamp(seed) {
   const randomInt = seededRandom(seed);
   const state = createQuietMonitorSchedule();
   const startAt = 1_000_000;
-  reconcileQuietMonitorSchedule(state, products(MAX_PRODUCTS), { now: startAt, randomInt, persistedStarts: {} });
+  reconcileQuietMonitorSchedule(state, products(MISSION_COUNT), { now: startAt, randomInt, persistedStarts: {} });
   const starts = [];
-  for (let now = startAt; starts.length < MAX_PRODUCTS; now += 250) {
+  for (let now = startAt; starts.length < MISSION_COUNT; now += 250) {
     const candidate = nextQuietMonitorCandidate(state, { now, blockedUntil: new Map() });
     if (!candidate) continue;
     const started = markQuietMonitorStarted(state, candidate.productId, { now, randomInt });
@@ -52,11 +53,11 @@ function runImmediateRamp(seed) {
 
 test("the initial 100-product ramp is shuffled, complete, and paced", () => {
   const starts = runImmediateRamp(42);
-  assert.equal(new Set(starts.map((entry) => entry.productId)).size, MAX_PRODUCTS);
+  assert.equal(new Set(starts.map((entry) => entry.productId)).size, MISSION_COUNT);
   assert.deepEqual(starts.map((entry) => entry.productId), runImmediateRamp(42).map((entry) => entry.productId));
-  assert.notDeepEqual(starts.map((entry) => entry.productId), products(MAX_PRODUCTS).map((entry) => entry.id));
+  assert.notDeepEqual(starts.map((entry) => entry.productId), products(MISSION_COUNT).map((entry) => entry.id));
   assert.equal(starts[0].startedAt, 1_000_000);
-  assert.ok(starts.at(-1).startedAt - starts[0].startedAt <= (MAX_PRODUCTS - 1) * QUIET_STORE_START_GAP_MS);
+  assert.ok(starts.at(-1).startedAt - starts[0].startedAt <= (MISSION_COUNT - 1) * QUIET_STORE_START_GAP_MS);
   for (let index = 1; index < starts.length; index += 1) {
     assert.ok(starts[index].startedAt - starts[index - 1].startedAt >= QUIET_STORE_START_GAP_MS);
   }
@@ -106,7 +107,7 @@ test("per-product deadlines include both exact 45 and 90 second boundaries", () 
 test("100 same-store products remain serviceable when every interval draws 45 seconds", () => {
   const randomInt = (minimum) => minimum;
   const state = createQuietMonitorSchedule();
-  const list = products(MAX_PRODUCTS);
+  const list = products(MISSION_COUNT);
   const startAt = 1_000_000;
   const starts = new Map(list.map((product) => [product.id, []]));
   reconcileQuietMonitorSchedule(state, list, { now: startAt, randomInt, persistedStarts: {} });

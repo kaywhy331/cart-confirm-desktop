@@ -11,7 +11,6 @@ const {
   planCatalogMissionImport,
   planWalmartPrepCandidates
 } = require("../lib/catalog");
-const { MAX_PRODUCTS } = require("../lib/core");
 
 const NOW = Date.parse("2026-08-11T12:00:00Z");
 
@@ -118,9 +117,10 @@ test("persisted catalog data is revalidated and expired searches are not restore
   assert.equal(restored.items[0].productUrl, "https://www.target.com/p/box/-/A-1011209279");
 });
 
-test("catalog import reports every selection beyond the 100-mission capacity", () => {
+test("catalog import retains every selected result without a global mission capacity", () => {
   const state = activeState();
-  state.items = Array.from({ length: MAX_PRODUCTS + 2 }, (_, index) => {
+  const itemCount = 150;
+  state.items = Array.from({ length: itemCount }, (_, index) => {
     const sku = String(1011209000 + index);
     return {
       id: `target:${sku}`,
@@ -135,15 +135,15 @@ test("catalog import reports every selection beyond the 100-mission capacity", (
     };
   });
   const plan = planCatalogMissionImport(state, state.items.map((item) => item.id));
-  assert.equal(plan.additions.length, MAX_PRODUCTS);
+  assert.equal(plan.additions.length, itemCount);
   assert.deepEqual(plan.summary, {
-    selected: MAX_PRODUCTS + 2,
-    imported: MAX_PRODUCTS,
+    selected: itemCount,
+    imported: itemCount,
     ready: 0,
-    needsPrice: MAX_PRODUCTS,
+    needsPrice: itemCount,
     duplicates: 0,
     missing: 0,
-    overCapacity: 2
+    overCapacity: 0
   });
 });
 

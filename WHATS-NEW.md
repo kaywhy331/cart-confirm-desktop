@@ -7,6 +7,7 @@ about what the user will notice — one bullet per change, no internals.
 Publishing fails if the version being released has no section here.
 
 ## 3.8.13
+- Item plans no longer stop at 100 store options, and TrackaLacker scans can synchronize beyond 500 followed products while retaining every supported retailer route
 - Exact mapped TrackaLacker alerts received while Signals is off or monitoring is stopped now explain that run state instead of incorrectly reporting a missing mission
 - Signal strategies now clearly remind you that saving a rule does not start Signals and that every app restart or update requires Start Signals before fresh alerts can act
 - Recorded alerts remain non-replayable for purchase safety; after Signals is ON, the next fresh exact match can create its mission and apply the configured strategy
