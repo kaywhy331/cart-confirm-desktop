@@ -59,7 +59,7 @@ function fixture() {
     items: [{
       id: "trackalacker:12345",
       sourceProductId: "12345",
-      sourceUrl: "https://www.trackalacker.com/products/showcase/12345",
+      sourceUrl: "https://www.trackalacker.com/products/showcase/pokemon-perfect-order-booster-display-box",
       title: product.title,
       stores: [{
         id: product.id,
@@ -220,6 +220,65 @@ test("a sanitized product ID routes a generic live push without retaining its UR
   assert.equal(result.record.productNameRaw, "Pokemon Perfect Order Booster Display Box");
   assert.match(result.resolution.canonicalSignal.keywordText, /Pokemon Perfect Order Booster Display Box/);
   assert.equal(result.shouldOpen, true);
+});
+
+test("a generic live push routes by its sanitized product slug or exact retailer SKU", () => {
+  const source = {
+    transport: "chrome_extension_web_push",
+    applicationName: "CartCollect Chrome extension",
+    applicationId: "kmpoonjaidgnldeobaaopfhfhlalclhd"
+  };
+  const slugInput = envelope({
+    signalId: "push:trackalacker:slug-live",
+    source: { ...source, notificationId: "push:trackalacker:slug-live" },
+    notification: {
+      body: "in stock for $169.99 (~ MSRP)",
+      sourceProductSlug: "pokemon-perfect-order-booster-display-box"
+    }
+  });
+  const slugResult = process(slugInput, {
+    validation: { allowedTransports: ["chrome_extension_web_push"] }
+  });
+  assert.equal(slugResult.resolution.matchMethod, "source-product-slug-retailer");
+  assert.equal(slugResult.record.productNameRaw, "Pokemon Perfect Order Booster Display Box");
+  assert.equal(slugResult.shouldOpen, true);
+
+  const skuInput = envelope({
+    signalId: "push:trackalacker:sku-live",
+    source: { ...source, notificationId: "push:trackalacker:sku-live" },
+    notification: {
+      body: "in stock for $169.99 (~ MSRP)",
+      sourceRetailer: "walmart",
+      sourceRetailerSku: "19376602103"
+    }
+  });
+  const skuResult = process(skuInput, {
+    validation: { allowedTransports: ["chrome_extension_web_push"] }
+  });
+  assert.equal(skuResult.resolution.matchMethod, "retailer-sku");
+  assert.equal(skuResult.shouldOpen, true);
+});
+
+test("a recognized generic alert without safe identity is unresolved rather than unsupported", () => {
+  const input = envelope({
+    signalId: "push:trackalacker:no-identity",
+    source: {
+      transport: "chrome_extension_web_push",
+      notificationId: "push:trackalacker:no-identity",
+      applicationName: "CartCollect Chrome extension",
+      applicationId: "kmpoonjaidgnldeobaaopfhfhlalclhd"
+    },
+    notification: {
+      body: "in stock for $169.99 (~ MSRP)"
+    }
+  });
+  const result = process(input, {
+    validation: { allowedTransports: ["chrome_extension_web_push"] }
+  });
+  assert.equal(result.parsed.parseState, "parsed");
+  assert.equal(result.record.missionDecision, "unresolved_product");
+  assert.match(result.record.reason, /did not expose a safe product identity/);
+  assert.equal(result.shouldOpen, false);
 });
 
 test("mission rejection is an acknowledged bridge delivery, not an infrastructure error", () => {

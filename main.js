@@ -714,6 +714,10 @@ function trackalackerPushErrorMessage(code, httpStatus) {
     case "incomplete-subscription":
     case "subscription-fingerprint-failed":
       return "Chrome could not create a complete TrackaLacker-compatible Web Push subscription.";
+    case "push-silent-migration-failed":
+      return "Chrome could not migrate the companion to silent push. Reload the bundled extension, then reconnect from a signed-in TrackaLacker tab.";
+    case "silent-push-unavailable":
+      return "Chrome kept a visible companion subscription, so duplicate TrackaLacker popups may continue. Update Chrome, reload the extension, and reconnect.";
     case "page-bridge-failed":
       return "The signed-in TrackaLacker page could not run the device-registration request. Reload that page and retry.";
     case "network-error":
@@ -2633,6 +2637,8 @@ function handleTrackalackerPushStatusRequest(input = {}) {
     "push-subscription-read-failed",
     "subscription-key-mismatch",
     "push-subscribe-failed",
+    "push-silent-migration-failed",
+    "silent-push-unavailable",
     "push-enrollment-failed",
     "missing-subscription",
     "incomplete-subscription",
@@ -2640,6 +2646,7 @@ function handleTrackalackerPushStatusRequest(input = {}) {
     "page-bridge-failed",
     "network-error",
     "http-error",
+    "notification-display-failed",
     "push-payload-unreadable",
     "signal-delivery-rejected",
     "signal-delivery-http",

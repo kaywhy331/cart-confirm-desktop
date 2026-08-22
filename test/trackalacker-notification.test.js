@@ -139,6 +139,54 @@ test("a sanitized TrackaLacker identity can resolve an offer-only notification",
   assert.equal(resolved.matchMethod, "source-product-retailer");
 });
 
+test("a generic live alert resolves by an exact product slug or retailer SKU and fails closed across stores", () => {
+  const state = mappingState();
+  state.items[0].sourceUrl = "https://www.trackalacker.com/products/showcase/pokemon-perfect-order-booster-display-box";
+  const index = buildTrackalackerSignalIndex(state);
+  const slugParsed = parseTrackalackerNotification(envelope({
+    notification: {
+      title: "IN STOCK at Walmart!",
+      body: "in stock for $169.99 (~ MSRP)",
+      textElements: [],
+      sourceProductSlug: "pokemon-perfect-order-booster-display-box"
+    }
+  }));
+  assert.equal(slugParsed.parseState, "parsed");
+  assert.equal(resolveTrackalackerSignal(slugParsed, index, [], {
+    sourceProductSlug: slugParsed.sourceProductSlug
+  }).matchMethod, "source-product-slug-retailer");
+
+  const skuParsed = parseTrackalackerNotification(envelope({
+    notification: {
+      title: "IN STOCK at Walmart!",
+      body: "in stock for $169.99 (~ MSRP)",
+      textElements: [],
+      sourceRetailer: "walmart",
+      sourceRetailerSku: "19376602103"
+    }
+  }));
+  assert.equal(skuParsed.parseState, "parsed");
+  assert.equal(resolveTrackalackerSignal(skuParsed, index, [], {
+    sourceRetailer: skuParsed.sourceRetailer,
+    sourceRetailerSku: skuParsed.sourceRetailerSku
+  }).matchMethod, "retailer-sku");
+
+  const wrongStore = parseTrackalackerNotification(envelope({
+    notification: {
+      title: "IN STOCK at Target!",
+      body: "in stock for $29.99 (At MSRP)",
+      textElements: [],
+      sourceRetailer: "walmart",
+      sourceRetailerSku: "19376602103"
+    }
+  }));
+  assert.equal(wrongStore.parseState, "parsed");
+  assert.equal(resolveTrackalackerSignal(wrongStore, index, [], {
+    sourceRetailer: wrongStore.sourceRetailer,
+    sourceRetailerSku: wrongStore.sourceRetailerSku
+  }).state, "unresolved");
+});
+
 test("the bridge rejects unrelated applications, domains, transports, and malformed envelopes", () => {
   assert.throws(() => validateTrackalackerSignalEnvelope(envelope({
     source: { ...envelope().source, applicationName: "Microsoft Teams", applicationId: "Teams" }

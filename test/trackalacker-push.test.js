@@ -5,16 +5,22 @@ const test = require("node:test");
 
 const {
   DEVICE_REGISTRATION_URL,
+  DEVICE_TOKEN_UPDATE_URL,
   applicationServerKeyMatches,
   deviceRegistrationPayload,
+  deviceTokenUpdatePayload,
+  ensureSilentPushSubscription,
   inspectPagePushSubscription,
   notificationPresentation,
   notificationUrl,
+  pushRequiresVisibleNotification,
   registerDeviceInPage,
   registrationOutcome,
+  retailerSignalIdentity,
   safeRegistrationDiagnostic,
   signalEnvelopeFromPush,
   trackalackerSignalIdentity,
+  updateDeviceTokenInPage,
   vapidApplicationServerKey
 } = require("../extension/trackalacker-push");
 
@@ -45,7 +51,98 @@ test("a real PushSubscription maps to the confirmed nested TrackaLacker device p
   });
 });
 
-test("extension Web Push preserves TrackaLacker's visible browser notification", () => {
+test("a visible extension subscription migrates to silent push and updates only its runtime token", async () => {
+  let unsubscribed = false;
+  let subscribeOptions = null;
+  let current = fakeSubscription({
+    endpoint: "https://push.example.invalid/subscriptions/old-device",
+    options: { applicationServerKey: vapidApplicationServerKey(), userVisibleOnly: true },
+    unsubscribe: async () => {
+      unsubscribed = true;
+      current = null;
+      return true;
+    }
+  });
+  const replacement = fakeSubscription({
+    endpoint: "https://push.example.invalid/subscriptions/new-device",
+    options: { applicationServerKey: vapidApplicationServerKey(), userVisibleOnly: false }
+  });
+  const migrated = await ensureSilentPushSubscription({
+    getSubscription: async () => current,
+    subscribe: async (options) => {
+      subscribeOptions = options;
+      current = replacement;
+      return replacement;
+    }
+  }, vapidApplicationServerKey());
+
+  assert.equal(unsubscribed, true);
+  assert.equal(subscribeOptions.userVisibleOnly, false);
+  assert.equal(migrated.ok, true);
+  assert.equal(migrated.silent, true);
+  assert.equal(migrated.subscription, replacement);
+  assert.equal(migrated.previousEndpoint, "https://push.example.invalid/subscriptions/old-device");
+
+  const update = deviceTokenUpdatePayload(migrated.previousEndpoint, migrated.subscription);
+  assert.equal(update.ok, true);
+  assert.deepEqual(update.payload, {
+    device: {
+      platform: "web",
+      old_endpoint: "https://push.example.invalid/subscriptions/old-device",
+      endpoint: "https://push.example.invalid/subscriptions/new-device",
+      p256dh: "AQIDBA==",
+      auth: "BQYHCA=="
+    }
+  });
+
+  let request = null;
+  const result = await updateDeviceTokenInPage(update.payload, {
+    document: { querySelector: () => ({ getAttribute: () => "runtime-csrf-value" }) },
+    navigator: { serviceWorker: { getRegistration: async () => null } },
+    fetch: async (url, options) => {
+      request = { url, options };
+      return { ok: true, status: 200, redirected: false };
+    }
+  });
+  assert.equal(request.url, DEVICE_TOKEN_UPDATE_URL);
+  assert.equal(request.options.method, "PATCH");
+  assert.equal(request.options.credentials, "include");
+  assert.equal(request.options.headers["X-CSRF-Token"], "runtime-csrf-value");
+  assert.deepEqual(JSON.parse(request.options.body), update.payload);
+  assert.deepEqual(result, {
+    ok: true,
+    duplicate: false,
+    status: 200,
+    code: "updated",
+    pageSubscriptionPresent: false
+  });
+});
+
+test("an existing silent extension subscription is reused without rotation", async () => {
+  let subscribed = false;
+  const subscription = fakeSubscription({
+    options: { applicationServerKey: vapidApplicationServerKey(), userVisibleOnly: false }
+  });
+  const result = await ensureSilentPushSubscription({
+    getSubscription: async () => subscription,
+    subscribe: async () => {
+      subscribed = true;
+      return null;
+    }
+  }, vapidApplicationServerKey());
+  assert.equal(result.ok, true);
+  assert.equal(result.silent, true);
+  assert.equal(result.subscription, subscription);
+  assert.equal(result.previousEndpoint, "");
+  assert.equal(subscribed, false);
+  assert.equal(pushRequiresVisibleNotification(subscription), false);
+  assert.equal(pushRequiresVisibleNotification(fakeSubscription({
+    options: { applicationServerKey: vapidApplicationServerKey(), userVisibleOnly: true }
+  })), true);
+  assert.equal(pushRequiresVisibleNotification(null), true);
+});
+
+test("legacy visible-only push retains a safe fallback notification", () => {
   const presentation = notificationPresentation({
     title: "IN STOCK at Walmart!",
     body: "Example product\nin stock for $19.99 (~ MSRP)",
@@ -240,6 +337,9 @@ test("a Web Push payload is reduced to the existing TrackaLacker signal contract
   assert.equal(envelope.notification.body.includes("Example product"), true);
   assert.equal(envelope.notification.sourceProductId, "12345");
   assert.equal(envelope.notification.sourceListingId, "287632");
+  assert.equal(envelope.notification.sourceProductSlug, "example");
+  assert.equal(envelope.notification.sourceRetailer, "");
+  assert.equal(envelope.notification.sourceRetailerSku, "");
   assert.equal(JSON.stringify(envelope).includes("not-forwarded"), false);
   assert.equal(JSON.stringify(envelope).includes("DO_NOT_FORWARD"), false);
   assert.equal(JSON.stringify(envelope).includes("notification_id"), false);
@@ -252,15 +352,56 @@ test("signal identity keeps only numeric IDs from a validated TrackaLacker URL",
     "https://www.trackalacker.com/products/showcase/example/listings/287632/item?notification_id=PRIVATE_VALUE&utm_term=12345"
   ), {
     sourceProductId: "12345",
-    listingId: "287632"
+    listingId: "287632",
+    productSlug: "example"
   });
   assert.deepEqual(trackalackerSignalIdentity(
     "https://example.com/products/showcase/12345/listings/287632/item?utm_term=12345"
   ), {
     sourceProductId: "",
-    listingId: ""
+    listingId: "",
+    productSlug: ""
   });
   assert.equal(JSON.stringify(trackalackerSignalIdentity(
     "https://www.trackalacker.com/products/showcase/example?notification_id=PRIVATE_VALUE&utm_term=not-numeric"
   )).includes("PRIVATE_VALUE"), false);
+  assert.deepEqual(trackalackerSignalIdentity(
+    "https://www.trackalacker.com:444/products/showcase/example?utm_term=12345"
+  ), {
+    sourceProductId: "",
+    listingId: "",
+    productSlug: ""
+  });
+});
+
+test("generic live pushes retain only an exact public product slug or retailer SKU", () => {
+  const slugEnvelope = signalEnvelopeFromPush({
+    title: "IN STOCK at Target!",
+    body: "in stock for $29.99 (At MSRP)",
+    url: "https://www.trackalacker.com/products/showcase/pokemon-30th-celebration-elite-trainer-box?notification_id=RUNTIME_ONLY"
+  }, "push:trackalacker:slug-identity", "2026-08-21T12:00:00.000Z", "extension-id");
+  assert.equal(slugEnvelope.notification.sourceProductSlug, "pokemon-30th-celebration-elite-trainer-box");
+  assert.equal(slugEnvelope.notification.sourceProductId, "");
+  assert.equal(JSON.stringify(slugEnvelope).includes("RUNTIME_ONLY"), false);
+  assert.equal(JSON.stringify(slugEnvelope).includes("notification_id"), false);
+  assert.equal(JSON.stringify(slugEnvelope).includes("https://"), false);
+
+  const retailerEnvelope = signalEnvelopeFromPush({
+    title: "IN STOCK at Target!",
+    body: "in stock for $29.99 (At MSRP)",
+    data: {
+      url: "https://www.target.com/p/pokemon-box/-/A-1010892076?preselect=1010892076#tracking"
+    }
+  }, "push:trackalacker:sku-identity", "2026-08-21T12:00:00.000Z", "extension-id");
+  assert.equal(retailerEnvelope.notification.sourceRetailer, "target");
+  assert.equal(retailerEnvelope.notification.sourceRetailerSku, "1010892076");
+  assert.equal(JSON.stringify(retailerEnvelope).includes("target.com"), false);
+  assert.deepEqual(retailerSignalIdentity("https://www.walmart.com/ip/item/20754418655?athbdg=tracking"), {
+    retailer: "walmart",
+    sku: "20754418655"
+  });
+  assert.deepEqual(retailerSignalIdentity("https://example.com/p/-/A-1010892076"), {
+    retailer: "",
+    sku: ""
+  });
 });
