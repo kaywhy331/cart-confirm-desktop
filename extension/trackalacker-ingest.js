@@ -8,8 +8,11 @@
 })(typeof globalThis !== "undefined" ? globalThis : this, () => {
   const FOLLOWED_URL = "https://www.trackalacker.com/products/followed";
   const SUPPORTED_RETAILERS = Object.freeze(["target", "walmart", "amazon"]);
-  const MAX_PAGES = 50;
-  const MAX_PRODUCTS = 500;
+  // These are ingestion-abuse guards, not CartCollect plan limits. They keep
+  // a malformed followed-products response finite while allowing large
+  // personal TrackaLacker libraries to synchronize in one sequential scan.
+  const MAX_PAGES = 500;
+  const MAX_PRODUCTS = 10_000;
   const MAX_LISTINGS = 24;
   const MAX_HISTORY_ENTRIES = 50;
   const FETCH_RETRIES = 2;

@@ -23,3 +23,14 @@ test("the signal inbox deduplicates messages and sanitizes persisted Amazon acti
 test("invalid signal records fail closed", () => {
   assert.deepEqual(normalizeSignals([{ retailer: "other", sku: "x" }, null]), []);
 });
+
+test("the inbox retains an explicit Signals-off receipt state", () => {
+  const [signal] = normalizeSignals([{
+    id: "trackalacker:signals-off",
+    source: "trackalacker",
+    retailer: "amazon",
+    sku: "B0G3GN6Q72",
+    autoOpenState: "not-armed"
+  }]);
+  assert.equal(signal.autoOpenState, "not-armed");
+});

@@ -5,7 +5,6 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { MAX_PRODUCTS } = require("../lib/core");
 const {
   RUNTIME_STATE_VERSION,
   activateBlitzExecution,
@@ -40,12 +39,13 @@ test("legacy runtime state gains bounded quiet-monitor fields and future floors 
   assert.equal(normalized.quietLastStartedAt["amazon:B0ABC12345"], undefined);
 });
 
-test("runtime normalization preserves a full 100-mission release cohort", () => {
+test("runtime normalization preserves a 2,208-store-option release cohort", () => {
+  const cohortSize = 736 * 3;
   const participantProductIds = Array.from(
-    { length: MAX_PRODUCTS + 1 },
+    { length: cohortSize },
     (_, index) => `walmart:${200000000 + index}`
   );
-  const ownerProductId = participantProductIds[MAX_PRODUCTS - 1];
+  const ownerProductId = participantProductIds.at(-1);
   const normalized = normalizeRuntimeState({
     productExecutionContexts: {
       [ownerProductId]: {
@@ -71,10 +71,10 @@ test("runtime normalization preserves a full 100-mission release cohort", () => 
       }
     }
   });
-  assert.equal(normalized.productExecutionContexts[ownerProductId].participantProductIds.length, 100);
-  assert.equal(normalized.queueCaptures["cohort-100"].participantProductIds.length, 100);
+  assert.equal(normalized.productExecutionContexts[ownerProductId].participantProductIds.length, cohortSize);
+  assert.equal(normalized.queueCaptures["cohort-100"].participantProductIds.length, cohortSize);
   assert.equal(normalized.productExecutionContexts[ownerProductId].participantProductIds.at(-1), ownerProductId);
-  assert.equal(normalized.queueCaptures["cohort-100"].participantProductIds.includes(participantProductIds[100]), false);
+  assert.equal(normalized.queueCaptures["cohort-100"].participantProductIds.includes(participantProductIds[100]), true);
 });
 
 test("runtime receipts and overload deadlines survive a process restart", () => {

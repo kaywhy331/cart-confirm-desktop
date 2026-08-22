@@ -1049,10 +1049,6 @@ function appendMissionProducts(additions, message) {
   if (purchaseModeEnabled(settings)) {
     throw new Error("Stop Autopilot or Signals before adding items.");
   }
-  if (settings.products.length + additions.length > MAX_PRODUCTS) {
-    throw new Error(`An item plan can contain at most ${MAX_PRODUCTS} store options.`);
-  }
-
   const previousProducts = settings.products;
   settings = {
     ...settings,
@@ -1143,13 +1139,6 @@ function quickAddMissionRequest(input) {
       }
     };
   }
-  if (settings.products.length >= MAX_PRODUCTS) {
-    return {
-      statusCode: 409,
-      payload: { ok: false, reason: "mission-limit", error: `The item plan already contains ${MAX_PRODUCTS} store options.` }
-    };
-  }
-
   appendMissionProducts(
     [product],
     `${product.title || `${retailerLabel(product.retailer)} ${product.sku}`} was added from Chrome with ${product.action === "checkout" ? "the auto-buy" : "the selected"} item profile.`
@@ -2305,6 +2294,8 @@ function handleTrackalackerSignalRequest(envelope, idempotencyKey, options = {})
           ? "notified"
         : outcome.route?.state === "stale"
           ? "stale"
+          : outcome.record.missionDecision === "signals_not_armed"
+            ? "not-armed"
           : outcome.resolution.mission ? "disabled" : "new-product",
       note: outcome.record.reason
     });
@@ -4131,7 +4122,7 @@ function materializeWalmartPrepCandidate(candidate, transition) {
   if (!transition?.triggered || !settings.automationEnabled || settings.monitoringPaused) return false;
   if (settings.products.some((product) => product.id === candidate.id)) return false;
   const current = settings.walmartPrepCandidates.find((item) => item.id === candidate.id);
-  if (!current || settings.products.length >= MAX_PRODUCTS) return false;
+  if (!current) return false;
   settings = normalizeSettings({
     ...settings,
     products: [...settings.products, current],

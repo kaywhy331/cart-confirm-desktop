@@ -205,20 +205,41 @@ test("normalizes TrackaLacker push bridge controls and approved aliases", () => 
   }), /Signal dedupe window/);
 });
 
-test("accepts 100 store options and rejects a 101st", () => {
-  const products = Array.from({ length: MAX_PRODUCTS + 1 }, (_, index) => {
-    const sku = String(1011209000 + index);
-    return {
-      productUrl: `https://www.target.com/p/item-${index}/-/A-${sku}`,
-      sku,
+test("accepts 736 TrackaLacker items with three store options and no fixed plan limit", () => {
+  const products = Array.from({ length: 736 }, (_, index) => {
+    const itemId = `trackalacker:${index + 1}`;
+    const targetSku = String(1011209000 + index);
+    const walmartSku = String(17354420000 + index);
+    const amazonSku = `B0${String(index).padStart(8, "0")}`;
+    const shared = {
+      itemId,
+      title: `Followed item ${index + 1}`,
       maxPrice: 20,
       quantity: 1,
       action: "watch",
       fulfillmentMode: "shipping"
     };
-  });
-  assert.equal(normalizeSettings({ products: products.slice(0, MAX_PRODUCTS) }).products.length, 100);
-  assert.throws(() => normalizeSettings({ products }), /at most 100 store options/);
+    return [{
+      ...shared,
+      retailer: "target",
+      sku: targetSku,
+      productUrl: `https://www.target.com/p/item-${index}/-/A-${targetSku}`
+    }, {
+      ...shared,
+      retailer: "walmart",
+      sku: walmartSku,
+      productUrl: `https://www.walmart.com/ip/${walmartSku}`
+    }, {
+      ...shared,
+      retailer: "amazon",
+      sku: amazonSku,
+      productUrl: `https://www.amazon.com/dp/${amazonSku}`
+    }];
+  }).flat();
+  const normalized = normalizeSettings({ products });
+  assert.equal(Number.isFinite(MAX_PRODUCTS), false);
+  assert.equal(normalized.products.length, 736 * 3);
+  assert.equal(new Set(normalized.products.map((product) => product.itemId)).size, 736);
 });
 
 test("store options for one item require one shared purchase intent", () => {
