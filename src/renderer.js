@@ -4179,6 +4179,7 @@ function signalStateLabel(signal) {
   const labels = {
     historical: "History",
     "new-product": "New product",
+    "not-armed": "Signals off",
     disabled: "Recorded",
     notified: "Notified",
     stale: "Stale",
@@ -4261,7 +4262,9 @@ function buildSignalCard(signal) {
   identity.append(store, title);
   const badge = document.createElement("span");
   badge.className = `signal-match ${signal.desired ? "desired" : "new"}`;
-  badge.textContent = signal.desired ? "Desired" : "New";
+  badge.textContent = signal.autoOpenState === "not-armed"
+    ? "Signals off"
+    : signal.desired ? "Desired" : "New";
   top.append(identity, badge);
 
   const metadata = document.createElement("small");
@@ -4552,7 +4555,10 @@ function renderSignalStrategies(settings = {}) {
   elements.addDefaultSignalStrategyButton.title = armed
     ? `Turn off ${activeMode} after confirmation, then add the safe Notify catchall.`
     : "Create one bottom-priority catchall that only notifies and never opens a store page.";
-  const editSafety = "Store choices come from your current mission store options. Empty include keywords make a catchall rule. A strategy can narrow a mission, but never exceed that mission's action, quantity, price, fulfillment, or order-total authorization.";
+  const runSafety = settings.signalsEnabled
+    ? "Signals is ON; fresh exact matches can now evaluate these strategies."
+    : "Saving a strategy does not start Signals. After every app restart or update, choose Signals at the top and then Start Signals.";
+  const editSafety = `${runSafety} Store choices come from your current mission store options. Empty include keywords make a catchall rule. A strategy can narrow a mission, but never exceed that mission's action, quantity, price, fulfillment, or order-total authorization.`;
   elements.signalStrategyEditHint.textContent = armed
     ? `${activeMode} is running. Choose Add or Edit to turn off purchase actions after confirmation before changing these rules. ${editSafety}`
     : editSafety;

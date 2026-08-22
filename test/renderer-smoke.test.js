@@ -550,6 +550,8 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   assert.equal(doc.getElementById("signalStrategyCount").textContent, "Legacy mission actions");
   assert.equal(doc.getElementById("addDefaultSignalStrategyButton").hidden, false);
   assert.match(doc.getElementById("addDefaultSignalStrategyButton").textContent, /safe Notify catchall/);
+  assert.match(doc.getElementById("signalStrategyEditHint").textContent, /Saving a strategy does not start Signals/);
+  assert.match(doc.getElementById("signalStrategyEditHint").textContent, /After every app restart or update/);
   doc.getElementById("addSignalStrategyButton").click();
   assert.equal(doc.getElementById("signalStrategyDialog").hasAttribute("open"), true);
   const targetStoreChoice = doc.querySelector("#signalStrategyStores input[data-signal-store='target']");
@@ -1374,6 +1376,13 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   editCard.querySelector(".mission-cancel").click();
   assert.equal(doc.querySelector(".mission-edit-card"), null);
   assert.ok(doc.querySelector(".mission-card"));
+
+  const disarmedSignal = structuredClone(signaled);
+  disarmedSignal.signals[0].autoOpenState = "not-armed";
+  disarmedSignal.signals[0].note = "Signals is off. Choose Start Signals.";
+  pushUpdate(disarmedSignal);
+  assert.equal(doc.querySelector(".signal-match").textContent, "Signals off");
+  assert.match(doc.querySelector(".signal-note").textContent, /Signals off.*Choose Start Signals/);
 
   // New mission defaults to the shipping watch-only profile and stays
   // Off until an approved MSRP or manual cap is applied.

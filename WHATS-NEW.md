@@ -6,6 +6,11 @@ update dialog shows exactly these bullets. Keep every entry short, plain, and
 about what the user will notice — one bullet per change, no internals.
 Publishing fails if the version being released has no section here.
 
+## 3.8.13
+- Exact mapped TrackaLacker alerts received while Signals is off or monitoring is stopped now explain that run state instead of incorrectly reporting a missing mission
+- Signal strategies now clearly remind you that saving a rule does not start Signals and that every app restart or update requires Start Signals before fresh alerts can act
+- Recorded alerts remain non-replayable for purchase safety; after Signals is ON, the next fresh exact match can create its mission and apply the configured strategy
+
 ## 3.8.12
 - TrackaLacker alerts titled “Available for pre-order!” are now recognized, including product-and-retailer sentences carried in the notification body
 - Generic preorder alerts select a store only from an exact TrackaLacker listing or retailer SKU; alerts without that store identity remain visible with a clear non-actionable reason instead of appearing unsupported

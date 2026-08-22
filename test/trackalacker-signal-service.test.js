@@ -228,6 +228,34 @@ test("test notifications never invoke missing-mission creation", () => {
   assert.equal(result.response.action, "test_signal");
 });
 
+test("a mapped missing mission reports that Signals is off instead of blaming mission matching", () => {
+  let planned = 0;
+  const result = process(envelope(), {
+    settings: { products: [], signalsEnabled: false, monitoringPaused: true },
+    planMissingMission: () => {
+      planned += 1;
+      return { state: "created", mission: fixture().product, reason: "not allowed while disarmed" };
+    }
+  });
+
+  assert.equal(planned, 0);
+  assert.equal(result.createdMission, null);
+  assert.equal(result.record.missionDecision, "signals_not_armed");
+  assert.equal(result.response.action, "signals_not_armed");
+  assert.match(result.record.reason, /Signals is off/);
+  assert.match(result.record.reason, /Choose Start Signals/);
+});
+
+test("a monitoring pause is distinguished from a missing mission", () => {
+  const result = process(envelope(), {
+    settings: { products: [], signalsEnabled: true, monitoringPaused: true }
+  });
+
+  assert.equal(result.record.missionDecision, "signals_not_armed");
+  assert.match(result.record.reason, /Monitoring is stopped/);
+  assert.equal(result.shouldOpen, false);
+});
+
 test("ordered signal strategies record the winning rule and honor notification-only actions", () => {
   const result = process(envelope(), {
     settings: {

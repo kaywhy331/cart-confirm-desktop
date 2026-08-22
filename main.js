@@ -2305,6 +2305,8 @@ function handleTrackalackerSignalRequest(envelope, idempotencyKey, options = {})
           ? "notified"
         : outcome.route?.state === "stale"
           ? "stale"
+          : outcome.record.missionDecision === "signals_not_armed"
+            ? "not-armed"
           : outcome.resolution.mission ? "disabled" : "new-product",
       note: outcome.record.reason
     });
