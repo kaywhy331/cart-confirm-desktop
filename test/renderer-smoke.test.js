@@ -598,6 +598,59 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   await new Promise((resolve) => setTimeout(resolve, 10));
   assert.equal(savedSettingsInputs.at(-1).signalStrategies.length, 1);
 
+  // Active purchase modes keep authorization changes fail-closed, but Add
+  // and Edit provide a confirmed path that turns the mode off first instead
+  // of leaving the operator with unexplained disabled controls.
+  const activeStrategies = JSON.parse(JSON.stringify(savedSettingsInputs.at(-1).signalStrategies));
+  const armedSignalsSnapshot = snapshotFixture();
+  armedSignalsSnapshot.settings.signalStrategies = activeStrategies;
+  armedSignalsSnapshot.settings.signalsEnabled = true;
+  armedSignalsSnapshot.settings.monitoringPaused = false;
+  pushUpdate(armedSignalsSnapshot);
+  const armedEditButton = [...doc.querySelector(".signal-strategy-row").querySelectorAll("button")]
+    .find((button) => button.textContent === "Edit");
+  assert.equal(armedEditButton.disabled, false);
+  assert.match(doc.getElementById("signalStrategyEditHint").textContent, /Signals is running/);
+  let strategyEditPrompt = "";
+  const beforeDeclinedEdit = savedSettingsInputs.length;
+  window.confirm = (message) => {
+    strategyEditPrompt = message;
+    return false;
+  };
+  armedEditButton.click();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(savedSettingsInputs.length, beforeDeclinedEdit);
+  assert.equal(doc.getElementById("signalStrategyDialog").hasAttribute("open"), false);
+  assert.match(doc.getElementById("message").textContent, /Signals is still running/);
+  window.confirm = (message) => {
+    strategyEditPrompt = message;
+    return true;
+  };
+  const beforeEditDisarm = savedSettingsInputs.length;
+  armedEditButton.click();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.match(strategyEditPrompt, /Turn off Signals and continue editing/);
+  assert.equal(savedSettingsInputs.length, beforeEditDisarm + 1);
+  assert.equal(savedSettingsInputs.at(-1).signalsEnabled, false);
+  assert.equal(savedSettingsInputs.at(-1).automationEnabled, false);
+  assert.equal(doc.getElementById("signalStrategyDialog").hasAttribute("open"), true);
+  assert.equal(doc.getElementById("signalStrategyDialogTitle").textContent, "Edit signal strategy");
+  assert.equal(doc.getElementById("signalStrategyName").disabled, false);
+  doc.getElementById("signalStrategyCancelButton").click();
+
+  const armedCreateSnapshot = snapshotFixture();
+  armedCreateSnapshot.settings.signalStrategies = activeStrategies;
+  armedCreateSnapshot.settings.signalsEnabled = true;
+  armedCreateSnapshot.settings.monitoringPaused = false;
+  pushUpdate(armedCreateSnapshot);
+  assert.equal(doc.getElementById("addSignalStrategyButton").disabled, false);
+  doc.getElementById("addSignalStrategyButton").click();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(savedSettingsInputs.at(-1).signalsEnabled, false);
+  assert.equal(doc.getElementById("signalStrategyDialogTitle").textContent, "Add signal strategy");
+  assert.equal(doc.getElementById("signalStrategyName").disabled, false);
+  doc.getElementById("signalStrategyCancelButton").click();
+
   // Signals review names a missing source, blocks an inert start, and exposes
   // both source configuration and the one-page Chrome repair action.
   const noSignalSource = snapshotFixture();
