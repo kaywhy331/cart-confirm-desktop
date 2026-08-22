@@ -65,6 +65,7 @@ const {
   emptyTrackalackerState,
   normalizeTrackalackerState,
   normalizeTrackalackerUrl,
+  planTrackalackerSignalMission,
   planTrackalackerMissionImport,
   publicTrackalackerState,
   trackalackerPriceHistory
@@ -2204,6 +2205,8 @@ function updateTrackalackerSignalAction(signalId, changes) {
 
 function handleTrackalackerSignalRequest(envelope, idempotencyKey, options = {}) {
   const previousJournal = signalJournal;
+  const previousSettings = settings;
+  const profile = itemProfileById(settings.defaultItemProfileId, settings.itemProfiles);
   const outcome = processTrackalackerSignal({
     envelope,
     idempotencyKey,
@@ -2211,6 +2214,19 @@ function handleTrackalackerSignalRequest(envelope, idempotencyKey, options = {})
     index: trackalackerSignalIndex,
     settings,
     validation: options.validation,
+    planMissingMission: ({ resolution }) => planTrackalackerSignalMission(
+      trackalackerState,
+      resolution,
+      settings.products,
+      MAX_PRODUCTS,
+      {
+        profile,
+        msrpCatalog: settings.msrpCatalog,
+        orderTaxPercent: settings.orderTaxPercent,
+        signalStrategies: settings.signalStrategies,
+        storeOrderAllowances: settings.storeOrderAllowances
+      }
+    ),
     now: Date.now()
   });
   if (
@@ -2224,18 +2240,60 @@ function handleTrackalackerSignalRequest(envelope, idempotencyKey, options = {})
     };
   }
   signalJournal = outcome.journal;
-  // The mission decision receipt must reach disk before any activation or
-  // browser opening can begin. A crash can therefore be reconstructed and a
-  // replay remains idempotent.
+  let missionPersisted = false;
   try {
+    if (outcome.createdMission) {
+      settings = normalizeSettings({
+        ...settings,
+        products: [...settings.products, outcome.createdMission]
+      }, settings);
+      reconcileProductExecutionContexts(
+        runtimeState,
+        previousSettings.products,
+        settings.products,
+        settings.automationRunId
+      );
+      productStatuses[outcome.createdMission.id] = createProductStatus(outcome.createdMission);
+      persistSettings();
+      missionPersisted = true;
+    }
+    // The exact mission and its decision receipt must both reach disk before
+    // activation or browser opening begins. A crash can therefore be
+    // reconstructed and a replay remains idempotent.
     persistSignalJournal();
   } catch (error) {
     // Do not let an unsaved in-memory receipt turn the helper's retry into a
     // duplicate. Restore the last durable view and surface a retryable local
     // service failure instead.
     signalJournal = previousJournal;
+    if (outcome.createdMission) {
+      const failedSettings = settings;
+      settings = previousSettings;
+      reconcileProductExecutionContexts(
+        runtimeState,
+        failedSettings.products,
+        settings.products,
+        settings.automationRunId
+      );
+      delete productStatuses[outcome.createdMission.id];
+      if (missionPersisted) {
+        try {
+          persistSettings();
+        } catch {
+          // The operation still fails closed below. A later settings load will
+          // normalize either durable state without starting this signal.
+        }
+      }
+    }
     error.statusCode = 503;
     throw error;
+  }
+  if (outcome.createdMission) {
+    configVersion += 1;
+    status = {
+      ...status,
+      lastMessage: `${outcome.createdMission.title || outcome.createdMission.sku} was added as an active TrackaLacker signal mission.`
+    };
   }
 
   if (outcome.resolution?.canonicalSignal && !outcome.duplicate) {

@@ -582,7 +582,7 @@
                 <button class="button ghost compact" id="signalBridgeReplayButton" type="button">Run dry-run replay</button>
               </div>
               <small class="row-help">Connect opens TrackaLacker's notification settings in Chrome, then uses that page's existing signed-in session to enroll the companion's real PushSubscription as <strong>Desktop - Windows - Chrome</strong>. If an older companion name remains for the same browser endpoint, remove that old entry in TrackaLacker and choose Recheck; Cart Confirm never deletes registered devices automatically. Once Ready, choose Verify browser test and click TrackaLacker's browser notification test button on the opened page. Cart Confirm waits for that real push and always treats it as non-purchasing. No account credentials or push keys are stored. Synthetic replays can never open a store or place an order.</small>
-              <small class="row-help">Every received Web Push appears below, including tests, unsupported formats, and alerts that do not match a scanned item. Only an exact mapped store and item can continue into the actionable inbox or a mission.</small>
+              <small class="row-help">Every received Web Push appears below, including tests, unsupported formats, and alerts that do not match a scanned item. While Signals is ON, one exact real mapped listing can create its missing active mission; test, duplicate, paused, unknown, and ambiguous alerts never create one.</small>
               <details class="signal-audit-details" open>
                 <summary>Recent TrackaLacker alerts</summary>
                 <div class="signal-audit-list" id="signalBridgeRecent" aria-live="polite"><div class="empty-state">No TrackaLacker Web Push received yet.</div></div>
@@ -604,7 +604,7 @@
                 <button class="button secondary compact" id="addSignalStrategyButton" type="button">Add signal strategy</button>
                 <button class="button ghost compact" id="addDefaultSignalStrategyButton" type="button">Add safe Notify catchall</button>
               </div>
-              <small class="row-help signal-strategy-edit-hint" id="signalStrategyEditHint" aria-live="polite">Store choices come from your current mission store options. Empty include keywords make a catchall rule. A strategy can narrow a mission, but never exceed that mission's action, quantity, price, fulfillment, or order-total authorization.</small>
+              <small class="row-help signal-strategy-edit-hint" id="signalStrategyEditHint" aria-live="polite">Store choices come from missions and mapped TrackaLacker listings. Empty include keywords make a catchall rule. For a newly created TrackaLacker mission, enabled strategies set its bounded action and quantity ceiling, the default item profile supplies fulfillment defaults, and the pre-synced reference price remains the dollar cap.</small>
             </section>
             <div class="catalog-section-divider" role="separator"></div>
             <p class="step-hint" id="discordHint">Eligible offers verified in open store tabs appear here automatically. You can also connect a Discord bot that can view the signal channel and read its message history. Discord user tokens and self-bots are never accepted.</p>
@@ -698,7 +698,7 @@
         </label>
       </div>
       <fieldset class="signal-strategy-stores">
-        <legend>Stores from available mission options</legend>
+        <legend>Stores from missions or mapped TrackaLacker listings</legend>
         <div id="signalStrategyStores"></div>
         <small>Leave every store unchecked to match any available store.</small>
       </fieldset>

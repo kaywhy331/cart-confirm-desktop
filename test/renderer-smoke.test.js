@@ -679,6 +679,25 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   assert.equal(doc.getElementById("runReviewItemsButton").textContent, "Choose items to turn on");
   assert.match(doc.getElementById("runReviewIssues").textContent, /Turn on at least one item/);
   doc.getElementById("runReviewCloseButton").click();
+
+  const trackalackerRoot = snapshotFixture();
+  trackalackerRoot.settings.products = [];
+  trackalackerRoot.settings.trackalackerSignalBridgeEnabled = true;
+  trackalackerRoot.status.companion = "disconnected";
+  trackalackerRoot.signalBridge = {
+    enabled: true,
+    deliveryPaused: false,
+    extensionConnected: true,
+    listenerReady: true,
+    subscriptionPresent: true,
+    mappingCount: 2
+  };
+  pushUpdate(trackalackerRoot);
+  doc.getElementById("signalsToggle").click();
+  assert.equal(doc.getElementById("runReviewSignalsButton").disabled, false);
+  assert.match(doc.getElementById("runReviewSummary").textContent, /create an active mission/);
+  assert.doesNotMatch(doc.getElementById("runReviewIssues").textContent, /Add at least one item|Turn on at least one item/);
+  doc.getElementById("runReviewCloseButton").click();
   pushUpdate(snapshotFixture());
 
   // Dense rows round only their display value; exact caps remain available
@@ -1213,7 +1232,7 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   assert.equal(savedSettingsInputs.at(-1).signalsEnabled, true);
   assert.equal(doc.getElementById("signalsState").textContent, "ON");
   assert.equal(doc.getElementById("runStateTitle").textContent, "Signals listening");
-  assert.match(doc.getElementById("message").textContent, /exact TrackaLacker, browser, or Discord signal/);
+  assert.match(doc.getElementById("message").textContent, /Exact TrackaLacker signals can create missing missions/);
   doc.getElementById("signalsToggle").click();
   await new Promise((resolve) => setTimeout(resolve, 10));
   assert.equal(savedSettingsInputs.at(-1).signalsEnabled, false);

@@ -32,6 +32,8 @@ test("TrackaLacker ingestion crosses only the authenticated extension-to-loopbac
   assert.match(main, /trackalacker: publicTrackalackerState\(trackalackerState\)/);
   assert.match(main, /trackalacker-price-history[\s\S]*?trackalackerPriceHistory\(trackalackerState/);
   assert.match(main, /trackalacker-open-store[\s\S]*?normalizeProductUrl[\s\S]*?trackalacker-preview/);
+  assert.match(main, /planMissingMission:[\s\S]*?planTrackalackerSignalMission\([\s\S]*?trackalackerState/);
+  assert.match(main, /if \(outcome\.createdMission\)[\s\S]*?persistSettings\(\)[\s\S]*?persistSignalJournal\(\)/);
   assert.doesNotMatch(`${content}\n${background}\n${main}`, /(?:password|passwd)\s*[:=]\s*["'][^"']+["']/i);
 });
 

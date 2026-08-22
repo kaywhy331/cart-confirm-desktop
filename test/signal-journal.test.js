@@ -66,15 +66,16 @@ function record(index = 1, overrides = {}) {
   };
 }
 
-test("signal receipts survive restart and retain every hot-path timestamp", () => {
+test("signal receipts survive restart and retain mission-creation and hot-path audit fields", () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "cart-confirm-signal-journal-"));
   const filePath = path.join(directory, "signals.json");
   try {
-    const state = appendSignalRecord(defaultSignalJournal(), record(), NOW + 10);
+    const state = appendSignalRecord(defaultSignalJournal(), record({ missionCreated: true }), NOW + 10);
     saveSignalJournal(filePath, state);
     const loaded = loadSignalJournal(filePath);
     assert.equal(loaded.records.length, 1);
     assert.equal(loaded.records[0].missionDecision, "queued");
+    assert.equal(loaded.records[0].missionCreated, true);
     assert.equal(loaded.records[0].timing.parseCompletedAt, new Date(NOW + 3).toISOString());
     assert.equal(loaded.records[0].timing.dedupeCompletedAt, new Date(NOW + 5).toISOString());
     assert.equal(loaded.records[0].rawBody.includes("\n"), true);
