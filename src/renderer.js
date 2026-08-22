@@ -202,6 +202,7 @@ const elements = {
   signalStrategyStores: document.getElementById("signalStrategyStores"),
   signalStrategyIncludeKeywords: document.getElementById("signalStrategyIncludeKeywords"),
   signalStrategyExcludeKeywords: document.getElementById("signalStrategyExcludeKeywords"),
+  signalStrategyAllowThirdPartySeller: document.getElementById("signalStrategyAllowThirdPartySeller"),
   signalStrategyEnabled: document.getElementById("signalStrategyEnabled"),
   signalStrategySaveButton: document.getElementById("signalStrategySaveButton"),
   discordState: document.getElementById("discordState"),
@@ -240,11 +241,11 @@ const ACTION_DESCRIPTIONS = Object.freeze({
   checkout: "Submit order automatically"
 });
 const SIGNAL_PRICE_LABELS = Object.freeze({
-  any: "Any price",
+  any: "Any signal price (mission cap)",
   below_msrp: "Below MSRP",
-  msrp: "MSRP / source near-MSRP",
-  slightly_above_msrp: "Slightly above MSRP",
-  above_msrp: "Above MSRP / surge"
+  msrp: "At or below MSRP",
+  slightly_above_msrp: "Up to 10% above MSRP",
+  above_msrp: "Any classified MSRP band"
 });
 const SIGNAL_STRATEGY_ACTION_LABELS = Object.freeze({
   notify: "Notify",
@@ -4363,6 +4364,7 @@ function signalStrategySummary(strategy = {}) {
   return [
     SIGNAL_PRICE_LABELS[strategy.priceBand] || strategy.priceBand,
     stores,
+    strategy.allowThirdPartySeller === true ? "Third-party allowed" : "First-party only",
     SIGNAL_STRATEGY_ACTION_LABELS[strategy.action] || strategy.action,
     quantity
   ].join(" · ");
@@ -4395,6 +4397,9 @@ function signalStrategyAuthorizationPreview(strategy = {}, settings = currentSna
   if (actionCapped) parts.push(`${actionCapped} route${actionCapped === 1 ? " is" : "s are"} capped below the requested action by its mission.`);
   if (quantityCapped) parts.push(`${quantityCapped} route${quantityCapped === 1 ? " is" : "s are"} capped below the requested quantity.`);
   if (strategy.quantity === "max") parts.push("Max Allowed still obeys each mission quantity and any fresh retailer limit.");
+  parts.push(strategy.allowThirdPartySeller === true
+    ? "Third-party offers require a visible live seller and exact seller match when the signal names one."
+    : "Only the store's first-party live offer is authorized.");
   return parts.join(" ");
 }
 
@@ -4561,6 +4566,7 @@ function openSignalStrategyDialog(strategy = null) {
   elements.signalStrategyQuantity.value = String(strategy?.quantity || "max");
   elements.signalStrategyIncludeKeywords.value = strategy?.includeKeywords || "";
   elements.signalStrategyExcludeKeywords.value = strategy?.excludeKeywords || "";
+  elements.signalStrategyAllowThirdPartySeller.checked = strategy?.allowThirdPartySeller === true;
   elements.signalStrategyEnabled.checked = strategy?.enabled !== false;
   renderSignalStrategyStoreChoices(strategy?.stores || []);
   if (typeof elements.signalStrategyDialog.showModal === "function") elements.signalStrategyDialog.showModal();
@@ -4586,6 +4592,7 @@ function signalStrategyFromForm() {
       .map((input) => input.dataset.signalStore),
     action: elements.signalStrategyAction.value,
     quantity: quantity === "max" ? "max" : Number(quantity),
+    allowThirdPartySeller: elements.signalStrategyAllowThirdPartySeller.checked,
     includeKeywords: elements.signalStrategyIncludeKeywords.value,
     excludeKeywords: elements.signalStrategyExcludeKeywords.value
   };
@@ -5455,6 +5462,7 @@ elements.addDefaultSignalStrategyButton.addEventListener("click", () => void run
     stores: [],
     action: "notify",
     quantity: "max",
+    allowThirdPartySeller: false,
     includeKeywords: "",
     excludeKeywords: ""
   };

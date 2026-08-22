@@ -109,10 +109,42 @@ test("transport, semantic, and signal IDs identify one durable receipt", () => {
   const existing = state.records[0];
   assert.equal(duplicateSignalRecord(state, { signalId: existing.signalId }), existing);
   assert.equal(duplicateSignalRecord(state, { transportKey: existing.transportKey }), existing);
-  assert.equal(duplicateSignalRecord(state, { semanticKey: existing.semanticKey }), existing);
+  assert.equal(duplicateSignalRecord(state, { semanticKey: existing.semanticKey }), null);
   const updated = recordDuplicateOccurrence(state, existing, new Date(NOW + 20).toISOString(), NOW + 20);
   assert.equal(updated.records[0].occurrenceCount, 2);
   assert.equal(updated.records[0].actionState, "pending");
+});
+
+test("a live offer mismatch releases semantic dedupe but never transport idempotency", () => {
+  const initial = appendSignalRecord(defaultSignalJournal(), record(), NOW + 10);
+  const cancelled = updateSignalRecord(initial, "signal-1", {
+    missionDecision: "offer_mismatch",
+    actionState: "cancelled",
+    reason: "The live buy box changed before Add to cart."
+  }, NOW + 20);
+  const existing = cancelled.records[0];
+  const semanticInput = {
+    productId: existing.productId,
+    eventType: existing.eventType,
+    price: existing.price,
+    observedAt: new Date(NOW + 1_000).toISOString()
+  };
+  assert.equal(duplicateSemanticRecord(cancelled, semanticInput, 300), null);
+  assert.equal(duplicateSignalRecord(cancelled, { signalId: existing.signalId }), existing);
+  assert.equal(duplicateSignalRecord(cancelled, { transportKey: existing.transportKey }), existing);
+});
+
+test("a corroborated source does not become a stale semantic lock", () => {
+  const state = appendSignalRecord(defaultSignalJournal(), record({
+    missionDecision: "corroborated",
+    actionState: "none"
+  }), NOW + 10);
+  assert.equal(duplicateSemanticRecord(state, {
+    productId: "walmart:45678",
+    eventType: "in_stock",
+    price: 10,
+    observedAt: new Date(NOW + 1_000).toISOString()
+  }, 300), null);
 });
 
 test("action results update the same receipt instead of creating a second purchase event", () => {

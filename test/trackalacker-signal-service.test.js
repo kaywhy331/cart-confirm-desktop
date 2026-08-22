@@ -3,7 +3,7 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 
-const { defaultSignalJournal } = require("../lib/signal-journal");
+const { defaultSignalJournal, updateSignalRecord } = require("../lib/signal-journal");
 const { buildTrackalackerSignalIndex } = require("../lib/trackalacker-signal-resolver");
 const { processTrackalackerSignal } = require("../lib/trackalacker-signal-service");
 
@@ -235,6 +235,47 @@ test("duplicates increment one durable receipt and never queue a second action",
   assert.equal(second.response.action, "duplicate_signal");
   assert.equal(second.journal.records.length, 1);
   assert.equal(second.record.occurrenceCount, 2);
+});
+
+test("a new transport may re-signal after the prior live offer was cancelled", () => {
+  const first = process();
+  const cancelled = updateSignalRecord(first.journal, first.record.signalId, {
+    missionDecision: "offer_mismatch",
+    actionState: "cancelled",
+    reason: "The live offer changed before Add to cart."
+  }, NOW + 50);
+  const secondEnvelope = envelope({
+    signalId: "windows:chrome:783924:20260821",
+    source: {
+      notificationId: "windows-783924",
+      receivedAt: "2026-08-21T06:41:31.400Z"
+    }
+  });
+  const second = processTrackalackerSignal({
+    envelope: secondEnvelope,
+    idempotencyKey: secondEnvelope.signalId,
+    journal: cancelled,
+    index: fixture().index,
+    settings: fixture().settings,
+    now: NOW + 200,
+    clock: () => NOW + 200
+  });
+  assert.equal(second.duplicate, false);
+  assert.equal(second.shouldOpen, true);
+  assert.equal(second.response.action, "queued");
+  assert.equal(second.journal.records.length, 2);
+
+  const exactReplay = processTrackalackerSignal({
+    envelope: secondEnvelope,
+    idempotencyKey: secondEnvelope.signalId,
+    journal: second.journal,
+    index: fixture().index,
+    settings: fixture().settings,
+    now: NOW + 300,
+    clock: () => NOW + 300
+  });
+  assert.equal(exactReplay.duplicate, true);
+  assert.equal(exactReplay.shouldOpen, false);
 });
 
 test("unknown products, disabled delivery, and synthetic replay all fail closed", () => {
