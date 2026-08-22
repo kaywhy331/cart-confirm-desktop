@@ -90,6 +90,66 @@ test("TrackaLacker Walmart, Amazon, and Target notification formats parse determ
   assert.equal(target.msrpStatus, "at_msrp");
 });
 
+test("generic preorder alerts use only exact store-bearing identity", () => {
+  const generic = parseTrackalackerNotification(envelope({
+    notification: {
+      title: "Available for pre-order!",
+      body: "Pokemon Perfect Order Booster Display Box is available for pre-order\npre-order available for $169.99 (~ MSRP)",
+      textElements: [],
+      sourceProductSlug: "pokemon-perfect-order-booster-display-box",
+      sourceListingId: "123459"
+    }
+  }));
+  assert.equal(generic.parseState, "parsed");
+  assert.equal(generic.eventType, "preorder");
+  assert.equal(generic.retailer, "");
+  assert.equal(generic.productNameRaw, "Pokemon Perfect Order Booster Display Box");
+  assert.equal(generic.price, 169.99);
+  assert.equal(generic.actionable, true);
+
+  const index = buildTrackalackerSignalIndex(mappingState());
+  const listingMatch = resolveTrackalackerSignal(generic, index, [], {
+    listingId: generic.sourceListingId,
+    sourceProductSlug: generic.sourceProductSlug
+  });
+  assert.equal(listingMatch.state, "matched");
+  assert.equal(listingMatch.matchMethod, "listing-id");
+  assert.equal(listingMatch.mapping.retailer, "walmart");
+  assert.equal(listingMatch.canonicalSignal.eventType, "preorder");
+
+  const skuMatch = resolveTrackalackerSignal(generic, index, [], {
+    sourceRetailer: "walmart",
+    sourceRetailerSku: "19376602103"
+  });
+  assert.equal(skuMatch.state, "matched");
+  assert.equal(skuMatch.matchMethod, "retailer-sku");
+
+  const productOnly = resolveTrackalackerSignal(generic, index, [], {
+    sourceProductSlug: generic.sourceProductSlug
+  });
+  assert.equal(productOnly.state, "unresolved");
+  assert.equal(productOnly.matchMethod, "store-identity-missing");
+
+  const wrongListing = resolveTrackalackerSignal(generic, index, [], {
+    listingId: "999999",
+    sourceProductSlug: generic.sourceProductSlug
+  });
+  assert.equal(wrongListing.state, "unresolved");
+  assert.equal(wrongListing.matchMethod, "listing-id");
+
+  const retailerSentence = parseTrackalackerNotification(envelope({
+    notification: {
+      title: "Available for pre-order!",
+      body: "Pokemon Perfect Order Elite Trainer Box is now available for pre-order at Target",
+      textElements: []
+    }
+  }));
+  assert.equal(retailerSentence.parseState, "parsed");
+  assert.equal(retailerSentence.eventType, "preorder");
+  assert.equal(retailerSentence.retailer, "target");
+  assert.equal(retailerSentence.productNameRaw, "Pokemon Perfect Order Elite Trainer Box");
+});
+
 test("live sentence-style alerts extract the exact product name and retailer", () => {
   const productName = "Riftbound League of Legends Rumble Champion Deck";
   const bodySentence = parseTrackalackerNotification(envelope({

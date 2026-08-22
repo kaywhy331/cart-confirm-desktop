@@ -292,6 +292,65 @@ test("an authenticated extension Web Push signal enters the same mission pipelin
   assert.equal(result.response.action, "queued");
 });
 
+test("a generic preorder push routes through an exact sanitized listing identity", () => {
+  const input = envelope({
+    signalId: "push:trackalacker:generic-preorder",
+    source: {
+      transport: "chrome_extension_web_push",
+      notificationId: "push:trackalacker:generic-preorder",
+      applicationName: "CartCollect Chrome extension",
+      applicationId: "kmpoonjaidgnldeobaaopfhfhlalclhd"
+    },
+    notification: {
+      title: "Available for pre-order!",
+      body: "Pokemon Perfect Order Booster Display Box is available for pre-order\npre-order available for $169.99 (~ MSRP)",
+      sourceProductSlug: "pokemon-perfect-order-booster-display-box",
+      sourceListingId: "287632"
+    }
+  });
+  const result = process(input, {
+    validation: { allowedTransports: ["chrome_extension_web_push"] }
+  });
+  assert.equal(result.parsed.eventType, "preorder");
+  assert.equal(result.parsed.retailer, "");
+  assert.equal(result.resolution.matchMethod, "listing-id");
+  assert.equal(result.record.retailer, "walmart");
+  assert.equal(result.record.missionDecision, "queued");
+  assert.equal(result.shouldOpen, true);
+});
+
+test("a generic preorder never guesses a store from product identity alone", () => {
+  let planned = 0;
+  const input = envelope({
+    signalId: "push:trackalacker:preorder-no-store",
+    source: {
+      transport: "chrome_extension_web_push",
+      notificationId: "push:trackalacker:preorder-no-store",
+      applicationName: "CartCollect Chrome extension",
+      applicationId: "kmpoonjaidgnldeobaaopfhfhlalclhd"
+    },
+    notification: {
+      title: "Available for pre-order!",
+      body: "Pokemon Perfect Order Booster Display Box is available for pre-order",
+      sourceProductSlug: "pokemon-perfect-order-booster-display-box"
+    }
+  });
+  const result = process(input, {
+    validation: { allowedTransports: ["chrome_extension_web_push"] },
+    planMissingMission: () => {
+      planned += 1;
+      return null;
+    }
+  });
+  assert.equal(result.parsed.parseState, "parsed");
+  assert.equal(result.parsed.eventType, "preorder");
+  assert.equal(result.resolution.matchMethod, "store-identity-missing");
+  assert.equal(result.record.missionDecision, "unresolved_product");
+  assert.match(result.record.reason, /exact listing or retailer SKU/);
+  assert.equal(result.shouldOpen, false);
+  assert.equal(planned, 0);
+});
+
 test("a live sentence-style push strips the event suffix before exact matching", () => {
   const input = envelope({
     signalId: "push:trackalacker:live-sentence",
