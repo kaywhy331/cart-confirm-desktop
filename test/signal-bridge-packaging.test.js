@@ -65,6 +65,14 @@ test("extension push delivery is pinned to the extension-authenticated local rou
   assert.match(main, /req\.headers\["x-cart-assist-token"\] !== settings\.companionToken/);
 });
 
+test("live push identity discards notification URLs and forwards only bounded numeric hints", () => {
+  assert.match(pushHelper, /url\.searchParams\.get\("utm_term"\)/);
+  assert.match(pushHelper, /sourceProductId,[\s\S]*?sourceListingId/);
+  assert.match(background, /sourceProductId: entry\.notification\?\.sourceProductId/);
+  assert.match(background, /listingId: entry\.notification\?\.sourceListingId/);
+  assert.doesNotMatch(pushHelper, /notification:\s*\{[\s\S]{0,300}?url:\s*notification\.url/);
+});
+
 test("a failed durable receipt remains retryable instead of becoming an in-memory duplicate", () => {
   assert.match(main, /const previousJournal = signalJournal;[\s\S]*?persistSignalJournal\(\);[\s\S]*?signalJournal = previousJournal;[\s\S]*?error\.statusCode = 503/);
   assert.match(main, /\[400, 409, 422, 500, 503\]\.includes\(requestedStatus\)/);

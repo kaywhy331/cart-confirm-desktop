@@ -14,6 +14,7 @@ const {
   registrationOutcome,
   safeRegistrationDiagnostic,
   signalEnvelopeFromPush,
+  trackalackerSignalIdentity,
   vapidApplicationServerKey
 } = require("../extension/trackalacker-push");
 
@@ -227,7 +228,9 @@ test("a Web Push payload is reduced to the existing TrackaLacker signal contract
   const envelope = signalEnvelopeFromPush({
     title: "IN STOCK at Walmart!",
     body: "Example product\nin stock for $19.99 (~ MSRP)\nwww.trackalacker.com",
-    data: { url: "/products/showcase/example" },
+    data: {
+      url: "/products/showcase/example/listings/287632/item?notification_id=DO_NOT_FORWARD&utm_term=12345"
+    },
     ignored: { account: "not-forwarded" }
   }, "push:trackalacker:12345678", "2026-08-21T12:00:00.000Z", "extension-id");
 
@@ -235,5 +238,29 @@ test("a Web Push payload is reduced to the existing TrackaLacker signal contract
   assert.equal(envelope.source.domain, "trackalacker.com");
   assert.equal(envelope.notification.title, "IN STOCK at Walmart!");
   assert.equal(envelope.notification.body.includes("Example product"), true);
+  assert.equal(envelope.notification.sourceProductId, "12345");
+  assert.equal(envelope.notification.sourceListingId, "287632");
   assert.equal(JSON.stringify(envelope).includes("not-forwarded"), false);
+  assert.equal(JSON.stringify(envelope).includes("DO_NOT_FORWARD"), false);
+  assert.equal(JSON.stringify(envelope).includes("notification_id"), false);
+  assert.equal(JSON.stringify(envelope).includes("utm_term"), false);
+  assert.equal(JSON.stringify(envelope).includes("https://"), false);
+});
+
+test("signal identity keeps only numeric IDs from a validated TrackaLacker URL", () => {
+  assert.deepEqual(trackalackerSignalIdentity(
+    "https://www.trackalacker.com/products/showcase/example/listings/287632/item?notification_id=PRIVATE_VALUE&utm_term=12345"
+  ), {
+    sourceProductId: "12345",
+    listingId: "287632"
+  });
+  assert.deepEqual(trackalackerSignalIdentity(
+    "https://example.com/products/showcase/12345/listings/287632/item?utm_term=12345"
+  ), {
+    sourceProductId: "",
+    listingId: ""
+  });
+  assert.equal(JSON.stringify(trackalackerSignalIdentity(
+    "https://www.trackalacker.com/products/showcase/example?notification_id=PRIVATE_VALUE&utm_term=not-numeric"
+  )).includes("PRIVATE_VALUE"), false);
 });

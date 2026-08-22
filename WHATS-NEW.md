@@ -6,6 +6,11 @@ update dialog shows exactly these bullets. Keep every entry short, plain, and
 about what the user will notice — one bullet per change, no internals.
 Publishing fails if the version being released has no section here.
 
+## 3.8.8
+- Live TrackaLacker alerts such as “Product is in stock at Store” now resolve the exact product and retailer instead of appearing as unsupported events
+- Generic live alerts can use sanitized numeric product or listing hints while full notification URLs and tracking details stay out of CartCollect
+- Price, seller, mission, strategy, duplicate, and dry-run safeguards still apply before any configured action can run
+
 ## 3.8.7
 - TrackaLacker registers the companion with the discreet Desktop - Windows - Chrome device name
 - TrackaLacker alerts keep their original notification title, sound, visibility, and safe click destination while also reaching CartSignals
