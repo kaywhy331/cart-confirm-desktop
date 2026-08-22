@@ -112,6 +112,122 @@ test("a known under-cap signal is durably queued before its store action begins"
   assert.equal(result.record.timing.missionEvaluatedAt, new Date(NOW).toISOString());
 });
 
+test("an exact pre-synced real signal can create and route its missing mission once", () => {
+  let planned = 0;
+  const candidate = {
+    ...fixture().product,
+    sourceProvider: "trackalacker",
+    sourceProductId: "12345",
+    sourceListingId: "287632"
+  };
+  const result = process(envelope(), {
+    settings: { products: [] },
+    planMissingMission: () => {
+      planned += 1;
+      return {
+        state: "created",
+        mission: candidate,
+        reason: "Created an active mission from the exact pre-synced TrackaLacker listing."
+      };
+    }
+  });
+
+  assert.equal(planned, 1);
+  assert.equal(result.createdMission, candidate);
+  assert.equal(result.record.missionCreated, true);
+  assert.equal(result.record.missionDecision, "queued");
+  assert.equal(result.shouldOpen, true);
+  assert.equal(result.response.mission_matches, 1);
+  assert.deepEqual(result.response.mission_ids, [candidate.id]);
+  assert.match(result.record.reason, /Created an active mission/);
+
+  const replay = processTrackalackerSignal({
+    envelope: envelope(),
+    idempotencyKey: envelope().signalId,
+    journal: result.journal,
+    index: fixture().index,
+    settings: { ...fixture().settings, products: [candidate] },
+    planMissingMission: () => {
+      planned += 1;
+      return { state: "created", mission: candidate, reason: "not allowed twice" };
+    },
+    now: NOW + 100,
+    clock: () => NOW + 100
+  });
+  assert.equal(replay.duplicate, true);
+  assert.equal(replay.createdMission, null);
+  assert.equal(planned, 1, "idempotent replay must stop before mission planning");
+});
+
+test("a planned mission must retain the exact TrackaLacker source identity", () => {
+  const result = process(envelope(), {
+    settings: { products: [] },
+    planMissingMission: () => ({
+      state: "created",
+      mission: fixture().product,
+      reason: "untrusted candidate"
+    })
+  });
+
+  assert.equal(result.createdMission, null);
+  assert.equal(result.record.missionCreated, false);
+  assert.equal(result.response.action, "no_matching_mission");
+});
+
+test("a price or store strategy miss still keeps the newly created mission without acting", () => {
+  const candidate = {
+    ...fixture().product,
+    sourceProvider: "trackalacker",
+    sourceProductId: "12345",
+    sourceListingId: "287632"
+  };
+  const result = process(envelope(), {
+    settings: {
+      products: [],
+      signalStrategies: [{
+        id: "signal-strategy:amazon-only",
+        name: "Amazon only",
+        enabled: true,
+        priceBand: "msrp",
+        stores: ["amazon"],
+        action: "submit_order",
+        quantity: 1,
+        includeKeywords: "",
+        excludeKeywords: ""
+      }]
+    },
+    planMissingMission: () => ({
+      state: "created",
+      mission: candidate,
+      reason: "Created an active mission from the exact pre-synced TrackaLacker listing."
+    })
+  });
+
+  assert.equal(result.record.missionCreated, true);
+  assert.equal(result.response.action, "no_matching_strategy");
+  assert.equal(result.shouldOpen, false);
+  assert.equal(result.response.mission_matches, 1);
+});
+
+test("test notifications never invoke missing-mission creation", () => {
+  let planned = 0;
+  const result = process(envelope({
+    signalId: "synthetic:trackalacker:auto-mission-test",
+    testSignal: true
+  }), {
+    settings: { products: [] },
+    planMissingMission: () => {
+      planned += 1;
+      return { state: "created", mission: fixture().product, reason: "not allowed" };
+    }
+  });
+
+  assert.equal(planned, 0);
+  assert.equal(result.createdMission, null);
+  assert.equal(result.record.missionCreated, false);
+  assert.equal(result.response.action, "test_signal");
+});
+
 test("ordered signal strategies record the winning rule and honor notification-only actions", () => {
   const result = process(envelope(), {
     settings: {

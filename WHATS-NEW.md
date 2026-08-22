@@ -6,6 +6,11 @@ update dialog shows exactly these bullets. Keep every entry short, plain, and
 about what the user will notice — one bullet per change, no internals.
 Publishing fails if the version being released has no section here.
 
+## 3.8.11
+- Exact live TrackaLacker alerts can now create and enable a missing store mission while Signals is running, so newly followed products can flow into CartCollect without a separate manual import
+- New missions inherit your ordered CartSignals strategy, quantity, seller policy, and item defaults; duplicate, test, unresolved, ambiguous, and paused alerts remain non-actionable
+- Automatic missions use a trusted pre-synced reference or approved MSRP for their price cap and fall back to Watch only when no safe cap exists, while every purchase action still rechecks stock, price, seller, and identity
+
 ## 3.8.10
 - Add and Edit remain available when Signals or Autopilot is running and explain that the active purchase mode must be turned off before authorization rules can change
 - Accepting the prompt safely disarms purchase actions and opens the editable CartSignals form; declining leaves the current run unchanged

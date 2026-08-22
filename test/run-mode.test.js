@@ -34,6 +34,19 @@ test("Signals is a purchase-capable run mode distinct from Autopilot", () => {
 
 test("Signals applies armed validation and blocks live mission-contract edits", () => {
   assert.throws(() => normalizeSettings({ products: [], signalsEnabled: true }), /Enable at least one product/);
+  assert.doesNotThrow(() => normalizeSettings({
+    products: [],
+    signalsEnabled: true,
+    trackalackerSignalBridgeEnabled: true,
+    trackalackerSignalDeliveryPaused: false
+  }));
+  assert.throws(() => normalizeSettings({
+    products: [],
+    signalsEnabled: true,
+    trackalackerSignalBridgeEnabled: true,
+    trackalackerSignalDeliveryPaused: true
+  }), /unpaused TrackaLacker Push/);
+  assert.throws(() => normalizeSettings({ products: [], automationEnabled: true }), /Enable at least one product/);
   const current = normalizeSettings({ products: [product], signalsEnabled: true });
   const changed = normalizeSettings({
     products: [{ ...product, maxPrice: 41 }],

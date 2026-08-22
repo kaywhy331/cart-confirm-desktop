@@ -3724,6 +3724,9 @@ function renderReadiness(settings, status, productStatuses = {}) {
     settings,
     status
   });
+  const trackalackerRootReady = signalSources.sources.some((source) => (
+    source.id === "trackalacker" && source.ready
+  ));
   const unpriced = enabled.filter((item) => item.action !== "watch" && item.variants.some((variant) => (
     variant.enabled !== false && Number(variant.maxPrice) <= 0
   )));
@@ -3736,8 +3739,8 @@ function renderReadiness(settings, status, productStatuses = {}) {
     variant.enabled !== false && BLOCKING_REASONS.has(productStatuses[variant.id]?.reason)
   )));
   const issues = [];
-  if (!items.length) issues.push("Add at least one item.");
-  else if (!enabled.length) issues.push("Turn on at least one item.");
+  if (!items.length && !(settings.signalsEnabled && trackalackerRootReady)) issues.push("Add at least one item.");
+  else if (!enabled.length && !(settings.signalsEnabled && trackalackerRootReady)) issues.push("Turn on at least one item.");
   if (disconnected && !signalSources.canStart) issues.push("Connect at least one Signals source or the Chrome companion.");
   if (unpriced.length) issues.push(`${unpriced.length} active item${unpriced.length === 1 ? " needs" : "s need"} a positive cap at every selected store.`);
   if (missed.length) issues.push(`${missed.length} scheduled time${missed.length === 1 ? " has" : "s have"} passed and must be cleared or replaced.`);
@@ -3762,6 +3765,8 @@ function renderReadiness(settings, status, productStatuses = {}) {
   elements.readinessExposure.textContent = total > 0 ? compactMissionPrice(total) : "$0";
   elements.readinessSummary.textContent = enabled.length
     ? `${enabled.length} item${enabled.length === 1 ? " is" : "s are"} On across ${products.filter((product) => product.enabled !== false).length} selected store route${products.filter((product) => product.enabled !== false).length === 1 ? "" : "s"}${actionSummary ? ` · ${actionSummary}` : ""}.`
+    : settings.signalsEnabled && trackalackerRootReady
+      ? "TrackaLacker-root Signals is ready; the first exact live listing match will create its active mission."
     : items.length
       ? `${items.length} item${items.length === 1 ? " is" : "s are"} saved, but all are Off.`
       : "Build a reusable item plan, review it here, then start one run.";
@@ -3790,13 +3795,32 @@ function runReviewModel() {
     variant.enabled !== false && BLOCKING_REASONS.has(statuses[variant.id]?.reason)
   )));
   const signalSources = SignalsReadiness.sourceState(currentSnapshot || {});
+  const trackalackerRootReady = signalSources.sources.some((source) => (
+    source.id === "trackalacker" && source.ready
+  ));
   const hardIssues = [];
+  const signalPlanHardIssues = [];
   const warnings = [];
   if (!items.length) hardIssues.push("Add at least one item.");
   else if (!enabled.length) hardIssues.push("Turn on at least one item.");
-  if (unpriced.length) hardIssues.push(`${unpriced.length} purchase item${unpriced.length === 1 ? " needs" : "s need"} a cap at every selected store.`);
-  if (missed.length) hardIssues.push(`${missed.length} item${missed.length === 1 ? " has" : "s have"} a missed schedule.`);
-  const signalHardIssues = signalSources.hardIssue ? [signalSources.hardIssue] : [];
+  if (!trackalackerRootReady) {
+    if (!items.length) signalPlanHardIssues.push("Add at least one item, or finish the mapped TrackaLacker Push connection so live signals can create missions.");
+    else if (!enabled.length) signalPlanHardIssues.push("Turn on at least one item, or finish the mapped TrackaLacker Push connection so live signals can create missions.");
+  }
+  if (unpriced.length) {
+    const issue = `${unpriced.length} purchase item${unpriced.length === 1 ? " needs" : "s need"} a cap at every selected store.`;
+    hardIssues.push(issue);
+    signalPlanHardIssues.push(issue);
+  }
+  if (missed.length) {
+    const issue = `${missed.length} item${missed.length === 1 ? " has" : "s have"} a missed schedule.`;
+    hardIssues.push(issue);
+    signalPlanHardIssues.push(issue);
+  }
+  const signalHardIssues = [
+    ...signalPlanHardIssues,
+    ...(signalSources.hardIssue ? [signalSources.hardIssue] : [])
+  ];
   const signalWarnings = signalSources.configuredProblems.map((source) => `${source.label}: ${source.detail}`);
   if (status.companion !== "connected") warnings.push("Autopilot and browser-page signals need one connected Chrome store page. Use Connect one Chrome page first.");
   if (blocked.length) warnings.push(`${blocked.length} item${blocked.length === 1 ? " currently has" : "s currently have"} a blocking store status; unaffected items can continue.`);
@@ -3830,7 +3854,9 @@ function openRunReview(requestedMode = "") {
   const routes = model.enabled.reduce((count, item) => count + item.variants.filter((variant) => variant.enabled !== false).length, 0);
   elements.runReviewSummary.textContent = model.enabled.length
     ? `${model.enabled.length} item${model.enabled.length === 1 ? "" : "s"} will run across ${routes} selected store option${routes === 1 ? "" : "s"}. ${model.due.length} ${model.due.length === 1 ? "is" : "are"} due now; ${model.scheduled.length} will wait for the schedule.${reviewingSignals ? ` ${model.signalSources.summary}` : ""}`
-    : "Nothing is ready to run yet.";
+    : reviewingSignals && model.signalSources.sources.some((source) => source.id === "trackalacker" && source.ready)
+      ? "TrackaLacker Push is ready to create an active mission from the first exact live listing signal."
+      : "Nothing is ready to run yet.";
   const metrics = [
     ["Items on", `${model.enabled.length} / ${model.items.length}`],
     ["Due now", String(model.due.length)],
@@ -3848,9 +3874,9 @@ function openRunReview(requestedMode = "") {
     return node;
   }));
   const issueEntries = [
-    ...model.hardIssues.map((text) => ({ text, hard: true })),
+    ...(reviewingSignals ? model.signalHardIssues : model.hardIssues).map((text) => ({ text, hard: true })),
     ...(reviewingSignals
-      ? model.signalHardIssues.map((text) => ({ text, hard: true }))
+      ? []
       : !runReviewRequestedMode
         ? model.signalHardIssues.map((text) => ({ text: `Signals: ${text}`, hard: false }))
         : []),
@@ -3866,7 +3892,7 @@ function openRunReview(requestedMode = "") {
   }));
   elements.runReviewMonitorButton.disabled = model.enabled.length === 0 || openRunInFlight || isArmed();
   elements.runReviewMonitorButton.textContent = isArmed() ? `Stop ${activePurchaseModeLabel()} before monitoring only` : "Start monitoring only";
-  elements.runReviewSignalsButton.disabled = model.hardIssues.length > 0 || model.signalHardIssues.length > 0 || openRunInFlight || isSignalsMode();
+  elements.runReviewSignalsButton.disabled = model.signalHardIssues.length > 0 || openRunInFlight || isSignalsMode();
   elements.runReviewSignalsButton.textContent = isSignalsMode() ? "Signals already active" : isAutopilot() ? "Switch to Signals" : "Start Signals";
   elements.runReviewAutopilotButton.disabled = model.hardIssues.length > 0 || openRunInFlight || isAutopilot();
   elements.runReviewAutopilotButton.textContent = isAutopilot() ? "Autopilot already active" : isSignalsMode() ? "Switch to Autopilot" : "Start Autopilot";
@@ -4333,6 +4359,7 @@ function buildSignalAuditRow(record) {
   metadata.textContent = [
     STORE_LABELS[record.retailer] || record.retailer || "Unknown store",
     money(record.price),
+    record.missionCreated ? "mission created" : "",
     record.strategyName ? `strategy: ${record.strategyName}` : "",
     record.matchMethod ? `match: ${record.matchMethod}` : "",
     record.occurrenceCount > 1 ? `${record.occurrenceCount} occurrences` : "",
@@ -4346,8 +4373,11 @@ function buildSignalAuditRow(record) {
 }
 
 function availableSignalStrategyStores(settings = currentSnapshot?.settings) {
-  return [...new Set((settings?.products || [])
-    .map((product) => product.retailer)
+  const missionStores = (settings?.products || []).map((product) => product.retailer);
+  const mappedStores = (currentSnapshot?.trackalacker?.items || [])
+    .flatMap((item) => item.stores || [])
+    .map((store) => store.retailer);
+  return [...new Set([...missionStores, ...mappedStores]
     .filter((retailer) => STORE_LABELS[retailer]))];
 }
 
@@ -5011,7 +5041,7 @@ elements.signalsToggle.addEventListener("click", async () => {
       render(next);
       return { listening: true };
     }, (result) => result?.listening
-      ? "Signals ON. Enabled missions are dormant until an exact TrackaLacker, browser, or Discord signal matches the item and store; the live page must still pass price, seller, quantity, fulfillment, total, and checkout safeguards."
+      ? "Signals ON. Exact TrackaLacker signals can create missing missions from pre-synced listings; browser and Discord signals still require an existing mission. Every live page must pass price, seller, quantity, fulfillment, total, and checkout safeguards."
       : "Signals OFF. Existing pages may continue monitoring, but no purchase action is authorized.");
   } finally {
     setMissionOpenBusy(false);

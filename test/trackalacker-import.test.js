@@ -9,10 +9,12 @@ const {
   cancelTrackalackerImport,
   normalizeTrackalackerItem,
   normalizeTrackalackerState,
+  planTrackalackerSignalMission,
   planTrackalackerMissionImport,
   publicTrackalackerState,
   trackalackerPriceHistory
 } = require("../lib/trackalacker-import");
+const { buildTrackalackerSignalIndex } = require("../lib/trackalacker-signal-resolver");
 
 const NOW = Date.parse("2026-08-20T20:00:00Z");
 const PROFILE = {
@@ -197,6 +199,85 @@ test("duplicate routes and capacity are reported without splitting an item by st
   assert.equal(plan.additions.length, 0);
   assert.equal(plan.summary.duplicates, 1);
   assert.equal(plan.summary.overCapacity, 1);
+});
+
+test("an exact real-signal listing can seed an enabled mission from the default profile", () => {
+  const state = completedStateWithCapture();
+  const mapping = buildTrackalackerSignalIndex(state).mappings.find((candidate) => candidate.retailer === "walmart");
+  const plan = planTrackalackerSignalMission(
+    state,
+    { state: "matched", mission: null, mapping },
+    [],
+    100,
+    {
+      profile: PROFILE,
+      storeOrderAllowances: { target: 5, walmart: 7, amazon: 5 },
+      orderTaxPercent: 10
+    }
+  );
+
+  assert.equal(plan.state, "created");
+  assert.equal(plan.mission.id, "walmart:20754418655");
+  assert.equal(plan.mission.enabled, true, "the real exact signal corroborates the product-level pre-sync reference");
+  assert.equal(plan.mission.maxPrice, 49.99);
+  assert.equal(plan.mission.action, "review");
+  assert.equal(plan.mission.quantity, 2);
+  assert.equal(plan.mission.maxOrderTotal, 116.98);
+  assert.equal(plan.mission.priceSource, "trackalacker-product");
+});
+
+test("enabled strategies establish a new signal mission's bounded action and quantity ceiling", () => {
+  const state = completedStateWithCapture();
+  const mapping = buildTrackalackerSignalIndex(state).mappings.find((candidate) => candidate.retailer === "walmart");
+  const plan = planTrackalackerSignalMission(
+    state,
+    { state: "matched", mission: null, mapping },
+    [],
+    100,
+    {
+      profile: PROFILE,
+      signalStrategies: [{
+        id: "signal-strategy:auto",
+        enabled: true,
+        priceBand: "slightly_above_msrp",
+        action: "submit_order",
+        quantity: 3
+      }],
+      storeOrderAllowances: { target: 5, walmart: 7, amazon: 5 },
+      orderTaxPercent: 10
+    }
+  );
+
+  assert.equal(plan.mission.enabled, true);
+  assert.equal(plan.mission.action, "checkout");
+  assert.equal(plan.mission.quantity, 3);
+  assert.equal(plan.mission.maxPrice, 54.99);
+  assert.equal(plan.mission.maxOrderTotal, 188.47);
+  assert.equal(plan.mission.fulfillmentMode, "shipping");
+  assert.equal(plan.mission.itemProfileId, "");
+  assert.equal(plan.mission.priceSource, "trackalacker-reference+strategy");
+});
+
+test("a signal listing without a persistent price cap seeds only an active Watch mission", () => {
+  const state = structuredClone(completedStateWithCapture());
+  const store = state.items[0].stores.find((candidate) => candidate.retailer === "walmart");
+  store.expectedPrice = null;
+  store.priceConfidence = "unavailable";
+  const mapping = buildTrackalackerSignalIndex(state).mappings.find((candidate) => candidate.retailer === "walmart");
+  const plan = planTrackalackerSignalMission(
+    state,
+    { state: "matched", mission: null, mapping },
+    [],
+    100,
+    { profile: PROFILE }
+  );
+
+  assert.equal(plan.state, "created-watch");
+  assert.equal(plan.mission.enabled, true);
+  assert.equal(plan.mission.action, "watch");
+  assert.equal(plan.mission.maxPrice, 0);
+  assert.equal(plan.mission.maxOrderTotal, 0);
+  assert.match(plan.reason, /no purchase action is allowed/i);
 });
 
 test("an active scan can be cancelled and no longer accepts browser captures", () => {
