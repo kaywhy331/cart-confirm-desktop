@@ -204,6 +204,8 @@ const QUIET_STORES = Object.freeze(["target", "walmart"]);
 const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60_000;
 const TRACKALACKER_CHECKPOINT_PRODUCTS = 5;
 const TRACKALACKER_EXTENSION_REQUEST_TIMEOUT_MS = 45_000;
+const TRACKALACKER_DELIVERY_TEST_TIMEOUT_MS = 90_000;
+const TRACKALACKER_NOTIFICATION_SETTINGS_URL = "https://www.trackalacker.com/users/settings/notifications/edit";
 const backgroundLaunch = process.argv.includes("--background");
 
 let mainWindow = null;
@@ -237,6 +239,8 @@ let signalActivations = {};
 let trackalackerPushEnrollmentNonce = "";
 let trackalackerPushEnrollmentOutcome = null;
 let trackalackerPushEnrollmentRequestInFlight = null;
+let trackalackerPushDeliveryTestInFlight = null;
+let trackalackerPushTestReceipt = { count: 0, receivedAt: "" };
 let trackalackerPushStatus = {
   state: "disabled",
   ready: false,
@@ -319,7 +323,7 @@ async function waitForSignalBridgeEnrollment(nonce) {
     configVersion += 1;
     broadcast();
   }
-  throw new Error("The Chrome extension did not confirm TrackaLacker push enrollment within 45 seconds. Use Connect one page to confirm the companion is active, then retry from a signed-in TrackaLacker tab.");
+  throw new Error("Chrome opened TrackaLacker, but Cart Confirm Companion did not confirm enrollment within 45 seconds. In chrome://extensions, confirm the companion version matches the app and reload it, then retry while the opened TrackaLacker page is signed in.");
 }
 
 async function performSignalBridgePermissionRequest() {
@@ -338,12 +342,22 @@ async function performSignalBridgePermissionRequest() {
   };
   configVersion += 1;
   broadcast();
+  const openedVia = await openPageInChrome(TRACKALACKER_NOTIFICATION_SETTINGS_URL);
+  if (openedVia !== "chrome") {
+    if (trackalackerPushEnrollmentNonce === nonce) {
+      trackalackerPushEnrollmentNonce = "";
+      configVersion += 1;
+      broadcast();
+    }
+    throw new Error("Google Chrome was not found. Install Chrome and load the bundled Cart Confirm Companion before connecting TrackaLacker push.");
+  }
   const outcome = await waitForSignalBridgeEnrollment(nonce);
   return {
     requested: true,
     ready: true,
     via: "extension-profile",
-    status: outcome.lastHttpStatus || 200
+    status: outcome.lastHttpStatus || 200,
+    pageUrl: TRACKALACKER_NOTIFICATION_SETTINGS_URL
   };
 }
 
@@ -355,6 +369,47 @@ function requestSignalBridgePermission() {
       trackalackerPushEnrollmentOutcome = null;
     });
   return trackalackerPushEnrollmentRequestInFlight;
+}
+
+async function waitForTrackalackerTestNotification(baselineCount) {
+  const deadline = Date.now() + TRACKALACKER_DELIVERY_TEST_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    if (trackalackerPushTestReceipt.count > baselineCount) return { ...trackalackerPushTestReceipt };
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+  throw new Error("No TrackaLacker browser test push reached Cart Confirm within 90 seconds. Keep the app running, confirm push is Ready, and click TrackaLacker's browser notification test button again.");
+}
+
+async function performSignalBridgeDeliveryTest() {
+  if (!settings.trackalackerSignalBridgeEnabled) {
+    throw new Error("Enable and connect TrackaLacker push before testing delivery.");
+  }
+  if (settings.trackalackerSignalDeliveryPaused) {
+    throw new Error("Resume TrackaLacker delivery before testing it.");
+  }
+  if (!trackalackerPushStatus.ready) {
+    throw new Error("Connect TrackaLacker push successfully before testing delivery.");
+  }
+  const baselineCount = trackalackerPushTestReceipt.count;
+  const openedVia = await openPageInChrome(TRACKALACKER_NOTIFICATION_SETTINGS_URL);
+  if (openedVia !== "chrome") {
+    throw new Error("Google Chrome was not found. Open TrackaLacker in the Chrome profile that owns Cart Confirm Companion and retry.");
+  }
+  const receipt = await waitForTrackalackerTestNotification(baselineCount);
+  return {
+    received: true,
+    receivedAt: receipt.receivedAt,
+    via: "chrome-extension-web-push"
+  };
+}
+
+function testSignalBridgeDelivery() {
+  if (trackalackerPushDeliveryTestInFlight) return trackalackerPushDeliveryTestInFlight;
+  trackalackerPushDeliveryTestInFlight = performSignalBridgeDeliveryTest()
+    .finally(() => {
+      trackalackerPushDeliveryTestInFlight = null;
+    });
+  return trackalackerPushDeliveryTestInFlight;
 }
 
 function discordTokenPath() {
@@ -2152,6 +2207,16 @@ function handleTrackalackerSignalRequest(envelope, idempotencyKey, options = {})
     validation: options.validation,
     now: Date.now()
   });
+  if (
+    outcome.parsed?.testNotification === true
+    && outcome.parsed?.envelope?.testSignal !== true
+    && outcome.parsed?.envelope?.source?.transport === "chrome_extension_web_push"
+  ) {
+    trackalackerPushTestReceipt = {
+      count: trackalackerPushTestReceipt.count + 1,
+      receivedAt: new Date().toISOString()
+    };
+  }
   signalJournal = outcome.journal;
   // The mission decision receipt must reach disk before any activation or
   // browser opening can begin. A crash can therefore be reconstructed and a
@@ -3560,6 +3625,8 @@ function registerIpc() {
   ));
 
   ipcMain.handle("cart-assist:signal-bridge-request-access", () => requestSignalBridgePermission());
+
+  ipcMain.handle("cart-assist:signal-bridge-test-delivery", () => testSignalBridgeDelivery());
 
   ipcMain.handle("cart-assist:signal-bridge-replay", (_event, input = {}) => {
     const now = new Date();
