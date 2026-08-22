@@ -11,6 +11,7 @@ const background = fs.readFileSync(path.join(root, "extension", "background.js")
 const pushHelper = fs.readFileSync(path.join(root, "extension", "trackalacker-push.js"), "utf8");
 const buildScript = fs.readFileSync(path.join(root, "scripts", "build-windows.js"), "utf8");
 const renderer = fs.readFileSync(path.join(root, "src", "renderer.js"), "utf8");
+const preload = fs.readFileSync(path.join(root, "preload.js"), "utf8");
 const packageJson = require("../package.json");
 const manifest = require("../extension/manifest.json");
 
@@ -32,7 +33,9 @@ test("the Chrome extension declares and installs the Web Push runtime", () => {
   assert.match(background, /importScripts\([\s\S]*?"trackalacker-push\.js"/);
   assert.match(background, /self\.addEventListener\("push"/);
   assert.match(background, /self\.addEventListener\("pushsubscriptionchange"/);
-  assert.match(background, /userVisibleOnly: false/);
+  assert.match(background, /userVisibleOnly: true/);
+  assert.match(background, /registration\.showNotification/);
+  assert.match(background, /self\.addEventListener\("notificationclick"/);
   assert.doesNotMatch(`${background}\n${pushHelper}`, /\.unsubscribe\s*\(/);
 });
 
@@ -78,5 +81,16 @@ test("manual enrollment is opened by the owning extension profile and waits for 
   assert.match(main, /waitForSignalBridgeEnrollment\(nonce\)/);
   assert.match(main, /enrollmentNonce === trackalackerPushEnrollmentNonce/);
   assert.match(main, /via: "extension-profile"/);
-  assert.doesNotMatch(main, /openPageInChrome\(TRACKALACKER_FOLLOWED_URL\)/);
+  assert.match(main, /openPageInChrome\(TRACKALACKER_NOTIFICATION_SETTINGS_URL\)/);
+  assert.match(main, /users\/settings\/notifications\/edit/);
+});
+
+test("the app can wait for a real TrackaLacker browser test without making it actionable", () => {
+  assert.match(preload, /testSignalBridgeDelivery: \(\) => ipcRenderer\.invoke\("cart-assist:signal-bridge-test-delivery"\)/);
+  assert.match(main, /outcome\.parsed\?\.testNotification === true[\s\S]*?chrome_extension_web_push/);
+  assert.match(main, /waitForTrackalackerTestNotification\(baselineCount\)/);
+  assert.match(main, /cart-assist:signal-bridge-test-delivery/);
+  assert.match(renderer, /Verify browser test/);
+  assert.match(renderer, /testSignalBridgeDelivery\(\)/);
+  assert.match(renderer, /no purchase action was allowed/);
 });

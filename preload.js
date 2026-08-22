@@ -42,6 +42,7 @@ contextBridge.exposeInMainWorld("cartAssist", {
   clearSignals: () => ipcRenderer.invoke("cart-assist:discord-clear-signals"),
   openSignal: (signalId, entry) => ipcRenderer.invoke("cart-assist:open-signal", signalId, entry),
   requestSignalBridgePermission: () => ipcRenderer.invoke("cart-assist:signal-bridge-request-access"),
+  testSignalBridgeDelivery: () => ipcRenderer.invoke("cart-assist:signal-bridge-test-delivery"),
   replayTrackalackerSignal: (input) => ipcRenderer.invoke("cart-assist:signal-bridge-replay", input),
   showExtension: () => ipcRenderer.invoke("cart-assist:show-extension"),
   openChromeExtensions: () => ipcRenderer.invoke("cart-assist:open-chrome-extensions"),

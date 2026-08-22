@@ -38,6 +38,7 @@ const TRACKALACKER_PUSH_STATE_KEY = "cartConfirmTrackalackerPushStateV1";
 const TRACKALACKER_PUSH_QUEUE_KEY = "cartConfirmTrackalackerPushQueueV1";
 const TRACKALACKER_PUSH_QUEUE_LIMIT = 50;
 const TRACKALACKER_FOLLOWED_URL = "https://www.trackalacker.com/products/followed";
+const TRACKALACKER_NOTIFICATION_SETTINGS_URL = "https://www.trackalacker.com/users/settings/notifications/edit";
 const TRACKALACKER_TAB_PATTERNS = Object.freeze([
   "https://trackalacker.com/*",
   "https://www.trackalacker.com/*"
@@ -1441,7 +1442,7 @@ async function extensionPushSubscription(applicationServerKey) {
   if (!subscription) {
     try {
       subscription = await pushManager.subscribe({
-        userVisibleOnly: false,
+        userVisibleOnly: true,
         applicationServerKey
       });
     } catch {
@@ -1662,6 +1663,7 @@ async function handleTrackalackerPushEvent(event) {
     if (config) await postTrackalackerPushStatus(config, failed, { force: true });
     return;
   }
+  await showTrackalackerPushReceipt(envelope).catch(() => {});
   const queue = await enqueueTrackalackerPush(envelope);
   const next = await updateTrackalackerPushState({
     lastNotificationAt: receivedAt,
@@ -1671,6 +1673,27 @@ async function handleTrackalackerPushEvent(event) {
   if (config) await postTrackalackerPushStatus(config, next, { force: true });
   if (!next.deliveryPaused) await drainTrackalackerPushQueue(config);
   return { queued: queue.length };
+}
+
+function showTrackalackerPushReceipt(envelope) {
+  const title = String(envelope?.notification?.title || "TrackaLacker alert").slice(0, 180);
+  const body = String(envelope?.notification?.body || "").slice(0, 500);
+  const isTest = /\btest notification\b|\bthis is a test\b/i.test(`${title}\n${body}`);
+  return globalThis.registration.showNotification(
+    isTest ? "Cart Confirm received the TrackaLacker test" : `Cart Confirm · ${title}`,
+    {
+      body: isTest
+        ? "End-to-end Web Push delivery is working. This test can never trigger a purchase."
+        : body,
+      tag: "cart-confirm-trackalacker-push",
+      renotify: false,
+      silent: true,
+      data: {
+        cartConfirmTrackalacker: true,
+        url: TRACKALACKER_NOTIFICATION_SETTINGS_URL
+      }
+    }
+  );
 }
 
 async function handleTrackalackerPushSubscriptionChange() {
@@ -2464,6 +2487,12 @@ self.addEventListener("push", (event) => {
 
 self.addEventListener("pushsubscriptionchange", (event) => {
   event.waitUntil(handleTrackalackerPushSubscriptionChange());
+});
+
+self.addEventListener("notificationclick", (event) => {
+  if (event.notification?.data?.cartConfirmTrackalacker !== true) return;
+  event.notification.close();
+  event.waitUntil(chrome.tabs.create({ url: TRACKALACKER_NOTIFICATION_SETTINGS_URL, active: true }));
 });
 
 chrome.tabs.onRemoved.addListener((tabId) => {

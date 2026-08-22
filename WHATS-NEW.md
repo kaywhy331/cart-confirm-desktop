@@ -6,6 +6,11 @@ update dialog shows exactly these bullets. Keep every entry short, plain, and
 about what the user will notice — one bullet per change, no internals.
 Publishing fails if the version being released has no section here.
 
+## 3.8.6
+- Connect TrackaLacker push now opens the correct signed-in notification settings page immediately instead of waiting silently for an idle extension
+- Verify browser test guides you through TrackaLacker's real test button and confirms the full TrackaLacker-to-Chrome-to-Cart Confirm delivery path
+- TrackaLacker test pushes remain non-purchasing and produce a visible, soundless companion receipt when delivery succeeds
+
 ## 3.8.5
 - Signal price choices are now maximums, so At or below MSRP accepts MSRP and every lower qualifying offer
 - Each signal strategy can explicitly allow marketplace sellers, while first-party-only remains the default

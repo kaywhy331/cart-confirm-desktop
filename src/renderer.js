@@ -184,6 +184,7 @@ const elements = {
   signalBridgeDeliveryPaused: document.getElementById("signalBridgeDeliveryPaused"),
   signalBridgeDedupeSeconds: document.getElementById("signalBridgeDedupeSeconds"),
   signalBridgePermissionButton: document.getElementById("signalBridgePermissionButton"),
+  signalBridgeDeliveryTestButton: document.getElementById("signalBridgeDeliveryTestButton"),
   signalBridgeScanButton: document.getElementById("signalBridgeScanButton"),
   signalBridgeReplayButton: document.getElementById("signalBridgeReplayButton"),
   signalBridgeRecent: document.getElementById("signalBridgeRecent"),
@@ -344,6 +345,7 @@ let catalogSearchInFlight = false;
 let catalogImportInFlight = false;
 let renderedCatalogSearchId = "";
 let trackalackerOperationInFlight = false;
+let signalBridgeDeliveryTestInFlight = false;
 let renderedTrackalackerImportId = "";
 let renderedTrackalackerSignature = "";
 let lastReadinessIssueItemIds = new Set();
@@ -4661,6 +4663,10 @@ function renderSignalBridge(bridge = {}, settings = {}) {
   elements.signalBridgePermissionButton.textContent = connecting
     ? "Connecting TrackaLacker push…"
     : bridge.listenerReady ? "Recheck push connection" : "Connect TrackaLacker push";
+  elements.signalBridgeDeliveryTestButton.disabled = !ready || signalBridgeDeliveryTestInFlight;
+  elements.signalBridgeDeliveryTestButton.textContent = signalBridgeDeliveryTestInFlight
+    ? "Waiting for TrackaLacker test…"
+    : "Verify browser test";
   elements.signalBridgeScanButton.disabled = isArmed() || trackalackerOperationInFlight;
   elements.signalBridgeScanButton.textContent = Number(bridge.mappingCount || 0) > 0
     ? "Rescan followed products"
@@ -5520,9 +5526,25 @@ elements.signalBridgeDedupeSeconds.addEventListener("change", () => void runActi
 elements.signalBridgePermissionButton.addEventListener("click", () => void runAction(
   () => window.cartAssist.requestSignalBridgePermission(),
   (result) => result?.ready
-    ? `TrackaLacker push enrollment confirmed${result.status ? `: HTTP ${result.status}` : ""}. The extension used its own signed-in Chrome profile.`
+    ? `TrackaLacker push enrollment confirmed${result.status ? `: HTTP ${result.status}` : ""}. Use Verify browser test for an end-to-end delivery check.`
     : "TrackaLacker push enrollment was requested in the Chrome profile that owns the companion extension."
 ));
+
+elements.signalBridgeDeliveryTestButton.addEventListener("click", async () => {
+  if (signalBridgeDeliveryTestInFlight) return;
+  signalBridgeDeliveryTestInFlight = true;
+  renderSignalBridge(currentSnapshot?.signalBridge || {}, currentSnapshot?.settings || {});
+  setMessage("TrackaLacker notification settings is opening. Click its browser notification test button within 90 seconds; Cart Confirm will wait for the real push.");
+  try {
+    await runAction(
+      () => window.cartAssist.testSignalBridgeDelivery(),
+      "TrackaLacker browser test reached Cart Confirm through the Chrome extension. End-to-end push delivery is working; no purchase action was allowed."
+    );
+  } finally {
+    signalBridgeDeliveryTestInFlight = false;
+    renderSignalBridge(currentSnapshot?.signalBridge || {}, currentSnapshot?.settings || {});
+  }
+});
 
 elements.signalBridgeScanButton.addEventListener("click", () => {
   if (isArmed()) {

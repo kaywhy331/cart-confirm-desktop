@@ -126,6 +126,7 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   let installUpdateCalls = 0;
   let signalBridgePermissionCalls = 0;
   let signalBridgePermissionResult = { requested: true, ready: true, via: "extension-profile", status: 200 };
+  let signalBridgeDeliveryTestCalls = 0;
   let connectCompanionCalls = 0;
   let openProductCalls = 0;
   let openBuyListCalls = 0;
@@ -408,6 +409,10 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
     requestSignalBridgePermission: async () => {
       signalBridgePermissionCalls += 1;
       return signalBridgePermissionResult;
+    },
+    testSignalBridgeDelivery: async () => {
+      signalBridgeDeliveryTestCalls += 1;
+      return { received: true, receivedAt: "2026-08-22T01:00:00.000Z", via: "chrome-extension-web-push" };
     },
     showExtension: async () => "",
     copyExtensionPath: async () => "",
@@ -1039,11 +1044,12 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   assert.equal(doc.getElementById("signalBridgeEnabled").disabled, false);
   assert.equal(doc.getElementById("signalBridgePermissionButton").textContent, "Connect TrackaLacker push");
   assert.equal(doc.getElementById("signalBridgePermissionButton").disabled, false);
+  assert.equal(doc.getElementById("signalBridgeDeliveryTestButton").disabled, true);
   doc.getElementById("signalBridgePermissionButton").click();
   await new Promise((resolve) => setTimeout(resolve, 10));
   assert.equal(signalBridgePermissionCalls, 1);
   assert.match(doc.getElementById("message").textContent, /enrollment confirmed: HTTP 200/);
-  assert.match(doc.getElementById("message").textContent, /own signed-in Chrome profile/);
+  assert.match(doc.getElementById("message").textContent, /Verify browser test/);
 
   awaitingBridge.signalBridge = {
     supported: true,
@@ -1068,7 +1074,13 @@ test("mission control boots, edits, arms, and filters like the dashboard", async
   pushUpdate(awaitingBridge);
   assert.equal(doc.getElementById("signalBridgeState").textContent, "Ready");
   assert.equal(doc.getElementById("signalBridgePermissionButton").textContent, "Recheck push connection");
+  assert.equal(doc.getElementById("signalBridgeDeliveryTestButton").disabled, false);
   assert.match(doc.getElementById("signalBridgeHint").textContent, /without server polling/);
+  doc.getElementById("signalBridgeDeliveryTestButton").click();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(signalBridgeDeliveryTestCalls, 1);
+  assert.match(doc.getElementById("message").textContent, /end-to-end push delivery is working/i);
+  assert.match(doc.getElementById("message").textContent, /no purchase action was allowed/i);
   pushUpdate(snapshotFixture());
 
   for (const panelId of ["missionsPanel", "activityPanel"]) {

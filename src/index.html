@@ -577,10 +577,11 @@
               </div>
               <div class="action-row signal-bridge-actions">
                 <button class="button secondary compact" id="signalBridgePermissionButton" type="button">Connect TrackaLacker push</button>
+                <button class="button secondary compact" id="signalBridgeDeliveryTestButton" type="button">Verify browser test</button>
                 <button class="button ghost compact" id="signalBridgeScanButton" type="button">Scan followed products</button>
                 <button class="button ghost compact" id="signalBridgeReplayButton" type="button">Run dry-run replay</button>
               </div>
-              <small class="row-help">Setup asks the companion extension to reuse or open TrackaLacker in the Chrome profile where that extension is installed, then uses that page's existing signed-in session to enroll the real PushSubscription. No account credentials or push keys are stored by CartCollect. Synthetic replays exercise the production parser and resolver but can never open a store or place an order.</small>
+              <small class="row-help">Connect opens TrackaLacker's notification settings in Chrome, then uses that page's existing signed-in session to enroll the companion's real PushSubscription. Once Ready, choose Verify browser test and click TrackaLacker's browser notification test button on the opened page. Cart Confirm waits for that real push and always treats it as non-purchasing. No account credentials or push keys are stored. Synthetic replays can never open a store or place an order.</small>
               <details class="signal-audit-details">
                 <summary>Recent TrackaLacker signal audit</summary>
                 <div class="signal-audit-list" id="signalBridgeRecent"><div class="empty-state">No TrackaLacker alerts recorded yet.</div></div>
